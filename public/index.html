@@ -16,6 +16,7 @@
         <nav class="nav-links" aria-label="Main">
           <a href="/" data-view="home" class="nav-link active">Home</a>
           <a href="/" data-view="movies" class="nav-link">Movies</a>
+          <a href="/" data-view="discover" class="nav-link">New &amp; Popular</a>
           <a href="/" data-view="mylist" class="nav-link">My List</a>
         </nav>
       </div>
@@ -25,6 +26,10 @@
         </button>
         <button class="icon-btn" id="refreshBtn" aria-label="Rescan library" title="Rescan library">
           <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 4v7h-7"/></svg>
+        </button>
+        <button class="icon-btn downloads-btn" id="downloadsBtn" aria-label="Downloads" title="Downloads">
+          <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg>
+          <span class="downloads-badge" id="downloadsBadge" hidden>0</span>
         </button>
         <button class="icon-btn bell" aria-label="Notifications">
           <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>
@@ -113,6 +118,39 @@
           <p>Add titles to your library or add them from the home page with the My List button.</p>
         </div>
       </section>
+
+      <section id="discoverView" class="page discover" hidden>
+        <div class="discover-head">
+          <div>
+            <h1 class="page-title">New &amp; Popular</h1>
+            <p class="page-sub" id="discoverSub">Public-domain films from archive.org — download them straight to your library.</p>
+          </div>
+        </div>
+        <form class="discover-search" id="discoverForm" role="search">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg>
+          <input id="discoverInput" type="search" placeholder="Search archive.org — try “film noir”, “sci-fi”, “Chaplin”" autocomplete="off" spellcheck="false">
+          <button type="submit" class="btn btn-play">Search</button>
+        </form>
+        <div class="discover-chips" id="discoverChips">
+          <button type="button" data-q="film noir">Film Noir</button>
+          <button type="button" data-q="science fiction">Sci-Fi</button>
+          <button type="button" data-q="comedy">Comedy</button>
+          <button type="button" data-q="horror">Horror</button>
+          <button type="button" data-q="animation">Animation</button>
+          <button type="button" data-q="silent film">Silent Film</button>
+          <button type="button" data-q="" class="chip-picks">Editor&rsquo;s Picks</button>
+        </div>
+        <p class="discover-note" id="discoverNote" hidden></p>
+        <div class="grid catalog-grid" id="catalogGrid"></div>
+        <div class="grid-empty" id="catalogEmpty" hidden>
+          <h2 id="catalogEmptyTitle">No films found</h2>
+          <p id="catalogEmptyText">Try a different search, or browse the editor’s picks.</p>
+        </div>
+        <div class="discover-loading" id="catalogLoading" hidden>
+          <div class="spinner"></div>
+          <p>Searching archive.org<span class="dots"></span></p>
+        </div>
+      </section>
     </main>
 
     <footer class="footer">
@@ -140,6 +178,14 @@
     <div class="search-body">
       <p class="search-hint" id="searchHint">Search your library</p>
       <div class="grid search-grid" id="searchResults"></div>
+      <button class="search-archive" id="searchArchiveBtn" hidden>
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 9h18v11H3z"/><path d="M3 9l9-5 9 5"/><path d="M7 13v4M12 13v4M17 13v4"/></svg>
+        <span class="search-archive-text">
+          <strong id="searchArchiveLabel">Search archive.org</strong>
+          <span>Download public-domain films and series to your library</span>
+        </span>
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 5 7 7-7 7"/></svg>
+      </button>
     </div>
   </div>
 
@@ -178,12 +224,60 @@
     </div>
   </div>
 
+  <div class="picker" id="picker" hidden>
+    <div class="modal-scrim" data-close-picker></div>
+    <div class="picker-panel" role="dialog" aria-modal="true" aria-labelledby="pickerTitle">
+      <button class="modal-close" data-close-picker aria-label="Close">✕</button>
+      <div class="picker-head">
+        <img id="pickerImg" alt="">
+        <div class="picker-heading">
+          <div class="hero-label"><span class="n-mark">N</span><span>ARCHIVE.ORG</span></div>
+          <h2 id="pickerTitle"></h2>
+          <p class="picker-meta" id="pickerMeta"></p>
+        </div>
+      </div>
+      <p class="picker-desc" id="pickerDesc"></p>
+      <div class="picker-files" id="pickerFiles"></div>
+      <div class="picker-actions">
+        <button class="btn btn-play" id="pickerDownload" disabled>
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg>
+          <span id="pickerDownloadLabel">Download</span>
+        </button>
+        <button class="btn btn-info" id="pickerSeries" hidden>Download all files</button>
+      </div>
+      <p class="picker-status" id="pickerStatus"></p>
+    </div>
+  </div>
+
+  <div class="downloads" id="downloadsPanel" hidden>
+    <div class="drawer-scrim" data-close-downloads></div>
+    <aside class="downloads-panel" role="dialog" aria-modal="true" aria-labelledby="downloadsTitle">
+      <header class="downloads-head">
+        <div>
+          <h2 id="downloadsTitle">Downloads</h2>
+          <p id="downloadsCount">No active downloads</p>
+        </div>
+        <button class="downloads-close" data-close-downloads aria-label="Close downloads">✕</button>
+      </header>
+      <div class="downloads-list" id="downloadsList"></div>
+      <div class="downloads-empty" id="downloadsEmpty">
+        <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg>
+        <p>Nothing downloading yet. Find a film in <strong>New &amp; Popular</strong> and download it.</p>
+      </div>
+      <p class="downloads-root" id="downloadsRoot"></p>
+    </aside>
+  </div>
+
   <div class="toast" id="toast" hidden></div>
 
   <nav class="mobile-nav" aria-label="Mobile">
     <button data-mview="home" class="active">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
       <span>Home</span>
+    </button>
+    <button data-mview="discover">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17l6-6 4 4 7-8"/><path d="M14 7h6v6"/></svg>
+      <span>New</span>
     </button>
     <button data-mview="movies">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m10 9 5 3-5 3z"/></svg>

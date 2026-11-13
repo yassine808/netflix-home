@@ -15,6 +15,78 @@ export async function rescanLibrary() {
   return res.json();
 }
 
+export async function searchCatalog(query, page = 1) {
+  const params = new URLSearchParams({ q: query, page: String(page) });
+  const res = await fetch(`/api/catalog/search?${params}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`catalog search ${res.status}`);
+  return res.json();
+}
+
+export async function getFallbackCatalog() {
+  const res = await fetch('/api/catalog/fallback', { cache: 'no-store' });
+  if (!res.ok) throw new Error(`catalog fallback ${res.status}`);
+  return res.json();
+}
+
+export async function getCatalogItem(identifier) {
+  const res = await fetch(`/api/catalog/item/${encodeURIComponent(identifier)}`, { cache: 'no-store' });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    const err = new Error(payload?.error || `catalog item ${res.status}`);
+    err.status = res.status;
+    err.files = payload?.files;
+    throw err;
+  }
+  return res.json();
+}
+
+export async function startDownload(body) {
+  const res = await fetch('/api/downloads', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    throw new Error(payload?.error || `download failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function startSeriesDownload(body) {
+  const res = await fetch('/api/downloads/series', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    throw new Error(payload?.error || `series download failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function getDownloads() {
+  const res = await fetch('/api/downloads', { cache: 'no-store' });
+  if (!res.ok) throw new Error(`downloads ${res.status}`);
+  return res.json();
+}
+
+export async function cancelDownload(id) {
+  const res = await fetch(`/api/downloads/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`cancel ${res.status}`);
+  return res.json();
+}
+
+export async function retryDownload(id) {
+  const res = await fetch(`/api/downloads/${encodeURIComponent(id)}/retry`, { method: 'POST' });
+  if (!res.ok) throw new Error(`retry ${res.status}`);
+  return res.json();
+}
+
 export function formatDuration(sec) {
   if (!sec || !Number.isFinite(sec)) return '';
   if (sec < 60) return `${Math.max(1, Math.round(sec))}s`;

@@ -49,10 +49,19 @@ Or edit the fallback logic in `server/index.js`. The root is `G:\Movies` when mo
 - Rows: Continue Watching, Recently Added, Top 10, collections, My List
 - Hover cards with play shortcut, detail modal with technical metadata
 - Search across titles, filenames, genres, years, collections
+- New & Popular page: search archive.org, pick a film or multi-file item, and download it into the library
+- Downloads drawer with live progress, speed, cancel/retry, and automatic library refresh
+- Local search falls back to an archive.org search when nothing matches in your library
 - Custom player: resume, seek preview, buffered bar, volume, 10s skips, fullscreen, keyboard shortcuts
 - Progress and My List saved in the browser
 - Range-request streaming, so seeking works without copying the file
 - Lazy thumbnail generation and persistent metadata cache
+
+## Discover and download
+
+Open **New & Popular** in the top nav (or **New** on mobile). Search archive.org or pick one of the curated titles. Click a card to see its files: choose one source and download it, or use **Download all** for a multi-file item. The download drawer tracks progress and offers cancel/retry. Finished files land in `G:\Movies\Downloads\` (or `Series\<title>\` for multi-file items) and show up in the library after the automatic rescan.
+
+In the local search overlay, a query with no matches now offers **Search archive.org for “…”**, which opens the Discover page with that query already applied.
 
 ## Keyboard shortcuts (player)
 

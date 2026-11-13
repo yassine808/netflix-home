@@ -2,7 +2,11 @@ import {
   getLibrary, rescanLibrary, formatDuration, formatSize, formatClock,
   qualityLabel, thumbUrl, toggleMyList, isInMyList, getMyList, progressFor,
   continueWatching, debounce, createEl,
+  searchCatalog, getFallbackCatalog, getCatalogItem,
+  startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload,
 } from './common.js';
+
+const ACTIVE_STATUSES = new Set(['queued', 'downloading', 'cancelling']);
 
 const state = {
   library: null,
@@ -17,6 +21,15 @@ const state = {
   lastFocus: null,
   bootAt: Date.now(),
   rescanning: false,
+  catalog: [],
+  catalogQuery: '',
+  catalogSource: '',
+  catalogLoading: false,
+  pickerItem: null,
+  pickerFiles: [],
+  downloads: [],
+  downloadsSynced: false,
+  downloadPoll: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -72,6 +85,35 @@ const els = {
   avatar: $('avatar'),
   avatarMenu: $('avatarMenu'),
   profileName: $('profileName'),
+  discoverView: $('discoverView'),
+  discoverForm: $('discoverForm'),
+  discoverInput: $('discoverInput'),
+  discoverChips: $('discoverChips'),
+  discoverNote: $('discoverNote'),
+  catalogGrid: $('catalogGrid'),
+  catalogEmpty: $('catalogEmpty'),
+  catalogEmptyTitle: $('catalogEmptyTitle'),
+  catalogEmptyText: $('catalogEmptyText'),
+  catalogLoading: $('catalogLoading'),
+  searchArchiveBtn: $('searchArchiveBtn'),
+  searchArchiveLabel: $('searchArchiveLabel'),
+  picker: $('picker'),
+  pickerImg: $('pickerImg'),
+  pickerTitle: $('pickerTitle'),
+  pickerMeta: $('pickerMeta'),
+  pickerDesc: $('pickerDesc'),
+  pickerFiles: $('pickerFiles'),
+  pickerDownload: $('pickerDownload'),
+  pickerDownloadLabel: $('pickerDownloadLabel'),
+  pickerSeries: $('pickerSeries'),
+  pickerStatus: $('pickerStatus'),
+  downloadsBtn: $('downloadsBtn'),
+  downloadsBadge: $('downloadsBadge'),
+  downloadsPanel: $('downloadsPanel'),
+  downloadsList: $('downloadsList'),
+  downloadsEmpty: $('downloadsEmpty'),
+  downloadsCount: $('downloadsCount'),
+  downloadsRoot: $('downloadsRoot'),
 };
 
 /* ---------- boot ---------- */
@@ -80,6 +122,8 @@ async function boot() {
   bindStaticEvents();
   await loadLibrary({ first: true });
   schedulePoll();
+  refreshDownloads({ initial: true });
+  scheduleDownloadPoll();
 }
 
 async function loadLibrary({ first = false } = {}) {
@@ -443,18 +487,21 @@ function buildTop10Card(item, rank, progress) {
 function setView(view) {
   state.view = view;
   const isHome = view === 'home';
+  const isDiscover = view === 'discover';
   els.homeView.hidden = !isHome;
-  els.gridView.hidden = isHome;
+  els.gridView.hidden = isHome || isDiscover;
+  els.discoverView.hidden = !isDiscover;
   if (isHome) {
     stopPreview();
     state.heroId = null;
     renderHero();
     renderRows();
   }
+  if (isDiscover) stopPreview();
   document.querySelectorAll('.nav-link').forEach((link) => {
-    link.classList.toggle('active', link.dataset.view === (view === 'home' ? 'home' : view));
+    link.classList.toggle('active', link.dataset.view === view);
   });
-  setMobileActive(view === 'mylist' ? 'mylist' : view === 'movies' ? 'movies' : view === 'home' ? 'home' : null);
+  setMobileActive(['home', 'discover', 'movies', 'mylist'].includes(view) ? view : null);
   window.scrollTo(0, 0);
 }
 
@@ -491,6 +538,439 @@ function showCollection(name, items) {
   fillGrid(els.grid, items, els.gridEmpty, 'No titles here yet.');
 }
 
+/* ---------- discover: archive.org catalog ---------- */
+
+let catalogRequest = 0;
+
+const STATUS_LABELS = {
+  queued: 'Queued',
+  downloading: 'Downloading',
+  cancelling: 'Cancelling…',
+  cancelled: 'Cancelled',
+  failed: 'Failed',
+  completed: 'Completed',
+};
+
+function showDiscover(query = '') {
+  setView('discover');
+  const q = String(query || '').trim();
+  if (q) {
+    els.discoverInput.value = q;
+    runCatalogSearch(q);
+  } else if (!state.catalog.length && !state.catalogLoading) {
+    loadDiscoverPicks();
+  }
+}
+
+function setCatalogBusy(busy) {
+  state.catalogLoading = busy;
+  els.catalogLoading.hidden = !busy;
+  els.catalogGrid.hidden = busy;
+  if (busy) {
+    els.catalogEmpty.hidden = true;
+    els.discoverNote.hidden = true;
+  }
+}
+
+function showCatalogNote(message) {
+  els.discoverNote.textContent = message;
+  els.discoverNote.hidden = false;
+}
+
+async function loadDiscoverPicks() {
+  const token = ++catalogRequest;
+  state.catalogQuery = '';
+  els.discoverInput.value = '';
+  setCatalogBusy(true);
+  try {
+    const data = await getFallbackCatalog();
+    if (token !== catalogRequest) return;
+    state.catalog = data.results || [];
+    state.catalogSource = 'fallback';
+    showCatalogNote('Editor’s picks — public-domain films you can download right now.');
+  } catch {
+    if (token !== catalogRequest) return;
+    state.catalog = [];
+    state.catalogSource = '';
+    showCatalogNote('Could not load the catalog. Check that the server is running and try again.');
+  } finally {
+    if (token === catalogRequest) {
+      setCatalogBusy(false);
+      renderCatalog();
+    }
+  }
+}
+
+async function runCatalogSearch(query) {
+  const q = String(query || '').trim();
+  if (!q) return loadDiscoverPicks();
+  const token = ++catalogRequest;
+  state.catalogQuery = q;
+  setCatalogBusy(true);
+  try {
+    const data = await searchCatalog(q);
+    if (token !== catalogRequest) return;
+    state.catalog = data.results || [];
+    state.catalogSource = data.source || '';
+    if (data.fallback) {
+      showCatalogNote('Archive.org search is unavailable right now — showing the curated catalog instead.');
+    } else {
+      showCatalogNote(`${state.catalog.length} result${state.catalog.length === 1 ? '' : 's'} for “${q}” on archive.org`);
+    }
+  } catch (err) {
+    if (token !== catalogRequest) return;
+    state.catalog = [];
+    state.catalogSource = '';
+    showCatalogNote(`Could not search archive.org (${err.message}). Try again in a moment.`);
+  } finally {
+    if (token === catalogRequest) {
+      setCatalogBusy(false);
+      renderCatalog();
+    }
+  }
+}
+
+function renderCatalog() {
+  els.catalogGrid.replaceChildren();
+  state.catalog.forEach((item) => els.catalogGrid.append(buildCatalogCard(item)));
+  const empty = state.catalog.length === 0;
+  els.catalogEmpty.hidden = !empty;
+  if (empty) {
+    els.catalogEmptyTitle.textContent = state.catalogQuery
+      ? `No films found for “${state.catalogQuery}”`
+      : 'No films found';
+    els.catalogEmptyText.textContent = 'Try a different search, or browse the editor’s picks.';
+  }
+}
+
+function buildCatalogCard(item) {
+  const card = createEl('article', 'catalog-card');
+  card.tabIndex = 0;
+  card.setAttribute('role', 'button');
+  card.setAttribute('aria-label', `View download options for ${item.title}`);
+
+  const art = createEl('div', 'catalog-art');
+  const fallback = createEl('div', 'catalog-fallback');
+  fallback.innerHTML = '<svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m10 9 5 3-5 3z"/></svg>';
+
+  const img = document.createElement('img');
+  img.loading = 'lazy';
+  img.alt = '';
+  if (item.thumb) img.src = item.thumb;
+  img.addEventListener('load', () => img.classList.add('loaded'));
+  img.addEventListener('error', () => img.remove());
+
+  const overlay = createEl('div', 'catalog-overlay');
+  overlay.append(createEl('div', 'catalog-title', item.title));
+  const bits = [item.year, item.creator].filter(Boolean).join(' • ');
+  overlay.append(createEl('div', 'catalog-meta', bits || 'Public domain'));
+
+  const action = createEl('button', 'catalog-download');
+  action.setAttribute('aria-label', `Download ${item.title}`);
+  action.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg><span>Download</span>';
+  action.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openPicker(item);
+  });
+
+  art.append(fallback, img, overlay, action);
+  card.append(art);
+
+  const open = () => openPicker(item);
+  card.addEventListener('click', open);
+  card.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      open();
+    }
+  });
+  return card;
+}
+
+/* ---------- catalog picker ---------- */
+
+async function openPicker(result) {
+  state.pickerItem = result;
+  state.pickerFiles = [];
+  els.picker.hidden = false;
+  syncBodyLock();
+  els.pickerImg.src = result.thumb || '';
+  els.pickerImg.alt = result.title || '';
+  els.pickerImg.hidden = !result.thumb;
+  els.pickerTitle.textContent = result.title || result.identifier;
+  els.pickerMeta.textContent = [result.year, result.creator].filter(Boolean).join(' • ') || 'archive.org';
+  els.pickerDesc.textContent = 'Loading details from archive.org…';
+  els.pickerFiles.replaceChildren();
+  els.pickerStatus.textContent = '';
+  els.pickerDownload.disabled = true;
+  els.pickerDownloadLabel.textContent = 'Download';
+  els.pickerSeries.hidden = true;
+  els.pickerSeries.disabled = false;
+  setTimeout(() => els.picker.querySelector('.modal-close')?.focus(), 40);
+
+  try {
+    const item = await getCatalogItem(result.identifier);
+    if (state.pickerItem !== result) return;
+    state.pickerItem = { ...result, ...item };
+    renderPickerFiles(item);
+  } catch (err) {
+    if (state.pickerItem !== result) return;
+    els.pickerDesc.textContent = `Could not load this title: ${err.message}`;
+    els.pickerStatus.textContent = 'Close this window and try again in a moment.';
+  }
+}
+
+function renderPickerFiles(item) {
+  const extRank = (name) => {
+    const ext = String(name).split('.').pop().toLowerCase();
+    const order = { mp4: 0, m4v: 1, webm: 2, mkv: 3, ogv: 4, avi: 5, mov: 6 };
+    return order[ext] ?? 9;
+  };
+  const files = [...(item.files || [])].sort((a, b) => extRank(a.name) - extRank(b.name) || b.size - a.size);
+  state.pickerFiles = files;
+  els.pickerDesc.textContent = item.description
+    || 'A public-domain title from archive.org. Pick a file to download into your library.';
+  els.pickerFiles.replaceChildren();
+
+  if (!files.length) {
+    els.pickerStatus.textContent = 'This item has no downloadable video files.';
+    return;
+  }
+
+  files.forEach((file, index) => {
+    const label = createEl('label', 'picker-file');
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'picker-file';
+    radio.value = file.name;
+    radio.checked = index === 0;
+
+    const main = createEl('span', 'picker-file-main');
+    main.append(createEl('strong', '', file.name.replace(/\.[^.]+$/, '')));
+    const sub = [file.format, formatSize(file.size)].filter(Boolean).join(' · ');
+    if (sub) main.append(createEl('span', 'picker-file-sub', sub));
+
+    const check = createEl('span', 'picker-check');
+    label.append(radio, main, check);
+    els.pickerFiles.append(label);
+  });
+
+  els.pickerDownload.disabled = false;
+  els.pickerDownloadLabel.textContent = files.length > 1 ? 'Download selected' : 'Download film';
+  els.pickerSeries.hidden = files.length < 2;
+  els.pickerSeries.textContent = `Download all ${files.length} file${files.length === 1 ? '' : 's'}`;
+}
+
+function setPickerBusy(busy) {
+  els.pickerDownload.disabled = busy || !state.pickerFiles.length;
+  els.pickerSeries.disabled = busy;
+}
+
+function closePicker() {
+  state.pickerItem = null;
+  state.pickerFiles = [];
+  els.picker.hidden = true;
+  syncBodyLock();
+}
+
+async function queueDownload(item, fileName) {
+  setPickerBusy(true);
+  els.pickerStatus.textContent = 'Starting download…';
+  try {
+    await startDownload({
+      identifier: item.identifier,
+      file: fileName,
+      title: item.title,
+      year: item.year || undefined,
+      collection: 'Downloads',
+    });
+    closePicker();
+    openDownloads();
+    toast(`Download started — ${item.title}`);
+  } catch (err) {
+    els.pickerStatus.textContent = `Could not start download: ${err.message}`;
+  } finally {
+    setPickerBusy(false);
+  }
+}
+
+async function queueSeriesDownload(item) {
+  setPickerBusy(true);
+  els.pickerStatus.textContent = 'Queueing every file…';
+  try {
+    const result = await startSeriesDownload({
+      identifier: item.identifier,
+      title: item.title,
+      collection: 'Series',
+      folder: item.title,
+    });
+    closePicker();
+    openDownloads();
+    toast(`${result.count} download${result.count === 1 ? '' : 's'} started — ${item.title}`);
+  } catch (err) {
+    els.pickerStatus.textContent = `Could not queue the series: ${err.message}`;
+  } finally {
+    setPickerBusy(false);
+  }
+}
+
+/* ---------- download manager ---------- */
+
+function scheduleDownloadPoll() {
+  clearInterval(state.downloadPoll);
+  state.downloadPoll = setInterval(() => {
+    if (document.hidden) return;
+    const active = state.downloads.some((job) => ACTIVE_STATUSES.has(job.status));
+    if (!active && els.downloadsPanel.hidden) return;
+    refreshDownloads();
+  }, 2200);
+}
+
+async function refreshDownloads({ initial = false } = {}) {
+  try {
+    const data = await getDownloads();
+    const previous = new Map(state.downloads.map((job) => [job.id, job.status]));
+    const jobs = data.jobs || [];
+    state.downloads = jobs;
+    if (data.root) els.downloadsRoot.textContent = `Saving to ${data.root}`;
+    renderDownloads();
+    updateDownloadsBadge();
+
+    if (!state.downloadsSynced) {
+      state.downloadsSynced = true;
+      return;
+    }
+    if (initial) return;
+
+    const completed = jobs.filter((job) => job.status === 'completed' && previous.get(job.id) !== 'completed');
+    const failed = jobs.filter((job) => job.status === 'failed' && previous.get(job.id) !== 'failed');
+    if (completed.length) {
+      toast(completed.length === 1
+        ? `Download complete — ${completed[0].title}`
+        : `${completed.length} downloads complete`);
+      await loadLibrary();
+    }
+    if (failed.length) {
+      toast(`Download failed — ${failed[0].title}`);
+    }
+  } catch {
+    /* keep the last known list when the server is unreachable */
+  }
+}
+
+function updateDownloadsBadge() {
+  const active = state.downloads.filter((job) => ACTIVE_STATUSES.has(job.status)).length;
+  els.downloadsBadge.hidden = active === 0;
+  els.downloadsBadge.textContent = active > 9 ? '9+' : String(active);
+  els.downloadsBtn.classList.toggle('busy', active > 0);
+  els.downloadsCount.textContent = active
+    ? `${active} active download${active === 1 ? '' : 's'}`
+    : 'No active downloads';
+}
+
+function formatSpeed(bytes) {
+  if (!bytes) return '';
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB/s`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB/s`;
+  return `${Math.round(bytes)} B/s`;
+}
+
+function renderDownloads() {
+  const active = state.downloads.filter((job) => ACTIVE_STATUSES.has(job.status));
+  const finished = state.downloads
+    .filter((job) => !ACTIVE_STATUSES.has(job.status))
+    .slice(0, 8);
+  const visible = [...active, ...finished];
+
+  els.downloadsList.replaceChildren();
+  visible.forEach((job) => els.downloadsList.append(buildDownloadRow(job)));
+  els.downloadsEmpty.hidden = visible.length > 0;
+}
+
+function buildDownloadRow(job) {
+  const row = createEl('div', `download-row is-${job.status}`);
+  const main = createEl('div', 'download-main');
+
+  const top = createEl('div', 'download-top');
+  top.append(createEl('span', 'download-title', job.title || job.fileName));
+  const pct = job.status === 'completed' ? 100 : Math.round((job.progress || 0) * 100);
+  if (job.status !== 'queued' && job.status !== 'failed') {
+    top.append(createEl('span', 'download-pct', `${pct}%`));
+  }
+  main.append(top, createEl('div', 'download-file', job.fileName));
+
+  const bar = createEl('div', 'download-bar');
+  const fill = document.createElement('i');
+  fill.style.width = `${pct}%`;
+  bar.append(fill);
+  if (job.status === 'queued' || job.status === 'cancelling') bar.classList.add('indeterminate');
+  main.append(bar);
+
+  const meta = createEl('div', 'download-meta');
+  meta.append(createEl('span', `download-status ${job.status}`, STATUS_LABELS[job.status] || job.status));
+  if (job.total) meta.append(createEl('span', '', `${formatSize(job.bytes)} of ${formatSize(job.total)}`));
+  else if (job.status === 'completed') meta.append(createEl('span', '', formatSize(job.bytes)));
+  if (job.speed) meta.append(createEl('span', '', formatSpeed(job.speed)));
+  if (job.error) meta.append(createEl('span', 'download-error', job.error));
+  main.append(meta);
+  row.append(main);
+
+  const actions = createEl('div', 'download-actions');
+  if (job.status === 'queued' || job.status === 'downloading') {
+    const btn = createEl('button', 'download-action', 'Cancel');
+    btn.addEventListener('click', () => downloadAction(job.id, 'cancel', btn));
+    actions.append(btn);
+  } else if (job.status === 'failed' || job.status === 'cancelled') {
+    const btn = createEl('button', 'download-action primary', 'Retry');
+    btn.addEventListener('click', () => downloadAction(job.id, 'retry', btn));
+    actions.append(btn);
+  } else if (job.status === 'completed') {
+    actions.append(createEl('span', 'download-done', '✓'));
+  }
+  if (actions.childNodes.length) row.append(actions);
+  return row;
+}
+
+async function downloadAction(id, action, button) {
+  button.disabled = true;
+  try {
+    if (action === 'cancel') await cancelDownload(id);
+    else await retryDownload(id);
+    await refreshDownloads();
+  } catch {
+    toast('Could not update the download. Try again.');
+    button.disabled = false;
+  }
+}
+
+function openDownloads() {
+  els.downloadsPanel.hidden = false;
+  syncBodyLock();
+  refreshDownloads();
+  setTimeout(() => els.downloadsPanel.querySelector('.downloads-close')?.focus(), 40);
+}
+
+function closeDownloads() {
+  els.downloadsPanel.hidden = true;
+  syncBodyLock();
+  els.downloadsBtn.focus();
+}
+
+function syncBodyLock() {
+  const open = !els.searchOverlay.hidden
+    || isModalOpen()
+    || !els.picker.hidden
+    || !els.downloadsPanel.hidden;
+  document.body.classList.toggle('modal-open', open);
+}
+
+function updateSearchArchive(query) {
+  const q = String(query || '').trim();
+  els.searchArchiveBtn.hidden = !q;
+  els.searchArchiveBtn.dataset.q = q;
+  if (q) els.searchArchiveLabel.textContent = `Search archive.org for “${q}”`;
+}
+
 function renderGridForCurrentView() {
   if (state.view === 'movies') showMovies();
   else if (state.view === 'mylist') showMyList();
@@ -514,20 +994,21 @@ function openSearch() {
   stopPreview();
   setMobileActive('search');
   els.searchOverlay.hidden = false;
-  document.body.classList.add('modal-open');
+  syncBodyLock();
   els.searchInput.value = '';
   els.searchResults.replaceChildren();
+  updateSearchArchive('');
   els.searchHint.textContent = state.items.length
     ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library`
-    : 'Your library is empty';
+    : 'Your library is empty — try archive.org below';
   setTimeout(() => els.searchInput.focus(), 30);
 }
 
 function closeSearch() {
   els.searchOverlay.hidden = true;
-  document.body.classList.remove('modal-open');
+  syncBodyLock();
   els.searchInput.blur();
-  setMobileActive(state.view === 'mylist' ? 'mylist' : state.view === 'movies' ? 'movies' : 'home');
+  setMobileActive(['home', 'discover', 'movies', 'mylist'].includes(state.view) ? state.view : null);
   if (state.view === 'home' && !isModalOpen()) setupPreview(state.byId.get(state.heroId));
 }
 
@@ -535,11 +1016,13 @@ const runSearch = debounce((query) => {
   const q = query.trim().toLowerCase();
   if (!q) {
     els.searchResults.replaceChildren();
+    updateSearchArchive('');
     els.searchHint.textContent = state.items.length
       ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library`
-      : 'Your library is empty';
+      : 'Your library is empty — try archive.org below';
     return;
   }
+  updateSearchArchive(query);
   const results = state.items.filter((item) => {
     const hay = [item.title, item.fileName, item.year, item.collection, ...(item.genres || [])]
       .filter(Boolean).join(' ').toLowerCase();
@@ -547,7 +1030,7 @@ const runSearch = debounce((query) => {
   });
   els.searchHint.textContent = results.length
     ? `${results.length} result${results.length === 1 ? '' : 's'} for "${query.trim()}"`
-    : `No results for "${query.trim()}"`;
+    : `No results for "${query.trim()}" in your library — try archive.org`;
   els.searchResults.replaceChildren();
   results.forEach((item) => els.searchResults.append(buildCard(item)));
 }, 160);
@@ -568,8 +1051,8 @@ function openModal(id) {
   stopPreview();
   lastFocusEl = document.activeElement;
   modalItemId = id;
-  document.body.classList.add('modal-open');
   els.modal.hidden = false;
+  syncBodyLock();
   els.modal.scrollTop = 0;
   els.modalImg.src = thumbUrl(item);
   els.modalImg.alt = item.title;
@@ -642,7 +1125,7 @@ function closeModal() {
   if (!isModalOpen()) return;
   els.modal.hidden = true;
   modalItemId = null;
-  document.body.classList.remove('modal-open');
+  syncBodyLock();
   lastFocusEl?.focus?.();
   if (state.view === 'home') {
     setupPreview(state.byId.get(state.heroId));
@@ -697,6 +1180,7 @@ function bindStaticEvents() {
       const view = link.dataset.view;
       if (view === 'home') showHome();
       else if (view === 'movies') showMovies();
+      else if (view === 'discover') showDiscover();
       else if (view === 'mylist') showMyList();
     });
   });
@@ -705,6 +1189,7 @@ function bindStaticEvents() {
     btn.addEventListener('click', () => {
       const view = btn.dataset.mview;
       if (view === 'home') showHome();
+      else if (view === 'discover') showDiscover();
       else if (view === 'movies') showMovies();
       else if (view === 'mylist') showMyList();
       else if (view === 'search') openSearch();
@@ -742,15 +1227,54 @@ function bindStaticEvents() {
     if (e.target === els.searchOverlay) closeSearch();
   });
   els.searchResults.addEventListener('click', () => closeSearch());
+  els.searchArchiveBtn.addEventListener('click', () => {
+    const q = els.searchArchiveBtn.dataset.q || els.searchInput.value.trim();
+    closeSearch();
+    if (q) showDiscover(q);
+    else showDiscover();
+  });
+
+  els.discoverForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    runCatalogSearch(els.discoverInput.value);
+  });
+  els.discoverChips.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-q]');
+    if (!btn) return;
+    const q = btn.dataset.q;
+    els.discoverInput.value = q;
+    if (q) runCatalogSearch(q);
+    else loadDiscoverPicks();
+  });
+
+  els.picker.querySelectorAll('[data-close-picker]').forEach((el) => el.addEventListener('click', closePicker));
+  els.pickerDownload.addEventListener('click', () => {
+    const item = state.pickerItem;
+    const selected = els.pickerFiles.querySelector('input[name="picker-file"]:checked');
+    if (item && selected) queueDownload(item, selected.value);
+  });
+  els.pickerSeries.addEventListener('click', () => {
+    if (state.pickerItem) queueSeriesDownload(state.pickerItem);
+  });
+
+  els.downloadsBtn.addEventListener('click', openDownloads);
+  els.downloadsPanel.querySelectorAll('[data-close-downloads]').forEach((el) => {
+    el.addEventListener('click', closeDownloads);
+  });
 
   els.modal.querySelectorAll('[data-close-modal]').forEach((el) => el.addEventListener('click', closeModal));
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      if (!els.searchOverlay.hidden) closeSearch();
+      if (!els.picker.hidden) closePicker();
+      else if (!els.downloadsPanel.hidden) closeDownloads();
+      else if (!els.searchOverlay.hidden) closeSearch();
       else if (isModalOpen()) closeModal();
       else closeProfile();
     }
-    if (isModalOpen() && e.key === 'Tab') trapFocus(e);
+    if (e.key === 'Tab') {
+      if (isModalOpen()) trapFocus(e, els.modal);
+      else if (!els.picker.hidden) trapFocus(e, els.picker);
+    }
   });
 
   els.modalPlay.addEventListener('click', () => {
@@ -783,8 +1307,8 @@ function bindStaticEvents() {
   els.heroVideo.addEventListener('error', () => els.heroVideo.classList.remove('playing'));
 }
 
-function trapFocus(e) {
-  const focusables = els.modal.querySelectorAll('button, [href], input, [tabindex]:not([tabindex="-1"])');
+function trapFocus(e, container = els.modal) {
+  const focusables = container.querySelectorAll('button, [href], input, [tabindex]:not([tabindex="-1"])');
   if (!focusables.length) return;
   const first = focusables[0];
   const last = focusables[focusables.length - 1];

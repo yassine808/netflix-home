@@ -12,6 +12,7 @@
 - [x] Make the GitHub repo private
 - [x] Add archive.org catalog + download APIs with fallback
 - [x] Add multi-file/series download API
+- [x] Connect catalog + download APIs to the UI (New & Popular, picker, downloads drawer, search fallback)
 - [x] Move the library to `G:\Movies`
 - [ ] Cyberpunk: Edgerunners 2 (blocked: Netflix-exclusive, DRM-protected, no legal download)
 
@@ -52,4 +53,10 @@
 - Done: added `POST /api/downloads/series` with optional `files` subset, a 100-file cap, and grouping under `<collection>\<title>\`. It reuses the same job queue, progress, cancel, and retry paths.
 - Verified: started a throwaway server on port 3002 with a temp library, downloaded the 3 MP4 parts of *The Great Train Robbery* (~46 MB) into `Series\<title>\`; all 3 jobs completed and the library found 3 items. Temp server stopped and temp folder deleted. Main server restarted; empty-body validation returns 400.
 - Next: none.
+
+### 2026-11-13 — connect catalog and downloads to the website
+- Goal: expose the archive.org search/download APIs in the app instead of only as backend routes.
+- Done: added frontend API helpers in `public/common.js`; added a **New & Popular** page (top nav + mobile **New** tab) with archive.org search, quick genre chips, curated fallback picks, and result cards; added a catalog picker with description, file list, MP4-first default, single-file download, and **Download all** for multi-file items; added a downloads drawer with badge, live progress bar, speed, cancel/retry, completion toast, and automatic library rescan; added **Search archive.org for “…”** to the local search overlay when a query has no library matches; refactored body scroll locking for the new overlays.
+- Verified: desktop Brave/puppeteer QA — 5 curated picks, `film` search returned 24 archive.org results, picker listed files and selected the MP4, search CTA opened Discover with the query, downloads drawer opened, no console errors. Mobile 390×844 — no horizontal overflow, New tab active, archive search and CTA worked. End-to-end on a temp server/library: downloaded *The Great Train Robbery* (197 MB), toast fired, progress reached 100%, library rescanned to 1 item, poster/NFO written. Series action queued all 9 files (badge 9); cancel buttons cleared every active job and left no `.part` files. Temp server/library removed. Main `G:\Movies` library remains 3 titles and 0 jobs.
+- Next: commit and push. Cyberpunk: Edgerunners 2 remains blocked — Netflix exclusive, no legal direct-download source.
 
