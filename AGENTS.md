@@ -8,7 +8,7 @@ A local, Netflix-style streaming app. Node/Express backend scans a movie folder 
 
 ```powershell
 npm install          # deps: express, ffmpeg-static, ffprobe-static
-npm start            # http://localhost:3000, scans G:\Movies
+npm start            # scans G:\Movies; port 3000, or a random free port if 3000 is taken
 npm run dev          # node --watch
 netflix-home.exe     # hidden server + browser + tray icon (source: launcher.cs)
 ```

@@ -11,7 +11,7 @@ npm install
 npm start
 ```
 
-Open http://localhost:3000
+Open the URL it prints: `http://localhost:3000`, or a random free port when 3000 is already taken.
 
 The server scans the library on startup. Use the refresh button in the header (or the profile menu) to rescan after adding files.
 
@@ -22,7 +22,8 @@ Double-click **`netflix-home.exe`** (or a shortcut to it). It starts the server 
 - click the tray icon → the page opens in the default browser
 - right-click it → **Open netflix-home** / **Quit (stop server)**
 - quitting stops the server it started
-- if port 3000 is already served, the launcher attaches to it instead of starting a second server
+- if the app is already running (and answering on its port), the launcher attaches to it instead of starting a second server
+- if port 3000 is taken by something else, the server picks a random free port and the launcher opens that one
 - launching it twice only reopens the page
 
 Windows 11 hides new tray icons by default. If the icon is not next to the clock, drag it out of the **^** overflow, or enable it in **Settings → Personalization → Taskbar → Other system tray icons**. Diagnostics go to `launcher.log` (gitignored).
@@ -61,7 +62,9 @@ $env:LIBRARY_ROOT='E:\Films'
 npm start
 ```
 
-Or edit the fallback logic in `server/index.js`. The root is `G:\Movies` when mounted, otherwise the project's `media\` folder. Port is configurable with `$env:PORT`.
+Or edit the fallback logic in `server/index.js`. The root is `G:\Movies` when mounted, otherwise the project's `media\` folder.
+
+The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries a random port between 20000 and 59999 (up to 8 times) and writes the one it got to `.cache/port`; the launcher reads it back, and the exact URL is printed on startup.
 
 ## Features
 
@@ -105,7 +108,7 @@ Two independent sources feed the download queue:
 | archive.org | Public-domain films and multi-part items | Public domain only |
 | Castle (`api.hlowb.com`) | Mainstream movies, series and anime, with seasons, episodes, sizes and subtitle tracks | Keyless, but 1080p is premium-only; 720p and 480p download normally |
 
-The Castle catalog is searched from the same overlay (**Downloadable** section) and from **New & Popular**. Any title opens a download dialog with season tabs, per-episode buttons, a quality picker, and **Download season**. The backend resolves a signed HLS playlist per episode and remuxes it to MP4 with ffmpeg, so the result is a plain H.264/AAC file the built-in player can stream. English subtitles are saved next to the video as `<name>.en.vtt`.
+The Castle catalog is searched from the same overlay (**Downloadable** section) and from **New & Popular**. Any title opens a download dialog with season tabs, per-episode buttons, a quality picker, and **Download season**. The backend resolves a signed HLS playlist per episode and remuxes it to MP4 with ffmpeg, so the result is a plain H.264/AAC file the built-in player can stream. Every available subtitle track in English, French, Arabic, or Italian is saved next to the video as `<name>.<lang>.vtt`, tried in that order.
 
 Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Better Call Saul, The Boys, Game of Thrones, Stranger Things, Severance, Peaky Blinders, The Last of Us, Squid Game, Succession, House of the Dragon, Money Heist, Attack on Titan, One Piece, plus mainstream films such as Interstellar, Inception, Oppenheimer, Dune, The Dark Knight, Parasite, Spirited Away and The Godfather. The Sopranos and The Wire are absent from this catalog.
 

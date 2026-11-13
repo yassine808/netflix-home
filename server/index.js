@@ -34,7 +34,11 @@ function resolveLibraryRoot() {
 }
 
 const libraryRoot = resolveLibraryRoot();
-const port = Number(process.env.PORT) || 3000;
+const preferredPort = Number(process.env.PORT) || 3000;
+
+// Anyone can already be on 3000 (another dev server, an old instance). Rather
+// than fail, walk to a random high port and remember it for the launcher.
+const PORT_FILE = path.join(cacheDir, 'port');
 
 initCache(cacheDir);
 getLibrary().root = libraryRoot;
@@ -317,8 +321,11 @@ app.post('/api/castle/download', async (req, res) => {
       return res.status(409).json({ error: 'this quality is only available as a preview' });
     }
 
-    const english = stream.subtitles.find((track) => track.language === 'en')
-      || stream.subtitles.find((track) => /^english/i.test(track.title));
+    const SUB_LANGS = ['en', 'fr', 'ar', 'it'];
+    const subtitles = SUB_LANGS
+      .map((lang) => stream.subtitles.find((track) => track.language === lang))
+      .filter(Boolean)
+      .map((track) => ({ language: track.language, url: track.url }));
 
     const jobs = await addHlsDownload({
       url: stream.url,
@@ -330,10 +337,14 @@ app.post('/api/castle/download', async (req, res) => {
       total: Number(body.size) || 0,
       poster: String(body.poster || ''),
       source: 'castle',
-      subtitleUrl: english?.url || '',
-      subtitleLang: english?.language || 'en',
+      subtitles,
     });
-    res.status(201).json({ count: jobs.length, jobs, subtitleCount: stream.subtitles.length });
+    res.status(201).json({
+      count: jobs.length,
+      jobs,
+      subtitleCount: stream.subtitles.length,
+      subtitles: subtitles.map((track) => track.language),
+    });
   } catch (err) {
     res.status(err?.status || 500).json({ error: err?.message || String(err) });
   }
@@ -401,13 +412,31 @@ app.use(express.static(publicDir, { extensions: ['html'] }));
 app.get('/watch', (req, res) => res.sendFile(path.join(publicDir, 'watch.html')));
 app.use((req, res) => res.status(404).sendFile(path.join(publicDir, '404.html')));
 
-app.listen(port, async () => {
-  console.log(`netflix-home running at http://localhost:${port}`);
-  console.log(`library root: ${libraryRoot}`);
-  try {
-    const lib = await scanLibrary(libraryRoot);
-    console.log(`library ready: ${lib.items.length} title(s) in ${lib.scannedInMs} ms`);
-  } catch (err) {
-    console.error('scan failed:', err);
-  }
-});
+function listen(port, attempt = 0) {
+  const server = app.listen(port, async () => {
+    const actual = server.address()?.port || port;
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(PORT_FILE, String(actual), 'utf8');
+    console.log(`netflix-home running at http://localhost:${actual}`);
+    console.log(`library root: ${libraryRoot}`);
+    try {
+      const lib = await scanLibrary(libraryRoot);
+      console.log(`library ready: ${lib.items.length} title(s) in ${lib.scannedInMs} ms`);
+    } catch (err) {
+      console.error('scan failed:', err);
+    }
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE' && attempt < 8) {
+      const next = 20000 + Math.floor(Math.random() * 40000);
+      console.warn(`port ${port} is in use, trying ${next}`);
+      listen(next, attempt + 1);
+      return;
+    }
+    console.error('server could not start:', err.message);
+    process.exit(1);
+  });
+}
+
+listen(preferredPort);

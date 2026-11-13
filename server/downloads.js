@@ -86,6 +86,32 @@ function firstText(value) {
   return value == null ? '' : String(value);
 }
 
+// Subtitles come from Castle as {language, url}. Keep only https .vtt tracks
+// with a short language code, one per language.
+const SUBTITLE_LANGS = new Set(['en', 'fr', 'ar', 'it']);
+
+function normalizeSubtitleTracks(body) {
+  const seen = new Set();
+  const tracks = [];
+  const push = (url, lang) => {
+    const code = String(lang || '').toLowerCase();
+    const link = String(url || '');
+    if (!SUBTITLE_LANGS.has(code) || seen.has(code)) return;
+    if (!/^https:\/\//i.test(link)) return;
+    seen.add(code);
+    tracks.push({ lang: code, url: link });
+  };
+
+  if (Array.isArray(body.subtitles)) {
+    for (const entry of body.subtitles) push(entry?.url, entry?.language ?? entry?.lang);
+  }
+  // Back-compat with the single-track fields.
+  push(body.subtitleUrl, body.subtitleLang);
+
+  const order = ['en', 'fr', 'ar', 'it'];
+  return tracks.sort((a, b) => order.indexOf(a.lang) - order.indexOf(b.lang));
+}
+
 function parseYear(value) {
   const match = text(value).match(/\b(18|19|20)\d{2}\b/);
   return match ? Number(match[0]) : null;
@@ -530,8 +556,7 @@ export async function addHlsDownload(body = {}) {
     writeMeta: false,
     meta: null,
     poster: text(body.poster) || null,
-    subtitleUrl: /^https:\/\//i.test(String(body.subtitleUrl || '')) ? String(body.subtitleUrl) : '',
-    subtitleLang: text(body.subtitleLang) || 'en',
+    subtitles: normalizeSubtitleTracks(body),
   };
   jobs.set(job.id, job);
   queue.push(job);
@@ -662,17 +687,22 @@ function killTree(child) {
 }
 
 async function saveSubtitle(job) {
-  if (!job.subtitleUrl) return;
-  const res = await fetch(job.subtitleUrl, {
-    headers: { 'User-Agent': USER_AGENT, Referer: job.referer || 'https://api.hlowb.com/' },
-    signal: AbortSignal.timeout(20000),
-  });
-  if (!res.ok) return;
-  const body = await res.text();
-  if (!/^\uFEFF?WEBVTT/.test(body.trimStart())) return;
-
+  if (!job.subtitles?.length) return;
   const stem = job.dest.slice(0, job.dest.length - path.extname(job.dest).length);
-  await fsp.writeFile(`${stem}.${job.subtitleLang}.vtt`, body, 'utf8');
+  for (const track of job.subtitles) {
+    try {
+      const res = await fetch(track.url, {
+        headers: { 'User-Agent': USER_AGENT, Referer: job.referer || 'https://api.hlowb.com/' },
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!res.ok) continue;
+      const body = await res.text();
+      if (!/^\uFEFF?WEBVTT/.test(body.trimStart())) continue;
+      await fsp.writeFile(`${stem}.${track.lang}.vtt`, body, 'utf8');
+    } catch {
+      /* a missing subtitle should never fail the download */
+    }
+  }
 }
 
 async function runHlsJob(job) {

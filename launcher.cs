@@ -18,14 +18,13 @@ namespace NetflixHome
     /// </summary>
     internal static class Program
     {
-        private const string Url = "http://localhost:3000";
-        private const int Port = 3000;
-
         private static readonly string Root = AppDomain.CurrentDomain.BaseDirectory;
         private static readonly string LogPath = Path.Combine(Root, "launcher.log");
+        private static readonly string PortFile = Path.Combine(Root, ".cache", "port");
 
         private static Process server;
         private static bool ownsServer;
+        private static string baseUrl = "";
 
         [STAThread]
         private static void Main()
@@ -37,7 +36,7 @@ namespace NetflixHome
                 {
                     // Already running: just bring the page back.
                     Log("launcher already running; opening browser only");
-                    OpenApp();
+                    OpenApp(AttachedUrl());
                     return;
                 }
 
@@ -45,11 +44,11 @@ namespace NetflixHome
                 Application.SetCompatibleTextRenderingDefault(false);
 
                 StartServer();
-                OpenApp();
-                Log("browser opened");
+                OpenApp(baseUrl);
+                Log("browser opened at " + baseUrl);
 
                 var menu = new ContextMenuStrip();
-                menu.Items.Add("Open netflix-home", null, (s, e) => OpenApp());
+                menu.Items.Add("Open netflix-home", null, (s, e) => OpenApp(baseUrl));
                 menu.Items.Add(new ToolStripSeparator());
                 menu.Items.Add("Quit (stop server)", null, (s, e) =>
                 {
@@ -59,7 +58,7 @@ namespace NetflixHome
 
                 var tray = new NotifyIcon
                 {
-                    Text = "netflix-home - " + Url,
+                    Text = "netflix-home - " + baseUrl,
                     Icon = LoadIcon(),
                     ContextMenuStrip = menu,
                     Visible = true
@@ -68,13 +67,13 @@ namespace NetflixHome
                 {
                     if (e.Button != MouseButtons.Left) return;
                     Log("tray clicked; opening browser");
-                    OpenApp();
+                    OpenApp(baseUrl);
                 };
                 tray.MouseDoubleClick += (s, e) =>
                 {
                     if (e.Button != MouseButtons.Left) return;
                     Log("tray double-clicked; opening browser");
-                    OpenApp();
+                    OpenApp(baseUrl);
                 };
 
                 Log("tray icon visible");
@@ -105,11 +104,19 @@ namespace NetflixHome
 
         private static void StartServer()
         {
-            if (PortOpen(Port))
+            // A previous instance (or npm start) may already be serving. The
+            // server records its port in .cache/port.
+            int attached = SavedPort();
+            if (attached > 0 && PortOpen(attached) && LooksLikeApp(attached))
             {
-                Log("port " + Port + " already served; attaching without starting a new server");
+                baseUrl = "http://localhost:" + attached;
+                Log("port " + attached + " already served; attaching without starting a new server");
                 return;
             }
+
+            // Anything sitting on the old port is not this app; drop the stale
+            // record so the wait loop only accepts a port the new server writes.
+            try { File.Delete(PortFile); } catch { }
 
             try
             {
@@ -118,12 +125,33 @@ namespace NetflixHome
                     WorkingDirectory = Root,
                     CreateNoWindow = true,
                     UseShellExecute = false,
-                    WindowStyle = ProcessWindowStyle.Hidden
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
                 };
-                info.EnvironmentVariables["PORT"] = Port.ToString();
+                info.EnvironmentVariables.Remove("PORT");
                 server = Process.Start(info);
                 ownsServer = server != null;
-                if (server != null) Log("server started (pid " + server.Id + ") on port " + Port);
+                if (server != null) Log("server started (pid " + server.Id + ")");
+
+                server.OutputDataReceived += (s, e) =>
+                {
+                    string line = e.Data;
+                    if (string.IsNullOrWhiteSpace(line)) return;
+                    var match = System.Text.RegularExpressions.Regex.Match(
+                        line, @"running at http://localhost:(\d+)");
+                    if (match.Success)
+                    {
+                        baseUrl = "http://localhost:" + match.Groups[1].Value;
+                        Log("server url: " + baseUrl);
+                    }
+                };
+                server.BeginOutputReadLine();
+                server.ErrorDataReceived += (s, e) =>
+                {
+                    if (!string.IsNullOrWhiteSpace(e.Data)) Log("node: " + e.Data);
+                };
+                server.BeginErrorReadLine();
             }
             catch (Exception ex)
             {
@@ -134,8 +162,11 @@ namespace NetflixHome
                 Environment.Exit(1);
             }
 
+            // The server picks a free port itself (3000, then a random high
+            // port). Wait until it either reports one or the port file lands.
             DateTime deadline = DateTime.UtcNow.AddSeconds(45);
-            while (!PortOpen(Port))
+            int port = 0;
+            while (port <= 0)
             {
                 if (server.HasExited)
                 {
@@ -145,13 +176,57 @@ namespace NetflixHome
                         "netflix-home", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     Environment.Exit(1);
                 }
+                port = ParsedPort(baseUrl);
+                if (port <= 0)
+                {
+                    int saved = SavedPort();
+                    if (saved > 0 && LooksLikeApp(saved)) port = saved;
+                }
+                if (port > 0 && !PortOpen(port)) port = 0;
                 if (DateTime.UtcNow > deadline)
                 {
                     Log("timed out waiting for the server");
+                    port = SavedPort();
                     break;
                 }
-                Thread.Sleep(300);
+                Thread.Sleep(250);
             }
+
+            if (port > 0) baseUrl = "http://localhost:" + port;
+            if (baseUrl.Length == 0)
+            {
+                int saved = SavedPort();
+                baseUrl = saved > 0 ? "http://localhost:" + saved : "http://localhost:3000";
+            }
+            Log("server listening on " + baseUrl);
+        }
+
+        private static int ParsedPort(string url)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(url, @":(\d+)$");
+            int port;
+            return match.Success && int.TryParse(match.Groups[1].Value, out port) ? port : 0;
+        }
+
+        private static int SavedPort()
+        {
+            try
+            {
+                if (!File.Exists(PortFile)) return 0;
+                int port;
+                return int.TryParse(File.ReadAllText(PortFile).Trim(), out port) && port > 0 ? port : 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static string AttachedUrl()
+        {
+            int port = SavedPort();
+            if (port > 0) return "http://localhost:" + port;
+            return baseUrl.Length > 0 ? baseUrl : "http://localhost:3000";
         }
 
         private static void StopServer()
@@ -190,11 +265,32 @@ namespace NetflixHome
             }
         }
 
-        private static void OpenApp()
+        // A port can be busy without being this app (another dev server, a
+        // stale process). Only attach when /api/library answers.
+        private static bool LooksLikeApp(int port)
         {
             try
             {
-                Process.Start(new ProcessStartInfo(Url) { UseShellExecute = true });
+                var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(
+                    "http://localhost:" + port + "/api/library");
+                request.Method = "GET";
+                request.Timeout = 2000;
+                using (var response = (System.Net.HttpWebResponse)request.GetResponse())
+                {
+                    return (int)response.StatusCode == 200;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void OpenApp(string url)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
             }
             catch (Exception ex)
             {
