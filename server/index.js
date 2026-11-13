@@ -8,7 +8,7 @@ import {
 } from './library.js';
 import {
   initDownloads, searchCatalog, getCatalogItem, fallbackCatalog,
-  addDownload, listDownloads, getDownload, cancelDownload, retryDownload,
+  addDownload, addSeriesDownload, listDownloads, getDownload, cancelDownload, retryDownload,
 } from './downloads.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -218,6 +218,19 @@ app.post('/api/downloads', async (req, res) => {
       error: err?.message || String(err),
       ...(err?.files ? { files: err.files } : {}),
     });
+  }
+});
+
+app.post('/api/downloads/series', async (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || !body.identifier) {
+    return res.status(400).json({ error: 'pass "identifier" (and optional "files")' });
+  }
+  try {
+    const jobs = await addSeriesDownload(body);
+    res.status(201).json({ count: jobs.length, jobs });
+  } catch (err) {
+    res.status(err?.status || 500).json({ error: err?.message || String(err) });
   }
 });
 

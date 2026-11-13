@@ -78,6 +78,7 @@ Or edit the fallback logic in `server/index.js`. The root is `G:\Movies` when mo
 | `GET /api/catalog/fallback` | Built-in catalog used when archive.org is unreachable |
 | `GET /api/catalog/item/:identifier` | Video files and metadata for one archive.org item |
 | `POST /api/downloads` | Queue a film (or several files) for download |
+| `POST /api/downloads/series` | Queue every video file from one item into a folder |
 | `GET /api/downloads` | All download jobs with progress |
 | `GET /api/downloads/:id` | One download job |
 | `POST /api/downloads/:id/retry` | Retry a failed/cancelled job (resumes the `.part` file) |
@@ -98,6 +99,11 @@ curl "http://localhost:3000/api/catalog/item/HisGirlFriday"
 curl -X POST http://localhost:3000/api/downloads `
   -H "Content-Type: application/json" `
   -d '{"identifier":"HisGirlFriday","file":"MoviePowderPresentsHisGirlFriday.mp4","collection":"Classics"}'
+
+# queue every video file from one item (e.g. a multi-part series)
+curl -X POST http://localhost:3000/api/downloads/series `
+  -H "Content-Type: application/json" `
+  -d '{"identifier":"TheGreatTrainRobbery1903EdwinS.PorterUsa","collection":"Series"}'
 
 # watch progress
 curl "http://localhost:3000/api/downloads"

@@ -11,6 +11,7 @@
 - [x] Commit
 - [x] Make the GitHub repo private
 - [x] Add archive.org catalog + download APIs with fallback
+- [x] Add multi-file/series download API
 - [x] Move the library to `G:\Movies`
 - [ ] Cyberpunk: Edgerunners 2 (blocked: Netflix-exclusive, DRM-protected, no legal download)
 
@@ -45,4 +46,10 @@
 - Done: committed `e671a7b` and pushed `main` to the private repo. Updated cancel handling so a running job reports `cancelling` until the abort finishes, then `cancelled`.
 - Verified: `gh repo view` reports `visibility: PRIVATE`; `GET /api/library` root `G:\Movies` with 3 titles streamed via `206 Partial Content`; UI rendered all 3 cards with no console errors; download cancel test moved `downloading` → `cancelling` → `cancelled` and deleted the `.part` file.
 - Next: Cyberpunk: Edgerunners 2 cannot be added from a legal download source; drop owned files into `G:\Movies` if available.
+
+### 2026-11-13 — series download endpoint
+- Goal: allow one call to queue every episode/file of a multi-file archive.org item.
+- Done: added `POST /api/downloads/series` with optional `files` subset, a 100-file cap, and grouping under `<collection>\<title>\`. It reuses the same job queue, progress, cancel, and retry paths.
+- Verified: started a throwaway server on port 3002 with a temp library, downloaded the 3 MP4 parts of *The Great Train Robbery* (~46 MB) into `Series\<title>\`; all 3 jobs completed and the library found 3 items. Temp server stopped and temp folder deleted. Main server restarted; empty-body validation returns 400.
+- Next: none.
 

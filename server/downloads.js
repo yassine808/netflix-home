@@ -437,6 +437,39 @@ export async function addDownload(body = {}) {
   return created;
 }
 
+export async function addSeriesDownload(body = {}) {
+  const identifier = String(body.identifier || '').trim();
+  assertIdentifier(identifier);
+
+  const item = await getCatalogItem(identifier);
+  const available = item.files.map((file) => file.name);
+  if (!available.length) {
+    const err = new Error('this item has no video files');
+    err.status = 404;
+    throw err;
+  }
+
+  let names = available;
+  if (Array.isArray(body.files) && body.files.length) {
+    names = body.files;
+  }
+  if (names.length > 100) {
+    const err = new Error('too many files in one series request (max 100)');
+    err.status = 400;
+    throw err;
+  }
+
+  const title = text(body.title) || item.title;
+  return addDownload({
+    identifier,
+    files: names,
+    title,
+    year: item.year,
+    collection: body.collection || 'Series',
+    folder: body.folder || title,
+  });
+}
+
 export function listDownloads() {
   return [...jobs.values()]
     .sort((a, b) => b.createdAt - a.createdAt)
