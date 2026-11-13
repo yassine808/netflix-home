@@ -15,44 +15,41 @@ Open the URL it prints: `http://localhost:3000`, or a random free port when 3000
 
 The server scans the library on startup. Use the refresh button in the header (or the profile menu) to rescan after adding files.
 
+### Build the single-file app
+
+```powershell
+npm run bundle
+```
+
+Produces `dist\netflix-home.exe` (~230 MB). Everything lives inside that one file: the server, the web UI, ffmpeg and ffprobe. On first launch it extracts the UI and the two binaries once into `<library root>\.cache\app\<buildId>\` and then serves from there.
+
 ### Publish to the library drive
 
 ```powershell
 npm run deploy
 ```
 
-Copies `server\`, `public\`, `package.json` and the launcher to `G:\NETFLIX`, installs `node_modules` there the first time, and rebuilds `netflix-home.exe` from `launcher.cs`. Run it after every change so the copy on `G:` matches the source. Pass `-Target D:\somewhere` to publish elsewhere.
+Builds the EXE and copies it to `G:\NETFLIX`. Because the app is a single file, the target holds only `netflix-home.exe`, `Movies\` and `.cache\`; any `server\`, `public\`, `node_modules\` or `package*.json` left by older releases are deleted. Run it after every change so the copy on `G:` matches the source. Pass `-Target D:\somewhere` to publish elsewhere.
 
-### Launch from the desktop (no console)
+### Launch from the desktop
 
-Double-click **`netflix-home.exe`** (or a shortcut to it). It starts the server hidden, opens the app in your default browser, and parks a Netflix-style icon in the notification area (system tray):
+Double-click **`netflix-home.exe`**.
 
-- click the tray icon → the page opens in the default browser
-- right-click it → **Open netflix-home** / **Quit (stop server)**
-- quitting stops the server it started
-- if the app is already running (and answering on its port), the launcher attaches to it instead of starting a second server
-- if port 3000 is taken by something else, the server picks a random free port and the launcher opens that one
-- launching it twice only reopens the page
+- no console window appears; the server starts hidden and the app opens in the default browser
+- if the app is already running, a second launch just opens the page (it reads the port from `.cache\port`)
+- if port 3000 is taken by something else, the server picks a random free port and opens that one
 - it scans the folder it lives in (`G:\NETFLIX`), so the exe, the movies and the database stay together
-
-Windows 11 hides new tray icons by default. If the icon is not next to the clock, drag it out of the **^** overflow, or enable it in **Settings → Personalization → Taskbar → Other system tray icons**. Diagnostics go to `launcher.log` (gitignored).
-
-The launcher is a small WinForms app; the source is `launcher.cs` and it is rebuilt with:
-
-```powershell
-& "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe `
-  /win32icon:public\favicon.ico /out:netflix-home.exe `
-  /r:System.Windows.Forms.dll /r:System.Drawing.dll launcher.cs
-```
+- **Quit app** in the profile menu stops the server (`POST /api/quit`, loopback only). There is no tray icon.
+- diagnostics go to `launcher.log` (gitignored)
 
 ## Library folder
 
-Default root is `G:\NETFLIX` when that drive is mounted (the folder also holds `.cache\` and the launcher). A `Movies` folder next to the app wins first, so the published copy always scans its own folder. If `G:` isn't there, the app falls back to `media\` inside the project (created automatically), so you can test without the external drive. Videos are picked up recursively from either location:
+Default root is `G:\NETFLIX` when that drive is mounted (the folder also holds `.cache\` and the exe). A `Movies` folder next to the app wins first, so the published copy always scans its own folder. If `G:` isn't there, the app falls back to `media\` inside the project (created automatically), so you can test without the external drive. Videos are picked up recursively from either location:
 
 ```
 G:\NETFLIX\
 ├─ netflix-home.exe
-├─ .cache\                 library.db, thumbnails, hero previews
+├─ .cache\                 library.db, pictures.db, pictures\, hero previews, extracted UI
 └─ Movies\
    └─ Classics\
       ├─ Night of the Living Dead (1968).mp4
@@ -65,7 +62,7 @@ G:\NETFLIX\
 - Years in filenames like `Movie (2019).mp4` are parsed and shown as metadata.
 - Optional Kodi-style `.nfo` files next to a video add title, plot, genres, and rating.
 - Optional `poster.jpg` / `fanart.jpg` (or `<name>-poster.jpg` / `<name>-fanart.jpg`) are used as artwork.
-- Thumbnails are generated from the video itself with ffmpeg and cached in `.cache\`.
+- Thumbnails come from a picture database: for each title several moments between 12 % and 82 % of the runtime are sampled, each frame is scored by edge density, and the best one is stored in `.cache\pictures.db` with its JPEG in `.cache\pictures\`. Black frames and baked-in title cards lose to real scenes.
 - The cache lives in the library root, so moving the drive carries the database with it.
 
 ### Change the library root
@@ -82,7 +79,9 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 ## Features
 
 - Netflix-style billboard with a cached hero still and a 12 s preview clip (built with ffmpeg, indexed in SQLite under `.cache\library.db`), so the home page never seeks a multi-GB file
-- Series modal lists every episode: files on disk get **Play**, missing ones get **Download** straight from the catalog
+- Series in your library open a catalog-style sheet: hero art, **Resume**, **Download season**, quality chips and season tabs; episodes already on disk get **Play** with their watched progress bar, the rest get **Download**. Episode art is the catalog's own thumbnail — no frames are generated
+- **Next episode** in the player: a downloaded episode plays straight away; one that is not on disk opens the series sheet on that season with the episode highlighted, ready to download
+- One picture per title in `.cache\pictures.db`, picked by sampling the film so a card never shows a black frame or the film's own title text
 - Rows: Continue Watching, Recently Added, Top 10, collections, My List
 - Hover cards with play shortcut, detail modal with technical metadata
 - Search across your library and the online movie/series catalog, split into local results first and online results second
@@ -92,7 +91,7 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 - New & Popular page: search archive.org, pick a film or multi-file item, and download it into the library
 - Downloads drawer with live progress, speed, cancel/retry, and automatic library refresh
 - Free-download search for public-domain films when the online catalog has no local copy
-- Custom player: resume, seek preview, buffered bar, volume, 10s skips, fullscreen, keyboard shortcuts
+- Custom player: resume, seek preview, buffered bar, volume, large ±10 s skips, fullscreen, keyboard shortcuts
 - Player subtitles from the `.vtt` sidecars, with language switching and a per-title timing offset
 - Progress and My List saved in the browser
 - Range-request streaming, so seeking works without copying the file
@@ -133,6 +132,8 @@ Two independent sources feed the download queue:
 
 The Castle catalog is searched from the same overlay (**Downloadable** section) and from **New & Popular**. Any title opens a download dialog with season tabs, per-episode buttons, a quality picker, and **Download season**. The backend resolves a signed HLS playlist per episode and remuxes it to MP4 with ffmpeg, so the result is a plain H.264/AAC file the built-in player can stream. Every available subtitle track in English, French, Arabic, or Italian is saved next to the video as `<name>.<lang>.vtt`, tried in that order.
 
+When Castle has no subtitle for a language, the free OpenSubtitles REST endpoint (`rest.opensubtitles.org`) fills the gap: it is searched by IMDb id, season and episode, the best `.srt` is downloaded and converted to `.vtt`. Some seasons simply have no Italian or French release; the player then lists only the tracks that exist.
+
 Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Better Call Saul, The Boys, Game of Thrones, Stranger Things, Severance, Peaky Blinders, The Last of Us, Squid Game, Succession, House of the Dragon, Money Heist, Attack on Titan, One Piece, plus mainstream films such as Interstellar, Inception, Oppenheimer, Dune, The Dark Knight, Parasite, Spirited Away and The Godfather. The Sopranos and The Wire are absent from this catalog.
 
 ## Keyboard shortcuts (player)
@@ -153,12 +154,14 @@ Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Bet
 | `GET /api/library` | Library items and collections |
 | `POST /api/rescan` | Rescan the library folder |
 | `GET /api/item/:id` | One item's metadata |
+| `GET /api/next/:id` | Next episode of a series: `kind: "local"` with an id to play, `kind: "catalog"` with season/episode to download, or `kind: "none"` |
 | `GET /api/subtitles/:id` | Subtitle tracks found next to the video (`.en.vtt`, `.fr.vtt`, …) |
 | `GET /api/subtitle/:id/:lang` | One WebVTT subtitle file |
 | `GET /api/settings` | App settings, including the offline flag |
 | `POST /api/settings/offline` | Turn offline mode on or off (`{"offline": true}`); pauses or resumes downloads |
 | `GET /api/stream/:id` | Video stream with HTTP range support |
-| `GET /api/thumb/:id` | Generated thumbnail (JPEG) |
+| `GET /api/thumb/:id` | Cached picture for one title (JPEG; `?w=` picks 480/640/1280) |
+| `POST /api/quit` | Stop the app (loopback callers only; used by **Quit app** in the profile menu) |
 | `GET /api/hero/:id` | Whether the cached hero still/clip is ready, and where it starts |
 | `GET /api/hero/:id/image.jpg` | Cached hero still (falls back to a generated thumbnail) |
 | `GET /api/hero/:id/preview.mp4` | 12 s cached preview clip used by the home billboard |
@@ -232,4 +235,5 @@ Use the `movieId` of the season (not the series id) and the `episodeId` from the
 - Browser playback depends on codecs. H.264/AAC MP4 is universally safe. HEVC, DTS, and some MKV files may not play in Chrome or Firefox; the player shows a clear error when that happens.
 - ffmpeg and ffprobe ship through npm (`ffmpeg-static`, `ffprobe-static`), so there is nothing to install on the machine.
 - Hero previews are generated in the background (two at a time) and stored next to the library in `.cache\hero\`; the index lives in `.cache\library.db` (SQLite via Node's built-in `node:sqlite`, no extra dependency). Delete the folder to force a rebuild.
+- Card pictures are indexed in `.cache\pictures.db` and written to `.cache\pictures\`; delete either to force a rebuild.
 - The UI is an original fan-made interface. Not affiliated with Netflix.

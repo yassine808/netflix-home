@@ -1054,6 +1054,15 @@ code { font-family: Consolas, "Courier New", monospace; }
 .castle-episode .castle-dl-btn:hover:not(:disabled) { background: #fff; border-color: #fff; color: #000; }
 .castle-episode .castle-dl-btn:disabled { opacity: 0.55; cursor: default; }
 .castle-episode .castle-dl-btn.queued { border-color: rgba(70, 211, 105, 0.55); background: rgba(70, 211, 105, 0.12); color: #7ee2a0; }
+/* Episodes already on disk: white Play, like the rest of the app. */
+.castle-episode .castle-dl-btn.is-play { background: #fff; border-color: #fff; color: #000; }
+.castle-episode .castle-dl-btn.is-play:hover { background: rgba(255, 255, 255, 0.86); transform: translateY(-1px); }
+.castle-episode.is-local .episode-main { min-width: 0; }
+.castle-episode.is-target {
+  background: rgba(229, 9, 20, 0.14);
+  box-shadow: inset 3px 0 0 #e50914;
+}
+.castle-progress { margin-top: 8px; max-width: 260px; }
 .castle-status { min-height: 18px; margin: 12px 0 0; color: var(--muted); font-size: 13px; }
 
 .search-archive {

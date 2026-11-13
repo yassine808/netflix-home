@@ -30,9 +30,10 @@ const subtitleLayer = $('subtitleLayer');
 const subtitleText = $('subtitleText');
 const preview = $('tlPreview');
 const skipIntroBtn = $('skipIntro');
-const speedBtn = $('speedBtn');
+const nextBtn = $('nextEp');
 
 let item = null;
+let nextEpisode = null;
 let duration = 0;
 let lastSaved = 0;
 let hideTimer = null;
@@ -41,10 +42,8 @@ let pendingResume = 0;
 let lastVolume = 1;
 
 const UI_HIDE_DELAY = 3000;
-const SPEEDS = [0.75, 1, 1.25, 1.5];
 const PREVIEW_HALF_MIN = 84;
 
-let speedIndex = 1;
 let frames = null;
 let previewMode = 'none';
 let previewBackdrop = '';
@@ -97,6 +96,7 @@ async function init() {
   video.src = `/api/stream/${encodeURIComponent(item.id)}`;
   video.load();
   bindEvents();
+  loadNextEpisode();
   syncVolume();
   updateTimeline();
   initSubtitles();
@@ -110,7 +110,6 @@ function bindEvents() {
       const startAt = resumeStart();
       try {
         video.currentTime = startAt;
-        showResume(startAt);
       } catch { /* ignore */ }
     }
     updateTimeline();
@@ -172,7 +171,7 @@ function bindEvents() {
   fsBtn.addEventListener('click', toggleFullscreen);
   ccBtn.addEventListener('click', () => toggleCcPanel());
   skipIntroBtn.addEventListener('click', skipIntroNow);
-  speedBtn.addEventListener('click', cycleSpeed);
+  nextBtn.addEventListener('click', openNextEpisode);
   document.querySelector('.btn-home')?.addEventListener('click', (e) => {
     e.preventDefault();
     leaveToHome();
@@ -267,15 +266,42 @@ function leaveToHome() {
   setTimeout(() => { location.href = '/'; }, 180);
 }
 
-function cycleSpeed() {
-  speedIndex = (speedIndex + 1) % SPEEDS.length;
-  const rate = SPEEDS[speedIndex];
-  video.playbackRate = rate;
-  speedBtn.textContent = `${rate}×`;
-  speedBtn.setAttribute('aria-label', `Playback speed ${rate}x`);
-  toastInPlayer(`Playback speed ${rate}×`);
-  showUi();
-  armHideUi();
+/* The player only shows this control for series. A local next episode plays
+ * immediately; one that is only in the download catalog opens the series sheet
+ * on that season so its Download button is in front of the user. */
+async function loadNextEpisode() {
+  try {
+    const res = await fetch(`/api/next/${encodeURIComponent(id)}`, { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data || data.kind === 'none') return;
+    nextEpisode = data;
+    const tag = `S${String(data.season).padStart(2, '0')}E${String(data.episode).padStart(2, '0')}`;
+    nextBtn.hidden = false;
+    nextBtn.title = data.kind === 'local'
+      ? `Next episode · ${tag}`
+      : `${tag} is not downloaded yet`;
+    nextBtn.setAttribute('aria-label', data.kind === 'local'
+      ? `Play next episode ${tag}`
+      : `Open ${tag} to download`);
+  } catch {
+    /* button stays hidden when the lookup fails */
+  }
+}
+
+function openNextEpisode() {
+  if (!nextEpisode) return;
+  saveNow();
+  if (nextEpisode.kind === 'local') {
+    location.href = `/watch.html?id=${encodeURIComponent(nextEpisode.id)}`;
+    return;
+  }
+  const query = new URLSearchParams({
+    open: id,
+    season: String(nextEpisode.season),
+    episode: String(nextEpisode.episode),
+  });
+  location.href = `/?${query.toString()}`;
 }
 
 function toggleMute() {
@@ -689,10 +715,6 @@ function readIntroSkipped() {
 
 function rememberIntroSkip() {
   try { sessionStorage.setItem(INTRO_SKIP_KEY, '1'); } catch { /* storage disabled */ }
-}
-
-function showResume(sec) {
-  toastInPlayer(`Resuming from ${formatClock(sec)}`);
 }
 
 function setPlayIcon(playing) {

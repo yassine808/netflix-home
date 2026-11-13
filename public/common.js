@@ -15,6 +15,13 @@ export async function rescanLibrary() {
   return res.json();
 }
 
+/* Stops the bundled app: the server exits, so the page goes dead afterwards. */
+export async function quitApp() {
+  const res = await fetch('/api/quit', { method: 'POST' });
+  if (!res.ok) throw new Error(`quit ${res.status}`);
+  return res.json();
+}
+
 export async function searchCatalog(query, page = 1) {
   const params = new URLSearchParams({ q: query, page: String(page) });
   const res = await fetch(`/api/catalog/search?${params}`, { cache: 'no-store' });

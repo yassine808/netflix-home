@@ -4,3 +4,6 @@ media/
 *.log
 .DS_Store
 Thumbs.db
+dist/
+.build/
+bundle/manifest.json

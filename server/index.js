@@ -19,9 +19,17 @@ import { initFrames, frameMeta, ensureSprite, spriteFile } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
 import { initHero, heroStart, heroReady, ensureHero, warmHeroes } from './hero.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const projectRoot = path.resolve(__dirname, '..');
-const publicDir = path.join(projectRoot, 'public');
+/* In the single-file build there is no real file on disk, so the bundle passes
+ * APP_ROOT (where the exe lives) and PUBLIC_DIR (extracted UI files). */
+const __dirname = (() => {
+  try {
+    return path.dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return process.env.APP_ROOT || process.cwd();
+  }
+})();
+const projectRoot = process.env.APP_ROOT ? path.resolve(process.env.APP_ROOT) : path.resolve(__dirname, '..');
+const publicDir = process.env.PUBLIC_DIR ? path.resolve(process.env.PUBLIC_DIR) : path.join(projectRoot, 'public');
 
 function exactDir(dir, name) {
   try {
@@ -268,6 +276,20 @@ async function catalogSeriesEpisodes(seriesTitle) {
   return { catalogId: hit.id, title: hit.title, poster: hit.poster, seasons };
 }
 
+async function seriesCatalogValue(key) {
+  const episodes = getLibrary().items.filter((item) => item.seriesKey === key);
+  if (!episodes.length) return null;
+  const seriesTitle = episodes[0].seriesTitle || episodes[0].title;
+  const cached = seriesCatalogCache.get(key);
+  if (cached && Date.now() - cached.at < SERIES_CATALOG_TTL) return cached.value;
+
+  const data = await catalogSeriesEpisodes(seriesTitle);
+  if (!data) return null;
+  const value = { seriesKey: key, seriesTitle, seasons: data.seasons, catalogTitle: data.title, catalogId: data.catalogId };
+  seriesCatalogCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
 app.get('/api/series/:key/catalog', async (req, res) => {
   if (isOffline()) {
     return res.status(503).json({ error: 'offline mode is on — internet access is disabled', offline: true });
@@ -277,18 +299,54 @@ app.get('/api/series/:key/catalog', async (req, res) => {
   if (!episodes.length) return res.status(404).json({ error: 'series not found' });
 
   const seriesTitle = episodes[0].seriesTitle || episodes[0].title;
-  const cached = seriesCatalogCache.get(key);
-  if (cached && Date.now() - cached.at < SERIES_CATALOG_TTL) return res.json(cached.value);
-
   try {
-    const data = await catalogSeriesEpisodes(seriesTitle);
-    if (!data) return res.status(404).json({ error: `“${seriesTitle}” is not in the download catalog` });
-    const value = { seriesKey: key, seriesTitle, seasons: data.seasons, catalogTitle: data.title, catalogId: data.catalogId };
-    seriesCatalogCache.set(key, { at: Date.now(), value });
+    const value = await seriesCatalogValue(key);
+    if (!value) return res.status(404).json({ error: `“${seriesTitle}” is not in the download catalog` });
     res.set('Cache-Control', 'public, max-age=600');
     res.json(value);
   } catch (err) {
     res.status(err?.status || 502).json({ error: err?.message || String(err) });
+  }
+});
+
+/* The episode after this one. A local file can be played straight away; an
+ * episode that is only in the download catalog returns season/episode so the
+ * player can send the user to the sheet where it can be downloaded. */
+app.get('/api/next/:id', async (req, res) => {
+  const item = getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: 'not found' });
+  if (!item.isSeries || !item.seriesKey) return res.status(404).json({ error: 'not a series episode' });
+
+  const season = Number(item.season) || 0;
+  const episode = Number(item.episode) || 0;
+  const isAfter = (entry) => entry.season > season || (entry.season === season && entry.episode > episode);
+  const order = (a, b) => a.season - b.season || a.episode - b.episode;
+
+  const localNext = getLibrary().items
+    .filter((entry) => entry.seriesKey === item.seriesKey && entry.id !== item.id && isAfter(entry))
+    .sort(order)[0];
+  if (localNext) {
+    return res.json({
+      kind: 'local',
+      id: localNext.id,
+      season: localNext.season,
+      episode: localNext.episode,
+      title: localNext.displayTitle || localNext.title,
+    });
+  }
+
+  if (isOffline()) return res.json({ kind: 'none' });
+
+  try {
+    const catalog = await seriesCatalogValue(item.seriesKey);
+    const next = (catalog?.seasons || [])
+      .flatMap((row) => (row.episodes || []).map((entry) => ({ season: row.season, episode: entry.episode, title: entry.title })))
+      .filter(isAfter)
+      .sort(order)[0];
+    if (!next) return res.json({ kind: 'none' });
+    res.json({ kind: 'catalog', season: next.season, episode: next.episode, title: next.title });
+  } catch {
+    res.json({ kind: 'none' });
   }
 });
 
@@ -757,6 +815,17 @@ app.delete('/api/downloads/:id', async (req, res) => {
   const job = await cancelDownload(req.params.id);
   if (!job) return res.status(404).json({ error: 'download not found' });
   res.json(job);
+});
+
+/* Stop the app. The single-file build has no tray icon, so this menu item is
+ * the way to shut it down; only a loopback caller may use it. */
+app.post('/api/quit', (req, res) => {
+  const remote = req.socket.remoteAddress || '';
+  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote)) {
+    return res.status(403).json({ error: 'local requests only' });
+  }
+  res.json({ ok: true });
+  setTimeout(() => process.exit(0), 200);
 });
 
 app.use(express.static(publicDir, { extensions: ['html'] }));

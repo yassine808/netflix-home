@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import ffmpegPath from 'ffmpeg-static';
 import ffprobeStatic from 'ffprobe-static';
+import { initPictures, ensurePicture } from './pictures.js';
 
 const ffprobePath = ffprobeStatic.path;
 
@@ -45,14 +45,6 @@ function execFileP(cmd, args, timeout = 30000) {
     execFile(cmd, args, { timeout, windowsHide: true, maxBuffer: 1024 * 1024 * 32 }, (err, stdout) => {
       if (err) reject(err);
       else resolve(stdout);
-    });
-  });
-}
-
-function execCapture(cmd, args, timeout = 30000) {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { timeout, windowsHide: true, maxBuffer: 1024 * 1024 * 32 }, (err, stdout, stderr) => {
-      resolve({ stdout, stderr, err });
     });
   });
 }
@@ -355,85 +347,10 @@ export function resolveItemFile(id) {
 
 /* ---------- thumbnails ---------- */
 
-const thumbJobs = [];
-let activeThumbs = 0;
-const THUMB_CONCURRENCY = 2;
-
-function thumbPathFor(id, width = 1280) {
-  const hash = crypto.createHash('sha1').update(id).digest('hex');
-  const suffix = width === 1280 ? '' : `-${width}`;
-  return path.join(cacheDir, 'thumbs', `${hash}${suffix}.jpg`);
-}
-
-async function detectCrop(full, seek, item) {
-  const { stderr } = await execCapture(ffmpegPath, [
-    '-hide_banner', '-ss', String(seek), '-i', full,
-    '-frames:v', '1', '-vf', 'cropdetect=limit=24:round=2:reset=0', '-f', 'null', '-',
-  ], 30000);
-  const matches = [...(stderr || '').matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g)];
-  if (!matches.length) return null;
-  const last = matches[matches.length - 1];
-  const w = Number(last[1]);
-  const h = Number(last[2]);
-  const x = Number(last[3]);
-  const y = Number(last[4]);
-  if (w < 120 || h < 90) return null;
-  if (item.width && item.height && w * h >= item.width * item.height * 0.985) return null;
-  return { w, h, x, y };
-}
-
-async function generateThumb(item, full, out, width = 1280) {
-  const seek = Math.max(1, Math.min((item.durationSec || 60) * 0.22, 600));
-  const height = Math.round((width * 9) / 16);
-  await fsp.mkdir(path.dirname(out), { recursive: true });
-  const crop = await detectCrop(full, seek, item);
-  const cropFilter = crop ? `crop=${crop.w}:${crop.h}:${crop.x}:${crop.y},` : '';
-  const filter = `${cropFilter}scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`;
-  const quality = width >= 1280 ? '3' : '4';
-  try {
-    await execFileP(ffmpegPath, [
-      '-hide_banner', '-loglevel', 'error', '-ss', String(seek), '-i', full,
-      '-frames:v', '1', '-vf', filter, '-q:v', quality, '-y', out,
-    ], 45000);
-  } catch {
-    try {
-      await execFileP(ffmpegPath, [
-        '-hide_banner', '-loglevel', 'error', '-ss', '1', '-i', full,
-        '-frames:v', '1', '-vf', filter, '-q:v', quality, '-y', out,
-      ], 45000);
-    } catch {
-      return false;
-    }
-  }
-  return true;
-}
-
-function pumpThumbs() {
-  while (activeThumbs < THUMB_CONCURRENCY && thumbJobs.length) {
-    const job = thumbJobs.shift();
-    activeThumbs++;
-    generateThumb(job.item, job.full, job.out, job.width)
-      .then(job.resolve)
-      .catch(() => job.resolve(false))
-      .finally(() => {
-        activeThumbs--;
-        pumpThumbs();
-      });
-  }
-}
-
+/* Frame picking, the picture database (pictures.db) and the JPEG files all
+ * live in pictures.js so a title's card image is chosen once and reused. */
 export function ensureThumb(item, full, width = 1280) {
-  const out = thumbPathFor(item.id, width);
-  try {
-    const st = fs.statSync(out);
-    if (st.isFile() && st.size > 1000) return Promise.resolve(out);
-  } catch {
-    /* not generated yet */
-  }
-  return new Promise((resolve) => {
-    thumbJobs.push({ item, full, out, width, resolve: (ok) => resolve(ok ? out : null) });
-    pumpThumbs();
-  });
+  return ensurePicture(item, full, width);
 }
 
 export function artPath(kind, id) {
@@ -445,6 +362,7 @@ export function artPath(kind, id) {
 export function initCache(dir) {
   cacheDir = dir;
   fs.mkdirSync(path.join(cacheDir, 'thumbs'), { recursive: true });
+  initPictures(cacheDir);
   metaCache = safeJsonRead(path.join(cacheDir, 'meta.json'));
 }
 

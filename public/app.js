@@ -1,5 +1,5 @@
 import {
-  getLibrary, rescanLibrary, formatDuration, formatSize, formatClock,
+  getLibrary, rescanLibrary, quitApp, formatDuration, formatSize, formatClock,
   qualityLabel, thumbUrl, toggleMyList, isInMyList, getMyList, progressFor,
   getSeries, getSeriesCatalog, debounce, createEl,
   searchCatalog, getFallbackCatalog, getCatalogItem,
@@ -63,6 +63,8 @@ const state = {
   castleBusy: false,
   castleDetailToken: 0,
   castleSeasonToken: 0,
+  castleLocal: null,
+  sheetTarget: null,
   seriesCatalog: new Map(),
   seriesCatalogLoading: new Set(),
   queuedEpisodes: new Set(),
@@ -155,6 +157,7 @@ const els = {
   castleMeta: $('castleMeta'),
   castlePlot: $('castlePlot'),
   castleSeasonDownload: $('castleSeasonDownload'),
+  castleResume: $('castleResume'),
   castleDownloadBlock: $('castleDownloadBlock'),
   castleQuality: $('castleQuality'),
   castleSize: $('castleSize'),
@@ -166,6 +169,7 @@ const els = {
   profileBtn: $('profileBtn'),
   profileMenu: $('profileMenu'),
   menuRescan: $('menuRescan'),
+  menuQuit: $('menuQuit'),
   menuPath: $('menuPath'),
   avatar: $('avatar'),
   avatarMenu: $('avatarMenu'),
@@ -280,6 +284,18 @@ async function boot() {
     })
     .catch(() => { /* older server: leave the switch online */ });
   await loadLibrary({ first: true });
+
+  // The player links here when the next episode is not on disk:
+  //   /?open=<episode id>&season=2&episode=3
+  // Open that series sheet on the requested season.
+  const deepLink = readSheetDeepLink();
+  if (deepLink && state.byId.has(deepLink.open)) {
+    state.sheetTarget = deepLink.season
+      ? { season: deepLink.season, episode: deepLink.episode || 0 }
+      : null;
+    openModal(deepLink.open);
+  }
+
   schedulePoll();
   refreshDownloads({ initial: true });
   scheduleDownloadPoll();
@@ -307,6 +323,19 @@ async function loadLibrary({ first = false } = {}) {
       els.loading.querySelector('p').textContent = 'Could not reach the server. Is netflix-home running?';
     }
   }
+}
+
+function readSheetDeepLink() {
+  const params = new URLSearchParams(location.search);
+  const open = params.get('open');
+  if (!open) return null;
+  const season = Number(params.get('season'));
+  const episode = Number(params.get('episode'));
+  return {
+    open,
+    season: Number.isFinite(season) && season > 0 ? season : 0,
+    episode: Number.isFinite(episode) && episode > 0 ? episode : 0,
+  };
 }
 
 function updateLoadingState() {
@@ -2295,6 +2324,7 @@ async function openCastleModal(item) {
   stopPreview();
   castleFocusEl = document.activeElement;
   state.castleTitle = item;
+  state.castleLocal = null;
   state.castleSeason = 0;
   state.castleQuality = 0;
   state.castleBusy = false;
@@ -2304,6 +2334,7 @@ async function openCastleModal(item) {
   populateCastleModal(item);
   els.castleDownloadBlock.hidden = true;
   els.castleSeasonDownload.hidden = true;
+  els.castleResume.hidden = true;
   els.castleEpisodes.replaceChildren();
   els.castleQuality.replaceChildren();
   els.castleSeasonTabs.replaceChildren();
@@ -2388,6 +2419,14 @@ function renderCastleDownloads(detail) {
   els.castleStatus.textContent = '';
   els.castleStatus.hidden = false;
 
+  const localGroup = state.castleLocal?.group || null;
+  const localMap = state.castleLocal?.local || null;
+  const localFor = (season, episode) => (localMap ? localMap.get(`${season}x${episode}`) || null : null);
+
+  const resume = localGroup ? resumeTarget(localGroup) : null;
+  els.castleResume.hidden = !resume;
+  els.castleResume.textContent = resume ? `Resume S${String(resume.episode.season).padStart(2, '0')}E${String(resume.episode.episode).padStart(2, '0')}` : 'Resume';
+
   const { selected } = renderCastleQuality(detail, episodes);
 
   const seasons = Array.isArray(detail.seasons) ? detail.seasons : [];
@@ -2414,6 +2453,7 @@ function renderCastleDownloads(detail) {
 
   episodes.forEach((episode) => {
     const row = createEl('article', 'episode-row castle-episode');
+    row.dataset.episode = String(episode.episode);
 
     if (episode.thumbnail) {
       const thumb = document.createElement('img');
@@ -2431,14 +2471,45 @@ function renderCastleDownloads(detail) {
     head.append(createEl('strong', '', detail.type === 'series' ? episode.title : detail.title));
     main.append(head);
 
+    const local = localFor(detail.activeSeason ?? state.castleSeason, episode.episode);
     const quality = (episode.resolutions || []).find((entry) => entry.resolution === selected);
-    const sub = [
-      formatDuration(episode.duration),
-      quality ? qualityName(quality.resolution) : 'Not available',
-      quality?.size ? formatSize(quality.size) : '',
-    ].filter(Boolean).join(' · ');
+    const sub = local
+      ? [
+        local.episodeLabel || `S${String(local.season).padStart(2, '0')}E${String(local.episode).padStart(2, '0')}`,
+        formatDuration(local.durationSec),
+        formatSize(local.size),
+      ].filter(Boolean).join(' · ')
+      : [
+        formatDuration(episode.duration),
+        quality ? qualityName(quality.resolution) : 'Not available',
+        quality?.size ? formatSize(quality.size) : '',
+      ].filter(Boolean).join(' · ');
     main.append(createEl('span', 'episode-date', sub));
+
+    if (local) {
+      const progress = progressFor(local.id);
+      if (progress && progress.d > 0 && progress.t > 5) {
+        const bar = createEl('div', 'series-ep-bar castle-progress');
+        const fill = document.createElement('i');
+        fill.style.width = `${Math.round(Math.min(1, progress.t / progress.d) * 100)}%`;
+        bar.append(fill);
+        main.append(bar);
+      }
+      row.classList.add('is-local');
+    }
     row.append(main);
+
+    if (local) {
+      const play = document.createElement('button');
+      play.type = 'button';
+      play.className = 'castle-dl-btn is-play';
+      play.setAttribute('aria-label', `Play episode ${local.episode}`);
+      play.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M7 4.5v15l12-7.5z"/></svg><span>Play</span>';
+      play.addEventListener('click', () => goWatch(local.id));
+      row.append(play);
+      els.castleEpisodes.append(row);
+      return;
+    }
 
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -2542,9 +2613,15 @@ async function queueCastleSeason() {
   els.castleStatus.textContent = '';
   let queued = 0;
   let skipped = 0;
+  const localMap = state.castleLocal?.local || null;
 
   for (let index = 0; index < episodes.length; index += 1) {
     const episode = episodes[index];
+    // Episodes already on disk do not need downloading again.
+    if (localMap && localMap.has(`${state.castleSeason}x${episode.episode}`)) {
+      skipped += 1;
+      continue;
+    }
     els.castleSeasonDownload.textContent = `Queueing ${index + 1}/${episodes.length}…`;
     const quality = (episode.resolutions || []).find((entry) => entry.resolution === state.castleQuality);
     if (!quality) {
@@ -2635,6 +2712,145 @@ let seriesToken = 0;
 let lastFocusEl = null;
 
 function openModal(id) {
+  const item = state.byId.get(id);
+  if (!item) return;
+  const groups = groupLibrary();
+  const index = groupIndex(groups);
+  const group = index.get(id) || item;
+  const isSeries = Boolean(group.episodes && group.episodes.length);
+
+  // A series opens the catalog sheet: show art, Resume, Download season and a
+  // Play/Download button for every episode. Everything else keeps the library
+  // detail panel.
+  if (isSeries && group.seriesKey) {
+    openSeriesSheet(group, id);
+    return;
+  }
+  openLibraryModal(id);
+}
+
+/* ---------- series sheet (library + download catalog) ---------- */
+
+function localEpisodesFor(group) {
+  const map = new Map();
+  for (const ep of group.episodes || []) map.set(`${ep.season}x${ep.episode}`, ep);
+  return map;
+}
+
+function resumeTarget(group) {
+  let best = null;
+  for (const ep of group.episodes || []) {
+    const progress = progressFor(ep.id);
+    if (!progress || progress.t <= 5 || progress.finished || !(progress.d > 0)) continue;
+    const key = progress.updatedAt || 0;
+    if (!best || key > best.key) best = { key, id: ep.id, episode: ep, progress };
+  }
+  return best;
+}
+
+function populateSeriesHero(group, detail) {
+  const image = detail?.background || detail?.poster || '';
+  els.castleBackdrop.src = image || heroImageUrl({ id: group.id });
+  els.castleBackdrop.hidden = false;
+  els.castleTitle.textContent = group.title;
+  els.castleKicker.textContent = 'IN YOUR LIBRARY';
+  els.castlePlot.textContent = group.plot
+    || detail?.description
+    || 'A title from your personal library, streamed directly from your drive.';
+  els.castleModal.scrollTop = 0;
+
+  const seasons = new Set((group.episodes || []).map((entry) => entry.season));
+  const bits = [
+    group.year,
+    group.rating ? `★ ${Number(group.rating).toFixed(1)}` : '',
+    `${group.episodes.length} episode${group.episodes.length === 1 ? '' : 's'}`,
+    seasons.size > 1 ? `${seasons.size} seasons` : '',
+    Array.isArray(group.genres) ? group.genres.slice(0, 3).join(' · ') : '',
+  ].filter(Boolean);
+
+  els.castleMeta.replaceChildren();
+  bits.forEach((bit, index) => {
+    if (index > 0) els.castleMeta.append(createEl('span', 'dot', '•'));
+    els.castleMeta.append(createEl('span', index === 0 ? 'year' : '', bit));
+  });
+}
+
+function highlightSheetTarget() {
+  const target = state.sheetTarget;
+  state.sheetTarget = null;
+  if (!target?.episode) return;
+  const row = [...els.castleEpisodes.querySelectorAll('.castle-episode')]
+    .find((el) => Number(el.dataset.episode) === target.episode);
+  if (!row) return;
+  row.classList.add('is-target');
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+async function openSeriesSheet(group, focusId) {
+  if (!els.searchOverlay.hidden) closeSearch();
+  if (!els.onlineModal.hidden) closeOnlineModal();
+  stopPreview();
+  lastFocusEl = document.activeElement;
+  castleFocusEl = lastFocusEl;
+  modalItemId = group.id;
+
+  const local = localEpisodesFor(group);
+  state.castleLocal = { group, local, focusId };
+  state.castleTitle = { type: 'series', title: group.title, seasons: [] };
+  state.castleSeason = state.sheetTarget?.season
+    || (state.byId.get(focusId)?.season)
+    || group.episodes[0]?.season
+    || 1;
+  state.castleQuality = 0;
+  state.castleBusy = false;
+  const token = ++state.castleDetailToken;
+
+  els.castleModal.hidden = false;
+  syncBodyLock();
+  populateSeriesHero(group, null);
+  els.castleDownloadBlock.hidden = false;
+  els.castleEpisodes.replaceChildren();
+  els.castleQuality.replaceChildren();
+  els.castleSeasonTabs.replaceChildren();
+  els.castleSeasonDownload.hidden = true;
+  els.castleResume.hidden = true;
+  els.castleStatus.hidden = false;
+  els.castleStatus.textContent = 'Loading episodes…';
+  setTimeout(() => els.castleModal.querySelector('.modal-close')?.focus(), 40);
+
+  try {
+    const catalog = state.seriesCatalog.get(group.seriesKey) || await getSeriesCatalog(group.seriesKey);
+    state.seriesCatalog.set(group.seriesKey, catalog);
+    if (!catalog?.catalogId) throw new Error('series is not in the download catalog');
+    const detail = await getCastleTitle(catalog.catalogId);
+    if (token !== state.castleDetailToken) return;
+
+    const merged = { ...detail, title: group.title, type: 'series', localGroup: group };
+    state.castleTitle = merged;
+    if (!(merged.seasons || []).some((entry) => entry.season === state.castleSeason)) {
+      state.castleSeason = detail.activeSeason || 0;
+    }
+    state.castleCache.set(`${detail.id}:${detail.activeSeason || 0}`, detail);
+    populateSeriesHero(group, detail);
+    if (state.castleSeason !== detail.activeSeason
+      && (merged.seasons || []).some((entry) => entry.season === state.castleSeason)) {
+      // Open on the season the clicked episode belongs to; this renders too.
+      await selectCastleSeason(state.castleSeason);
+    } else {
+      renderCastleDownloads(merged);
+    }
+    highlightSheetTarget();
+  } catch (err) {
+    if (token !== state.castleDetailToken) return;
+    // No catalog entry (offline, unknown show): the library panel still works.
+    els.castleModal.hidden = true;
+    syncBodyLock();
+    state.castleLocal = null;
+    openLibraryModal(group.id);
+  }
+}
+
+function openLibraryModal(id) {
   const item = state.byId.get(id);
   if (!item) return;
   const groups = groupLibrary();
@@ -3303,6 +3519,10 @@ function bindStaticEvents() {
   els.onlineModal.querySelectorAll('[data-close-online]').forEach((el) => el.addEventListener('click', closeOnlineModal));
   els.castleModal.querySelectorAll('[data-close-castle]').forEach((el) => el.addEventListener('click', closeCastleModal));
   els.castleSeasonDownload.addEventListener('click', queueCastleSeason);
+  els.castleResume.addEventListener('click', () => {
+    const target = resumeTarget(state.castleLocal?.group);
+    if (target) goWatch(target.id);
+  });
   els.onlineCastleBtn.addEventListener('click', () => openCastleForTitle(state.onlineTitle?.title));
   els.onlineFreeBtn.addEventListener('click', () => {
     const title = state.onlineTitle?.title;
@@ -3352,6 +3572,15 @@ function bindStaticEvents() {
 
   els.refreshBtn.addEventListener('click', rescan);
   els.menuRescan.addEventListener('click', () => { closeProfile(); rescan(); });
+  els.menuQuit?.addEventListener('click', async () => {
+    closeProfile();
+    try {
+      await quitApp();
+      toast('App stopped — close this tab', { type: 'warn' });
+    } catch (err) {
+      toast(`Could not stop the app: ${err.message}`, { type: 'warn' });
+    }
+  });
   els.emptyScan.addEventListener('click', rescan);
 
   els.profileBtn.addEventListener('click', (e) => {
