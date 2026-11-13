@@ -40,3 +40,9 @@
 - Verified: `gh repo view` reports `visibility: PRIVATE`. `/api/library` root is `G:\Movies` with 3 titles. Search returned 24 archive.org results; fallback returned 5 curated titles; item metadata listed the MP4. Downloaded `The Great Train Robbery (1903)` (58 MB) end-to-end — progress 20% → 69% → 100%, poster/NFO written, library rescanned to 3 titles. Multi-file item correctly returns 400 with the file list; cancel removes the `.part` and ends `cancelled`; retry requeues.
 - Next: commit and push the API work. Cyberpunk: Edgerunners 2 stays blocked — Netflix exclusive, no legal direct download.
 
+### 2026-11-13 — API pushed, final verification
+- Goal: close out the private repo and download API work.
+- Done: committed `e671a7b` and pushed `main` to the private repo. Updated cancel handling so a running job reports `cancelling` until the abort finishes, then `cancelled`.
+- Verified: `gh repo view` reports `visibility: PRIVATE`; `GET /api/library` root `G:\Movies` with 3 titles streamed via `206 Partial Content`; UI rendered all 3 cards with no console errors; download cancel test moved `downloading` → `cancelling` → `cancelled` and deleted the `.part` file.
+- Next: Cyberpunk: Edgerunners 2 cannot be added from a legal download source; drop owned files into `G:\Movies` if available.
+
