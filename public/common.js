@@ -144,6 +144,17 @@ export async function cancelDownload(id) {
   return res.json();
 }
 
+/* best-effort: tells the server the new queue order (ignored if unsupported) */
+export async function reorderDownloads(ids) {
+  try {
+    await fetch('/api/downloads/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+  } catch { /* order stays local */ }
+}
+
 export async function retryDownload(id) {
   const res = await fetch(`/api/downloads/${encodeURIComponent(id)}/retry`, { method: 'POST' });
   if (!res.ok) throw new Error(`retry ${res.status}`);

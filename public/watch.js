@@ -207,8 +207,7 @@ function toggleMute() {
 
 function syncVolume() {
   const muted = video.muted || video.volume === 0;
-  muteBtn.querySelector('.i-vol').hidden = muted;
-  muteBtn.querySelector('.i-mute').hidden = !muted;
+  muteBtn.classList.toggle('is-muted', muted);
   muteBtn.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
   volume.value = String(muted ? 0 : video.volume);
   volume.style.background = `linear-gradient(to right, #e50914 ${(muted ? 0 : video.volume) * 100}%, rgba(255,255,255,.5) ${(muted ? 0 : video.volume) * 100}%)`;

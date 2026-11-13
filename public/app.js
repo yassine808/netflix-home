@@ -4,7 +4,8 @@ import {
   continueWatching, debounce, createEl,
   searchCatalog, getFallbackCatalog, getCatalogItem,
   searchOnline, getOnlineTitle, searchCastle, getCastleTitle, startCastleDownload,
-  startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload,
+  startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload, reorderDownloads,
+  readJson, writeJson,
 } from './common.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'downloading', 'cancelling']);
@@ -31,6 +32,7 @@ const state = {
   downloads: [],
   downloadsSynced: false,
   downloadPoll: null,
+  notifs: [],
   onlineResults: [],
   onlineLoading: false,
   onlineError: '',
@@ -174,6 +176,17 @@ const els = {
   downloadsEmpty: $('downloadsEmpty'),
   downloadsCount: $('downloadsCount'),
   downloadsRoot: $('downloadsRoot'),
+  dlActive: $('dlActive'),
+  dlQueued: $('dlQueued'),
+  dlDone: $('dlDone'),
+  notif: $('notif'),
+  bellBtn: $('bellBtn'),
+  notifMenu: $('notifMenu'),
+  notifList: $('notifList'),
+  notifEmpty: $('notifEmpty'),
+  notifBadge: $('notifBadge'),
+  notifRead: $('notifRead'),
+  notifClear: $('notifClear'),
 };
 
 /* ---------- boot ---------- */
@@ -847,6 +860,7 @@ async function queueDownload(item, fileName) {
     closePicker();
     openDownloads();
     toast(`Download started — ${item.title}`);
+    notify('start', item.title, 'Download started');
   } catch (err) {
     els.pickerStatus.textContent = `Could not start download: ${err.message}`;
   } finally {
@@ -867,6 +881,7 @@ async function queueSeriesDownload(item) {
     closePicker();
     openDownloads();
     toast(`${result.count} download${result.count === 1 ? '' : 's'} started — ${item.title}`);
+    notify('start', item.title, `${result.count} download${result.count === 1 ? '' : 's'} queued`);
   } catch (err) {
     els.pickerStatus.textContent = `Could not queue the series: ${err.message}`;
   } finally {
@@ -909,9 +924,11 @@ async function refreshDownloads({ initial = false } = {}) {
         ? `Download complete — ${completed[0].title}`
         : `${completed.length} downloads complete`);
       await loadLibrary();
+      completed.forEach((job) => notify('done', job.title || job.fileName, 'Download complete — ready to watch'));
     }
     if (failed.length) {
       toast(`Download failed — ${failed[0].title}`);
+      failed.forEach((job) => notify('fail', job.title || job.fileName, job.error || 'Download failed'));
     }
   } catch {
     /* keep the last known list when the server is unreachable */
@@ -935,60 +952,229 @@ function formatSpeed(bytes) {
   return `${Math.round(bytes)} B/s`;
 }
 
-function renderDownloads() {
-  const active = state.downloads.filter((job) => ACTIVE_STATUSES.has(job.status));
-  const finished = state.downloads
-    .filter((job) => !ACTIVE_STATUSES.has(job.status))
-    .slice(0, 8);
-  const visible = [...active, ...finished];
+const dlRows = new Map();
+const dlDrag = { active: false };
+const QUEUE_ORDER_KEY = 'netflix-home:queue-order';
 
-  els.downloadsList.replaceChildren();
-  visible.forEach((job) => els.downloadsList.append(buildDownloadRow(job)));
-  els.downloadsEmpty.hidden = visible.length > 0;
+function formatEta(job) {
+  if (!job.speed || !job.total || job.total <= job.bytes) return '';
+  const sec = Math.round((job.total - job.bytes) / job.speed);
+  if (sec >= 3600) return `${Math.floor(sec / 3600)}h ${Math.round((sec % 3600) / 60)}m left`;
+  if (sec >= 60) return `${Math.floor(sec / 60)}m ${sec % 60}s left`;
+  return `${sec}s left`;
+}
+
+function orderedQueue(jobs) {
+  const saved = readJson(QUEUE_ORDER_KEY, []);
+  const rank = new Map((Array.isArray(saved) ? saved : []).map((id, i) => [id, i]));
+  return jobs
+    .map((job, i) => ({ job, i }))
+    .sort((x, y) => (rank.has(x.job.id) ? rank.get(x.job.id) : 1e6 + x.i) - (rank.has(y.job.id) ? rank.get(y.job.id) : 1e6 + y.i))
+    .map((x) => x.job);
+}
+
+function renderDownloads() {
+  const active = state.downloads.filter((j) => j.status === 'downloading' || j.status === 'cancelling');
+  const queued = orderedQueue(state.downloads.filter((j) => j.status === 'queued'));
+  const finished = state.downloads.filter((j) => !ACTIVE_STATUSES.has(j.status)).slice(0, 8);
+  const all = [...active, ...queued, ...finished];
+  const ids = new Set(all.map((j) => j.id));
+
+  dlRows.forEach((row, id) => { if (!ids.has(id)) { row.remove(); dlRows.delete(id); } });
+  all.forEach((job) => {
+    let row = dlRows.get(job.id);
+    if (!row) { row = buildDownloadRow(job); dlRows.set(job.id, row); }
+    updateDownloadRow(row, job);
+  });
+
+  const fill = (section, jobs, isQueue) => {
+    section.hidden = jobs.length === 0;
+    section.querySelector('.dl-count').textContent = jobs.length ? `(${jobs.length})` : '';
+    if (isQueue && dlDrag.active) return; // don't fight the user's drag
+    const box = section.querySelector('.dl-items');
+    jobs.forEach((job, i) => {
+      const row = dlRows.get(job.id);
+      if (box.children[i] !== row) box.insertBefore(row, box.children[i] || null);
+      if (isQueue) row.querySelector('.dl-pos').textContent = String(i + 1);
+    });
+  };
+  fill(els.dlActive, active);
+  fill(els.dlQueued, queued, true);
+  fill(els.dlDone, finished);
+  els.downloadsEmpty.hidden = all.length > 0;
+}
+
+function tweenNumber(el, to) {
+  const from = Number(el.dataset.v || 0);
+  el.dataset.v = String(to);
+  if (from === to) { el.textContent = `${to}%`; return; }
+  const t0 = performance.now();
+  const dur = 1800;
+  const step = (now) => {
+    if (Number(el.dataset.v) !== to) return;
+    const p = Math.min(1, (now - t0) / dur);
+    el.textContent = `${Math.round(from + (to - from) * p)}%`;
+    if (p < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 function buildDownloadRow(job) {
-  const row = createEl('div', `download-row is-${job.status}`);
+  const row = createEl('div', 'download-row');
+  row.dataset.id = job.id;
+
+  const grip = createEl('button', 'dl-grip');
+  grip.type = 'button';
+  grip.setAttribute('aria-label', 'Drag to reorder (or use arrow keys)');
+  grip.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="9" cy="6" r="1.7"/><circle cx="15" cy="6" r="1.7"/><circle cx="9" cy="12" r="1.7"/><circle cx="15" cy="12" r="1.7"/><circle cx="9" cy="18" r="1.7"/><circle cx="15" cy="18" r="1.7"/></svg>';
+  grip.addEventListener('pointerdown', (e) => startDrag(e, row));
+  grip.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    const sib = e.key === 'ArrowUp' ? row.previousElementSibling : row.nextElementSibling;
+    if (!sib) return;
+    const box = row.parentElement;
+    animateReorder(box, () => (e.key === 'ArrowUp' ? box.insertBefore(row, sib) : box.insertBefore(sib, row)));
+    commitQueueOrder(box);
+    grip.focus();
+  });
+
+  const pos = createEl('span', 'dl-pos', '');
   const main = createEl('div', 'download-main');
-
   const top = createEl('div', 'download-top');
-  top.append(createEl('span', 'download-title', job.title || job.fileName));
-  const pct = job.status === 'completed' ? 100 : Math.round((job.progress || 0) * 100);
-  if (job.status !== 'queued' && job.status !== 'failed') {
-    top.append(createEl('span', 'download-pct', `${pct}%`));
-  }
-  main.append(top, createEl('div', 'download-file', job.fileName));
-
+  const title = createEl('span', 'download-title');
+  const pct = createEl('span', 'download-pct');
+  top.append(title, pct);
+  const file = createEl('div', 'download-file');
   const bar = createEl('div', 'download-bar');
-  const fill = document.createElement('i');
-  fill.style.width = `${pct}%`;
-  bar.append(fill);
-  if (job.status === 'queued' || job.status === 'cancelling') bar.classList.add('indeterminate');
-  main.append(bar);
-
+  const fillEl = document.createElement('i');
+  bar.append(fillEl);
   const meta = createEl('div', 'download-meta');
-  meta.append(createEl('span', `download-status ${job.status}`, STATUS_LABELS[job.status] || job.status));
-  if (job.total) meta.append(createEl('span', '', `${formatSize(job.bytes)} of ${formatSize(job.total)}`));
-  else if (job.status === 'completed') meta.append(createEl('span', '', formatSize(job.bytes)));
-  if (job.speed) meta.append(createEl('span', '', formatSpeed(job.speed)));
-  if (job.error) meta.append(createEl('span', 'download-error', job.error));
-  main.append(meta);
-  row.append(main);
-
+  main.append(top, file, bar, meta);
   const actions = createEl('div', 'download-actions');
+  row.append(grip, pos, main, actions);
+  row._r = { title, pct, file, bar, fillEl, meta, actions };
+  return row;
+}
+
+function updateDownloadRow(row, job) {
+  const r = row._r;
+  row.className = `download-row is-${job.status}${row.classList.contains('dragging') ? ' dragging' : ''}`;
+  r.title.textContent = job.title || job.fileName;
+  r.file.textContent = job.fileName || '';
+  const pct = job.status === 'completed' ? 100 : Math.round((job.progress || 0) * 100);
+  const showPct = job.status !== 'queued' && job.status !== 'failed';
+  r.pct.hidden = !showPct;
+  if (showPct) tweenNumber(r.pct, pct);
+  r.fillEl.style.width = `${pct}%`;
+  r.bar.classList.toggle('indeterminate', job.status === 'cancelling');
+
+  r.meta.replaceChildren();
+  r.meta.append(createEl('span', `download-status ${job.status}`, STATUS_LABELS[job.status] || job.status));
+  if (job.total && job.status !== 'queued') r.meta.append(createEl('span', '', `${formatSize(job.bytes)} of ${formatSize(job.total)}`));
+  else if (job.status === 'completed') r.meta.append(createEl('span', '', formatSize(job.bytes)));
+  if (job.status === 'downloading') {
+    if (job.speed) r.meta.append(createEl('span', '', formatSpeed(job.speed)));
+    const eta = formatEta(job);
+    if (eta) r.meta.append(createEl('span', 'download-eta', eta));
+  }
+  if (job.error) r.meta.append(createEl('span', 'download-error', job.error));
+
+  r.actions.replaceChildren();
   if (job.status === 'queued' || job.status === 'downloading') {
     const btn = createEl('button', 'download-action', 'Cancel');
     btn.addEventListener('click', () => downloadAction(job.id, 'cancel', btn));
-    actions.append(btn);
+    r.actions.append(btn);
   } else if (job.status === 'failed' || job.status === 'cancelled') {
     const btn = createEl('button', 'download-action primary', 'Retry');
     btn.addEventListener('click', () => downloadAction(job.id, 'retry', btn));
-    actions.append(btn);
+    r.actions.append(btn);
   } else if (job.status === 'completed') {
-    actions.append(createEl('span', 'download-done', '✓'));
+    r.actions.append(createEl('span', 'download-done', '✓'));
   }
-  if (actions.childNodes.length) row.append(actions);
-  return row;
+}
+
+/* FLIP: smoothly slide siblings when the order changes */
+function animateReorder(box, mutate, skip) {
+  const rows = [...box.children];
+  const before = new Map(rows.map((el) => [el, el.getBoundingClientRect().top]));
+  mutate();
+  rows.forEach((el) => {
+    if (el === skip) return;
+    const dy = before.get(el) - el.getBoundingClientRect().top;
+    if (!dy) return;
+    el.style.transition = 'none';
+    el.style.transform = `translateY(${dy}px)`;
+    requestAnimationFrame(() => {
+      el.style.transition = 'transform .22s var(--ease)';
+      el.style.transform = '';
+    });
+  });
+}
+
+function commitQueueOrder(box) {
+  const ids = [...box.children].map((el) => el.dataset.id);
+  [...box.children].forEach((el, i) => { el.querySelector('.dl-pos').textContent = String(i + 1); });
+  writeJson(QUEUE_ORDER_KEY, ids);
+  reorderDownloads(ids);
+}
+
+function startDrag(e, row) {
+  if (e.button !== undefined && e.button !== 0) return;
+  const box = row.parentElement;
+  if (!box || box.children.length < 2) return;
+  e.preventDefault();
+  dlDrag.active = true;
+  document.body.classList.add('dl-dragging');
+  row.classList.add('dragging');
+  const grabOffset = e.clientY - row.getBoundingClientRect().top;
+  const scroller = els.downloadsList;
+  let lastY = e.clientY;
+  let raf = 0;
+
+  const place = () => {
+    row.style.transform = 'none';
+    const natural = row.getBoundingClientRect().top;
+    row.style.transform = `translateY(${lastY - grabOffset - natural}px)`;
+  };
+  const move = (ev) => {
+    lastY = ev.clientY;
+    place();
+    const center = lastY - grabOffset + row.offsetHeight / 2;
+    const sibs = [...box.children].filter((el) => el !== row);
+    let target = null;
+    for (const el of sibs) {
+      const rc = el.getBoundingClientRect();
+      if (center < rc.top + rc.height / 2) { target = el; break; }
+    }
+    if ((target || null) !== row.nextElementSibling) {
+      animateReorder(box, () => box.insertBefore(row, target), row);
+      place();
+    }
+    const sr = scroller.getBoundingClientRect();
+    cancelAnimationFrame(raf);
+    if (lastY < sr.top + 40) raf = requestAnimationFrame(function s() { scroller.scrollTop -= 8; place(); raf = requestAnimationFrame(s); });
+    else if (lastY > sr.bottom - 40) raf = requestAnimationFrame(function s() { scroller.scrollTop += 8; place(); raf = requestAnimationFrame(s); });
+  };
+  const end = () => {
+    cancelAnimationFrame(raf);
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', end);
+    window.removeEventListener('pointercancel', end);
+    row.style.transition = 'transform .2s var(--ease)';
+    row.style.transform = 'translateY(0)';
+    setTimeout(() => {
+      row.style.transition = '';
+      row.style.transform = '';
+      row.classList.remove('dragging');
+      document.body.classList.remove('dl-dragging');
+      dlDrag.active = false;
+      commitQueueOrder(box);
+    }, 200);
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
 }
 
 async function downloadAction(id, action, button) {
@@ -1734,6 +1920,7 @@ async function queueCastleEpisode(episode, btn) {
     btn.classList.add('queued');
     btn.querySelector('span').textContent = 'Queued';
     toast(`${label} queued — ${qualityName(state.castleQuality)}`);
+    notify('start', label, `Queued — ${qualityName(state.castleQuality)}`);
     openDownloads();
     refreshDownloads();
   } catch (err) {
@@ -1790,6 +1977,7 @@ async function queueCastleSeason() {
 
   if (queued) {
     toast(`${queued} episode${queued === 1 ? '' : 's'} queued — ${detail.title}`);
+    notify('start', detail.title, `${queued} episode${queued === 1 ? '' : 's'} queued`);
     openDownloads();
     refreshDownloads();
   }
@@ -1953,6 +2141,7 @@ async function rescan() {
     const result = await rescanLibrary();
     await loadLibrary();
     toast(`Library updated — ${result.count} title${result.count === 1 ? '' : 's'}`);
+    notify('info', 'Library updated', `${result.count} title${result.count === 1 ? '' : 's'} in your library`);
   } catch {
     toast('Scan failed. Check the library folder and try again.');
   } finally {
@@ -1961,6 +2150,107 @@ async function rescan() {
     updateLoadingState();
     schedulePoll();
   }
+}
+
+/* ---------- notifications ---------- */
+
+const NOTIF_KEY = 'netflix-home:notifications';
+const NOTIF_ICONS = {
+  done: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m5 12 5 5 9-10"/></svg>',
+  fail: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 7v6"/><circle cx="12" cy="16.5" r=".6" fill="currentColor"/></svg>',
+  start: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg>',
+  info: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7.5" r=".8" fill="currentColor" stroke="none"/></svg>',
+};
+
+function loadNotifs() {
+  const list = readJson(NOTIF_KEY, null);
+  if (Array.isArray(list)) return list;
+  return [{ id: 'welcome', type: 'info', title: 'Welcome', text: 'Download progress, finished titles and library updates will show up here.', time: Date.now(), read: false }];
+}
+
+function saveNotifs() { writeJson(NOTIF_KEY, state.notifs.slice(0, 30)); }
+
+function notify(type, title, text) {
+  state.notifs.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, type, title, text: text || '', time: Date.now(), read: false });
+  state.notifs = state.notifs.slice(0, 30);
+  saveNotifs();
+  renderNotifs();
+  els.bellBtn.classList.remove('ring');
+  void els.bellBtn.offsetWidth;
+  els.bellBtn.classList.add('ring');
+}
+
+function timeAgo(ts) {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 45) return 'Just now';
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+function renderNotifs() {
+  const unread = state.notifs.filter((n) => !n.read).length;
+  els.notifBadge.hidden = unread === 0;
+  els.notifBadge.textContent = unread > 9 ? '9+' : String(unread);
+  els.notifList.replaceChildren();
+  els.notifEmpty.hidden = state.notifs.length > 0;
+  state.notifs.forEach((n) => {
+    const row = createEl('div', `notif-item${n.read ? '' : ' unread'}`);
+    const ico = createEl('div', `notif-ico t-${n.type}`);
+    const match = n.type === 'done' && state.items.find((it) => (it.title || '').toLowerCase() === (n.title || '').toLowerCase());
+    if (match) {
+      const img = document.createElement('img');
+      img.src = thumbUrl(match);
+      img.alt = '';
+      img.onerror = () => { img.remove(); ico.innerHTML = NOTIF_ICONS.done; };
+      ico.append(img);
+    } else {
+      ico.innerHTML = NOTIF_ICONS[n.type] || NOTIF_ICONS.info;
+    }
+    const body = createEl('div', 'notif-body');
+    body.append(createEl('div', 'notif-title', n.title), createEl('div', 'notif-text', n.text), createEl('div', 'notif-time', timeAgo(n.time)));
+    row.append(ico, body);
+    els.notifList.append(row);
+  });
+}
+
+function openNotifs() {
+  closeProfile();
+  renderNotifs();
+  els.notifMenu.hidden = false;
+  els.bellBtn.setAttribute('aria-expanded', 'true');
+}
+
+function closeNotifs() {
+  if (els.notifMenu.hidden) return;
+  els.notifMenu.hidden = true;
+  els.bellBtn.setAttribute('aria-expanded', 'false');
+  if (state.notifs.some((n) => !n.read)) {
+    state.notifs.forEach((n) => { n.read = true; });
+    saveNotifs();
+    renderNotifs();
+  }
+}
+
+function bindNotifs() {
+  state.notifs = loadNotifs();
+  renderNotifs();
+  els.bellBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (els.notifMenu.hidden) openNotifs(); else closeNotifs();
+  });
+  els.notifRead.addEventListener('click', () => {
+    state.notifs.forEach((n) => { n.read = true; });
+    saveNotifs();
+    renderNotifs();
+  });
+  els.notifClear.addEventListener('click', () => {
+    state.notifs = [];
+    saveNotifs();
+    renderNotifs();
+  });
+  document.addEventListener('click', (e) => { if (!els.notif.contains(e.target)) closeNotifs(); });
+  setInterval(() => { if (!els.notifMenu.hidden) renderNotifs(); }, 30000);
 }
 
 function toast(message) {
@@ -1973,6 +2263,7 @@ function toast(message) {
 /* ---------- events ---------- */
 
 function bindStaticEvents() {
+  bindNotifs();
   document.querySelectorAll('.nav-link').forEach((link) => {
     link.addEventListener('click', (e) => {
       e.preventDefault();
@@ -2010,9 +2301,9 @@ function bindStaticEvents() {
     const video = els.heroVideo;
     video.muted = !video.muted;
     if (!video.muted) video.volume = 0.7;
-    els.heroMute.querySelector('.i-muted').hidden = !video.muted;
-    els.heroMute.querySelector('.i-sound').hidden = video.muted;
+    els.heroMute.classList.toggle('is-muted', video.muted);
     els.heroMute.setAttribute('aria-label', video.muted ? 'Unmute preview' : 'Mute preview');
+    els.heroMute.title = els.heroMute.getAttribute('aria-label');
     if (!video.src) {
       const item = state.byId.get(state.heroId);
       if (item) playPreview(item);
@@ -2081,7 +2372,7 @@ function bindStaticEvents() {
       else if (!els.onlineModal.hidden) closeOnlineModal();
       else if (!els.searchOverlay.hidden) closeSearch();
       else if (isModalOpen()) closeModal();
-      else closeProfile();
+      else { closeProfile(); closeNotifs(); }
     }
     if (e.key === 'Tab') {
       if (isModalOpen()) trapFocus(e, els.modal);
@@ -2110,6 +2401,7 @@ function bindStaticEvents() {
   els.profileBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     const open = els.profileMenu.hidden;
+    if (open) closeNotifs();
     els.profileMenu.hidden = !open;
     els.profile.classList.toggle('open', open);
     els.profileBtn.setAttribute('aria-expanded', String(open));
