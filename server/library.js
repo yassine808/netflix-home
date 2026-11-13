@@ -65,8 +65,28 @@ function titleCase(s) {
   });
 }
 
+const EPISODE_PATTERNS = [
+  /\bS(\d{1,2})[\s._-]*E(\d{1,3})\b/i,
+  /\bSeason[\s._-]*(\d{1,2})[\s._-]*Episode[\s._-]*(\d{1,3})\b/i,
+  /\b(\d{1,2})x(\d{1,3})\b/i,
+];
+
 export function parseFileName(fileName) {
   let base = fileName.replace(/\.[^.]+$/, '');
+
+  let season = null;
+  let episode = null;
+  for (const pattern of EPISODE_PATTERNS) {
+    const match = pattern.exec(base);
+    if (!match) continue;
+    const nextSeason = Number(match[1]);
+    const nextEpisode = Number(match[2]);
+    if (!(nextSeason > 0 && nextSeason < 100) || !(nextEpisode > 0 && nextEpisode < 1000)) continue;
+    season = nextSeason;
+    episode = nextEpisode;
+    base = `${base.slice(0, match.index)} ${base.slice(match.index + match[0].length)}`;
+    break;
+  }
 
   let year = null;
   const yearMatch = base.match(/\b(19\d{2}|20\d{2})\b/);
@@ -85,7 +105,7 @@ export function parseFileName(fileName) {
   let title = titleCase(base) || titleCase(fileName.replace(/\.[^.]+$/, ''));
   title = title.replace(/^[-–—\s]+|[-–—\s]+$/g, '');
 
-  return { title, year };
+  return { title, year, season, episode };
 }
 
 function readNfo(filePath) {
@@ -241,18 +261,32 @@ export async function scanLibrary(root) {
       if (!meta) continue;
       const parsed = parseFileName(path.basename(filePath));
       const nfo = readNfo(filePath) || {};
+      const collection = rel.includes(path.sep) ? rel.split(path.sep)[0] : 'Movies';
+      const isSeries = parsed.season != null && parsed.episode != null;
+      const seriesTitle = isSeries ? parsed.title : null;
+      const episodeLabel = isSeries
+        ? `S${String(parsed.season).padStart(2, '0')}E${String(parsed.episode).padStart(2, '0')}`
+        : null;
+      const title = isSeries ? seriesTitle : (nfo.title || parsed.title);
       const item = {
         id: idFor(rel),
         relPath: rel,
         fileName: path.basename(filePath),
-        title: nfo.title || parsed.title,
+        title,
+        displayTitle: isSeries ? `${seriesTitle} · ${episodeLabel}` : title,
+        isSeries,
+        seriesTitle,
+        seriesKey: isSeries ? idFor(`${collection}\u0000${seriesTitle.toLowerCase()}`) : null,
+        season: isSeries ? parsed.season : null,
+        episode: isSeries ? parsed.episode : null,
+        episodeLabel,
         year: nfo.year || parsed.year,
         plot: nfo.plot || null,
         genres: nfo.genres?.length ? nfo.genres : [],
         rating: nfo.rating || null,
         posterPath: findArtwork(filePath, 'poster'),
         backdropPath: findArtwork(filePath, 'backdrop'),
-        collection: null,
+        collection,
         durationSec: meta.durationSec,
         width: meta.width,
         height: meta.height,
@@ -261,7 +295,6 @@ export async function scanLibrary(root) {
         size: meta.size,
         mtime: Math.round(meta.mtimeMs),
       };
-      item.collection = rel.includes(path.sep) ? rel.split(path.sep)[0] : 'Movies';
       nextItems.push(item);
 
       const list = collectionsMap.get(item.collection) || [];
@@ -325,9 +358,10 @@ const thumbJobs = [];
 let activeThumbs = 0;
 const THUMB_CONCURRENCY = 2;
 
-function thumbPathFor(id) {
+function thumbPathFor(id, width = 1280) {
   const hash = crypto.createHash('sha1').update(id).digest('hex');
-  return path.join(cacheDir, 'thumbs', `${hash}.jpg`);
+  const suffix = width === 1280 ? '' : `-${width}`;
+  return path.join(cacheDir, 'thumbs', `${hash}${suffix}.jpg`);
 }
 
 async function detectCrop(full, seek, item) {
@@ -347,22 +381,24 @@ async function detectCrop(full, seek, item) {
   return { w, h, x, y };
 }
 
-async function generateThumb(item, full, out) {
+async function generateThumb(item, full, out, width = 1280) {
   const seek = Math.max(1, Math.min((item.durationSec || 60) * 0.22, 600));
+  const height = Math.round((width * 9) / 16);
   await fsp.mkdir(path.dirname(out), { recursive: true });
   const crop = await detectCrop(full, seek, item);
   const cropFilter = crop ? `crop=${crop.w}:${crop.h}:${crop.x}:${crop.y},` : '';
-  const filter = `${cropFilter}scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720`;
+  const filter = `${cropFilter}scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`;
+  const quality = width >= 1280 ? '3' : '4';
   try {
     await execFileP(ffmpegPath, [
       '-hide_banner', '-loglevel', 'error', '-ss', String(seek), '-i', full,
-      '-frames:v', '1', '-vf', filter, '-q:v', '3', '-y', out,
+      '-frames:v', '1', '-vf', filter, '-q:v', quality, '-y', out,
     ], 45000);
   } catch {
     try {
       await execFileP(ffmpegPath, [
         '-hide_banner', '-loglevel', 'error', '-ss', '1', '-i', full,
-        '-frames:v', '1', '-vf', filter, '-q:v', '3', '-y', out,
+        '-frames:v', '1', '-vf', filter, '-q:v', quality, '-y', out,
       ], 45000);
     } catch {
       return false;
@@ -375,7 +411,7 @@ function pumpThumbs() {
   while (activeThumbs < THUMB_CONCURRENCY && thumbJobs.length) {
     const job = thumbJobs.shift();
     activeThumbs++;
-    generateThumb(job.item, job.full, job.out)
+    generateThumb(job.item, job.full, job.out, job.width)
       .then(job.resolve)
       .catch(() => job.resolve(false))
       .finally(() => {
@@ -385,8 +421,8 @@ function pumpThumbs() {
   }
 }
 
-export function ensureThumb(item, full) {
-  const out = thumbPathFor(item.id);
+export function ensureThumb(item, full, width = 1280) {
+  const out = thumbPathFor(item.id, width);
   try {
     const st = fs.statSync(out);
     if (st.isFile() && st.size > 1000) return Promise.resolve(out);
@@ -394,7 +430,7 @@ export function ensureThumb(item, full) {
     /* not generated yet */
   }
   return new Promise((resolve) => {
-    thumbJobs.push({ item, full, out, resolve: (ok) => resolve(ok ? out : null) });
+    thumbJobs.push({ item, full, out, width, resolve: (ok) => resolve(ok ? out : null) });
     pumpThumbs();
   });
 }

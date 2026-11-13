@@ -15,6 +15,8 @@ import {
 import { searchOnline, getOnlineTitle } from './online.js';
 import { searchCastle, getCastleTitle, getCastleStream, isCastleId } from './castle.js';
 import { initSettings, getSettings, isOffline, setOffline } from './settings.js';
+import { initFrames, frameMeta, ensureSprite, spriteFile } from './frames.js';
+import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -44,6 +46,8 @@ const PORT_FILE = path.join(cacheDir, 'port');
 
 initCache(cacheDir);
 initSettings(cacheDir);
+initFrames(cacheDir);
+initIntro(cacheDir);
 getLibrary().root = libraryRoot;
 initDownloads({
   root: libraryRoot,
@@ -117,6 +121,62 @@ app.post('/api/rescan', async (req, res) => {
   }
 });
 
+/* One series, with its seasons and the episodes actually on disk. Duplicate
+ * files for the same episode (two qualities) collapse to the better copy. */
+app.get('/api/series/:key', (req, res) => {
+  const key = String(req.params.key || '');
+  const episodes = getLibrary().items.filter((item) => item.seriesKey === key);
+  if (!episodes.length) return res.status(404).json({ error: 'series not found' });
+
+  const best = new Map();
+  for (const item of episodes) {
+    const slot = `${item.season}x${item.episode}`;
+    const previous = best.get(slot);
+    if (!previous) {
+      best.set(slot, item);
+      continue;
+    }
+    const score = (value) => (value.height || 0) * 1000000 + (value.size || 0);
+    if (score(item) > score(previous)) best.set(slot, item);
+  }
+
+  const seasons = new Map();
+  for (const item of best.values()) {
+    const list = seasons.get(item.season) || [];
+    list.push(item);
+    seasons.set(item.season, list);
+  }
+
+  const payload = [...seasons.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([season, list]) => ({
+      season,
+      episodes: list
+        .sort((a, b) => a.episode - b.episode)
+        .map((item) => ({
+          id: item.id,
+          title: item.title,
+          displayTitle: item.displayTitle,
+          season: item.season,
+          episode: item.episode,
+          episodeLabel: item.episodeLabel,
+          durationSec: item.durationSec,
+          size: item.size,
+          mtime: item.mtime,
+          height: item.height,
+          hasPoster: Boolean(item.posterPath),
+          hasBackdrop: Boolean(item.backdropPath),
+        })),
+    }));
+
+  res.json({
+    key,
+    title: episodes[0].seriesTitle,
+    count: payload.reduce((total, season) => total + season.episodes.length, 0),
+    seasons: payload,
+  });
+});
+
 app.get('/api/stream/:id', (req, res) => {
   const found = resolveItemFile(req.params.id);
   if (!found) return res.status(404).end();
@@ -165,10 +225,59 @@ app.get('/api/thumb/:id', async (req, res) => {
   const found = resolveItemFile(req.params.id);
   if (!found) return res.status(404).end();
   const { item, full } = found;
-  const out = await ensureThumb(item, full);
+  const requested = Number(req.query.w) || 1280;
+  const width = Math.min(1280, Math.max(160, Math.round(requested / 160) * 160));
+  const out = await ensureThumb(item, full, width);
   if (!out) return res.status(404).end();
   res.setHeader('Cache-Control', 'public, max-age=86400');
   res.sendFile(out);
+});
+
+/* ---------- scrubber preview frames + intro markers (both local) ---------- */
+
+app.get('/api/frames/:id', (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).json({ error: 'not found' });
+  res.json(frameMeta(found.item));
+});
+
+app.get('/api/frames/:id/sprite.jpg', async (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).json({ error: 'not found' });
+  const { item, full } = found;
+  try {
+    const out = await ensureSprite(item, full);
+    if (!out) return res.status(500).json({ error: 'could not build preview frames' });
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(out);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+app.get('/api/intro/:id', async (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).json({ error: 'not found' });
+  try {
+    const data = await getIntroMarkers(found.item, found.full);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+app.post('/api/intro/:id', (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).json({ error: 'not found' });
+  const startSec = Number(req.body?.startSec);
+  const endSec = Number(req.body?.endSec);
+  if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) {
+    return res.status(400).json({ error: 'pass numeric startSec and endSec' });
+  }
+  const saved = saveIntroMarkers(found.item, startSec, endSec);
+  if (!saved) return res.status(400).json({ error: 'invalid intro window' });
+  res.json(saved);
 });
 
 app.get('/api/art/:id/:kind', (req, res) => {

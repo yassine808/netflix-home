@@ -10,6 +10,13 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <div id="bootScreen">
+    <video id="bootVideo" src="/startup.mp4" muted playsinline preload="auto" disablepictureinpicture aria-hidden="true"></video>
+    <div class="boot-controls">
+      <button class="boot-btn boot-sound" id="bootSound" type="button" hidden>Sound on</button>
+      <button class="boot-btn" id="bootSkip" type="button">Skip</button>
+    </div>
+  </div>
   <div id="app">
     <header class="nav" id="nav">
       <div class="nav-left">
@@ -173,16 +180,7 @@
 
     <footer class="footer">
       <div class="footer-inner">
-        <p class="footer-brand">NETFLIX <span>HOME</span></p>
-        <div class="footer-cols">
-          <a href="#" onclick="return false">Audio Description</a>
-          <a href="#" onclick="return false">Help Centre</a>
-          <a href="#" onclick="return false">Media Centre</a>
-          <a href="#" onclick="return false">Terms of Use</a>
-          <a href="#" onclick="return false">Privacy</a>
-          <a href="#" onclick="return false">Contact Us</a>
-        </div>
-        <p class="footer-note">A personal streaming front-end for a local movie library. Not affiliated with Netflix.</p>
+        <a class="footer-brand" href="/" aria-label="Netflix Home">NETFLIX <span>HOME</span></a>
       </div>
     </footer>
   </div>
@@ -275,6 +273,14 @@
         </div>
         <div class="modal-side" id="modalSide"></div>
       </div>
+      <section class="series-block" id="seriesBlock" hidden>
+        <div class="series-head">
+          <h2>Episodes</h2>
+          <button class="series-find" id="seriesFind" type="button">Find more episodes</button>
+        </div>
+        <div class="season-tabs" id="seriesSeasons"></div>
+        <div class="episode-list series-episodes" id="seriesEpisodes"></div>
+      </section>
       <div class="modal-more">
         <h2>More Like This</h2>
         <div class="grid" id="moreGrid"></div>

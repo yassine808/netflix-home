@@ -138,6 +138,12 @@ export async function getDownloads() {
   return res.json();
 }
 
+export async function getSeries(key) {
+  const res = await fetch(`/api/series/${encodeURIComponent(key)}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`series ${res.status}`);
+  return res.json();
+}
+
 export async function getSettings() {
   const res = await fetch('/api/settings', { cache: 'no-store' });
   if (!res.ok) throw new Error(`settings ${res.status}`);
@@ -219,9 +225,10 @@ export function qualityLabel(item) {
   return item.height ? 'SD' : '';
 }
 
-export function thumbUrl(item) {
+export function thumbUrl(item, width) {
   if (item.hasBackdrop) return `/api/art/${item.id}/backdrop`;
-  return `/api/thumb/${item.id}`;
+  const query = width ? `?w=${encodeURIComponent(width)}` : '';
+  return `/api/thumb/${item.id}${query}`;
 }
 
 export function posterUrl(item) {

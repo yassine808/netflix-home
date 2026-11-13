@@ -1,7 +1,7 @@
 import {
   getLibrary, rescanLibrary, formatDuration, formatSize, formatClock,
   qualityLabel, thumbUrl, toggleMyList, isInMyList, getMyList, progressFor,
-  continueWatching, debounce, createEl,
+  getSeries, debounce, createEl,
   searchCatalog, getFallbackCatalog, getCatalogItem,
   searchOnline, getOnlineTitle, searchCastle, getCastleTitle, startCastleDownload,
   startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload, reorderDownloads,
@@ -20,6 +20,9 @@ const state = {
   byId: new Map(),
   view: 'home',
   heroId: null,
+  heroPlayId: null,
+  modalPlayId: null,
+  seriesSeason: 0,
   pollTimer: null,
   previewTimer: null,
   previewStart: 0,
@@ -27,6 +30,7 @@ const state = {
   offline: false,
   searchHistory: readJson(SEARCH_HISTORY_KEY, []),
   toastTimer: null,
+  toastExitTimer: null,
   lastFocus: null,
   bootAt: Date.now(),
   rescanning: false,
@@ -121,7 +125,12 @@ const els = {
   modalPlay: $('modalPlay'),
   modalPlayLabel: $('modalPlayLabel'),
   modalList: $('modalList'),
+  seriesBlock: $('seriesBlock'),
+  seriesFind: $('seriesFind'),
+  seriesSeasons: $('seriesSeasons'),
+  seriesEpisodes: $('seriesEpisodes'),
   moreGrid: $('moreGrid'),
+  main: document.querySelector('main'),
   onlineModal: $('onlineModal'),
   onlineBackdrop: $('onlineBackdrop'),
   onlineKicker: $('onlineKicker'),
@@ -202,7 +211,65 @@ const els = {
 
 /* ---------- boot ---------- */
 
+const BOOT_KEY = 'netflix-home:startup-done';
+
+function initBoot() {
+  const overlay = $('bootScreen');
+  const video = $('bootVideo');
+  if (!overlay || !video) return;
+  const soundBtn = $('bootSound');
+  const skipBtn = $('bootSkip');
+  let finished = false;
+
+  const cleanup = () => {
+    try {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    } catch { /* ignore */ }
+    overlay.remove();
+  };
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(safety);
+    overlay.classList.add('is-done');
+    setTimeout(cleanup, 450);
+  };
+
+  let seen = false;
+  try { seen = sessionStorage.getItem(BOOT_KEY) === '1'; } catch { /* storage blocked */ }
+  if (seen || prefersReducedMotion()) {
+    overlay.remove();
+    return;
+  }
+  try { sessionStorage.setItem(BOOT_KEY, '1'); } catch { /* storage blocked */ }
+
+  video.volume = 0.7;
+  const safety = setTimeout(finish, 6500);
+  video.addEventListener('ended', finish, { once: true });
+  video.addEventListener('error', finish, { once: true });
+  skipBtn?.addEventListener('click', finish, { once: true });
+
+  const startMuted = () => {
+    video.muted = true;
+    if (soundBtn) soundBtn.hidden = false;
+    video.play().catch(finish);
+  };
+
+  soundBtn?.addEventListener('click', () => {
+    soundBtn.hidden = true;
+    video.muted = false;
+    try { video.currentTime = 0; } catch { /* ignore */ }
+    video.play().catch(startMuted);
+  });
+
+  video.muted = false;
+  video.play().catch(startMuted);
+}
+
 async function boot() {
+  initBoot();
   bindStaticEvents();
   getSettings()
     .then((settings) => {
@@ -221,7 +288,7 @@ async function loadLibrary({ first = false } = {}) {
     const data = await getLibrary();
     const previousUpdated = state.library?.updatedAt;
     state.library = data;
-    state.items = data.items || [];
+    state.items = (data.items || []).map(ensureSeriesFields);
     state.byId = new Map(state.items.map((i) => [i.id, i]));
     if (els.emptyPath) els.emptyPath.textContent = data.root || 'G:\\Movies';
     els.menuPath.textContent = data.root ? `Library: ${data.root}` : '';
@@ -278,6 +345,237 @@ function schedulePoll() {
   });
 }
 
+/* ---------- series grouping + ambient color + fades ---------- */
+
+const EPISODE_FILE_RE = /\bS(\d{1,2})[\s._-]*E(\d{1,3})\b/i;
+const FILE_NOISE_RE = /\b(?:2160p|1440p|1080p|720p|576p|480p|360p|4k|uhd|hdr10?|bluray|blu-ray|brrip|bdrip|webrip|web-dl|webdl|hdrip|dvdrip|x264|x265|h264|h265|hevc|av1|aac|ac3|eac3|dts|ddp?\d(?:\.\d)?)\b/gi;
+const AMBIENT_KEY = 'netflix-home:colors';
+const ambientCache = readJson(AMBIENT_KEY, {}) || {};
+
+function prefersReducedMotion() {
+  return Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+}
+
+function fadeOut(fn, ms = 180) {
+  if (prefersReducedMotion()) {
+    fn();
+    return;
+  }
+  document.body.classList.add('leaving');
+  setTimeout(fn, ms);
+  setTimeout(() => document.body.classList.remove('leaving'), ms + 500);
+}
+
+/* The server supplies these fields; this keeps an older payload working. */
+function ensureSeriesFields(item) {
+  if (typeof item.isSeries === 'boolean') return item;
+  const source = String(item.fileName || item.title || '');
+  const match = EPISODE_FILE_RE.exec(source);
+  if (!match) {
+    return { ...item, isSeries: false, seriesKey: null, seriesTitle: null, season: null, episode: null, episodeLabel: null, displayTitle: item.title };
+  }
+  const season = Number(match[1]);
+  const episode = Number(match[2]);
+  const seriesTitle = source
+    .replace(/\.[^.]+$/, '')
+    .replace(match[0], ' ')
+    .replace(/[._]+/g, ' ')
+    .replace(FILE_NOISE_RE, ' ')
+    .replace(/\s+/g, ' ')
+    .trim() || item.title;
+  const episodeLabel = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+  return {
+    ...item,
+    title: seriesTitle,
+    seriesTitle,
+    seriesKey: `local:${item.collection || ''}:${seriesTitle.toLowerCase()}`,
+    season,
+    episode,
+    episodeLabel,
+    displayTitle: `${seriesTitle} · ${episodeLabel}`,
+    isSeries: true,
+  };
+}
+
+function episodeScore(episode) {
+  return (Number(episode.height) || 0) * 1000000 + (Number(episode.size) || 0);
+}
+
+/* Two files for the same episode are two qualities, not two episodes. */
+function dedupeEpisodes(list) {
+  const best = new Map();
+  for (const episode of list) {
+    const key = `${episode.season}x${episode.episode}`;
+    const previous = best.get(key);
+    if (!previous || episodeScore(episode) > episodeScore(previous)) best.set(key, episode);
+  }
+  return [...best.values()].sort((a, b) => a.season - b.season || a.episode - b.episode);
+}
+
+function primaryEpisode(group) {
+  const episodes = group.episodes || [];
+  if (!episodes.length) return group;
+  return episodes.find((episode) => {
+    const p = progressFor(episode.id);
+    return !p || (!p.finished && p.t / p.d < 0.965);
+  }) || episodes[0];
+}
+
+/* One card per title: a series is one card with every episode attached. */
+function groupLibrary(items = state.items) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = item.isSeries && item.seriesKey ? item.seriesKey : `movie:${item.id}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { ...item, episodes: item.isSeries ? [item] : null };
+      groups.set(key, group);
+      continue;
+    }
+    if (!item.isSeries) continue;
+    group.episodes.push(item);
+    if (item.mtime > group.mtime) {
+      const episodes = group.episodes;
+      Object.assign(group, item);
+      group.episodes = episodes;
+    }
+  }
+  for (const group of groups.values()) {
+    if (!group.episodes) continue;
+    group.episodes = dedupeEpisodes(group.episodes);
+    group.episodeCount = group.episodes.length;
+    group.seasons = [...new Set(group.episodes.map((episode) => episode.season))].sort((a, b) => a - b);
+    group.playId = primaryEpisode(group).id;
+  }
+  return [...groups.values()];
+}
+
+function groupIndex(groups) {
+  const index = new Map();
+  for (const group of groups) {
+    index.set(group.id, group);
+    if (group.episodes) for (const episode of group.episodes) index.set(episode.id, group);
+  }
+  return index;
+}
+
+/* Turn a mixed list of episode/movie ids into unique title groups. */
+function groupItems(groups, ids) {
+  const index = groupIndex(groups);
+  const out = [];
+  const seen = new Set();
+  for (const id of ids) {
+    const group = index.get(id);
+    if (!group || seen.has(group.id)) continue;
+    seen.add(group.id);
+    out.push(group);
+  }
+  return out;
+}
+
+function progressOfGroup(group) {
+  if (!group?.episodes) {
+    const p = progressFor(group.id);
+    if (!p || p.finished || !(p.t > 5) || !(p.d > 0)) return null;
+    return { ratio: Math.min(1, p.t / p.d), episode: group, updatedAt: p.updatedAt || 0 };
+  }
+  let best = null;
+  for (const episode of group.episodes) {
+    const p = progressFor(episode.id);
+    if (!p || p.finished || !(p.t > 5) || !(p.d > 0) || p.t / p.d >= 0.965) continue;
+    if (!best || (p.updatedAt || 0) > best.updatedAt) {
+      best = { ratio: Math.min(1, p.t / p.d), episode, updatedAt: p.updatedAt || 0 };
+    }
+  }
+  return best;
+}
+
+function sampleDominant(img) {
+  if (!img?.naturalWidth) return null;
+  const size = 24;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, size, size);
+  const { data } = ctx.getImageData(0, 0, size, size);
+  const buckets = new Map();
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 180) continue;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const lum = r * 0.2126 + g * 0.7152 + b * 0.0722;
+    if (lum < 24 || lum > 234) continue;
+    const sat = max === 0 ? 0 : (max - min) / max;
+    const key = `${r >> 5}:${g >> 5}:${b >> 5}`;
+    let entry = buckets.get(key);
+    if (!entry) {
+      entry = { r: 0, g: 0, b: 0, n: 0, weight: 0 };
+      buckets.set(key, entry);
+    }
+    entry.r += r;
+    entry.g += g;
+    entry.b += b;
+    entry.n += 1;
+    entry.weight += 0.3 + sat * 1.6;
+  }
+  let best = null;
+  let score = -1;
+  for (const entry of buckets.values()) {
+    const value = entry.weight * Math.sqrt(entry.n);
+    if (value > score) {
+      score = value;
+      best = entry;
+    }
+  }
+  if (!best || !best.n) return null;
+  return {
+    r: Math.round(best.r / best.n),
+    g: Math.round(best.g / best.n),
+    b: Math.round(best.b / best.n),
+  };
+}
+
+function ambientFallback(id) {
+  const hue = hash(id) % 360;
+  return { hex: `hsl(${hue} 52% 46%)`, glow: `hsla(${hue}, 52%, 46%, 0.32)` };
+}
+
+function setAmbient(card, entry) {
+  card.style.setProperty('--ambient', entry.hex);
+  card.style.setProperty('--ambient-glow', entry.glow);
+}
+
+function applyAmbient(card, img, item) {
+  const cached = ambientCache[item.id];
+  if (cached?.hex) {
+    setAmbient(card, cached);
+    return;
+  }
+  const run = () => {
+    try {
+      const rgb = sampleDominant(img);
+      if (!rgb) {
+        setAmbient(card, ambientFallback(item.id));
+        return;
+      }
+      const hex = `#${[rgb.r, rgb.g, rgb.b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+      const entry = { hex, glow: `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.34)` };
+      ambientCache[item.id] = entry;
+      writeJson(AMBIENT_KEY, ambientCache);
+      setAmbient(card, entry);
+    } catch {
+      setAmbient(card, ambientFallback(item.id));
+    }
+  };
+  if (img.complete && img.naturalWidth) run();
+  else img.addEventListener('load', run, { once: true });
+  img.addEventListener('error', () => setAmbient(card, ambientFallback(item.id)), { once: true });
+}
+
 /* ---------- rendering ---------- */
 
 function renderAll() {
@@ -288,22 +586,26 @@ function renderAll() {
 }
 
 function pickHero() {
-  const items = state.items;
-  if (!items.length) return null;
-  const inProgress = continueWatching(items);
-  if (inProgress.length) return inProgress[0].item;
-  return items[0];
+  const groups = groupLibrary();
+  if (!groups.length) return null;
+  const watching = groups
+    .map((group) => ({ group, progress: progressOfGroup(group) }))
+    .filter((entry) => entry.progress)
+    .sort((a, b) => b.progress.updatedAt - a.progress.updatedAt);
+  return watching.length ? watching[0].group : groups[0];
 }
 
 function renderHero() {
   const item = pickHero();
   if (!item) {
     state.heroId = null;
+    state.heroPlayId = null;
     stopPreview();
     return;
   }
   const same = state.heroId === item.id;
   state.heroId = item.id;
+  state.heroPlayId = item.playId || item.id;
   els.hero.hidden = false;
 
   els.heroTitle.textContent = item.title;
@@ -311,10 +613,10 @@ function renderHero() {
   els.heroImg.src = thumbUrl(item);
   els.heroRating.textContent = item.rating || (item.height >= 1000 ? 'HD' : 'NR');
 
-  const progress = progressFor(item.id);
+  const progress = progressOfGroup(item);
   const meta = [
     item.year || null,
-    formatDuration(item.durationSec) || null,
+    item.episodes ? `${item.episodes.length} episode${item.episodes.length === 1 ? '' : 's'}` : formatDuration(item.durationSec),
     item.genres?.length ? item.genres.slice(0, 2).join(' · ') : null,
   ].filter(Boolean);
   els.heroMeta.replaceChildren();
@@ -350,7 +652,7 @@ function playPreview(item) {
   video.volume = 0.65;
   video.muted = state.previewMuted;
   syncHeroMute();
-  video.src = `/api/stream/${item.id}`;
+  video.src = `/api/stream/${item.playId || item.id}`;
   video.classList.remove('playing');
   const start = state.previewStart;
   video.addEventListener('loadedmetadata', () => {
@@ -408,32 +710,44 @@ function renderRows() {
   const items = state.items;
   if (!items.length) return;
 
-  const progressList = continueWatching(items);
-  const progressMap = new Map(progressList.map((p) => [p.item.id, p.progress]));
+  const groups = groupLibrary(items);
+  const progressMap = new Map();
+  const watching = [];
+  for (const group of groups) {
+    const progress = progressOfGroup(group);
+    if (!progress) continue;
+    progressMap.set(group.id, progress.ratio);
+    watching.push({ group, updatedAt: progress.updatedAt });
+  }
+  watching.sort((a, b) => b.updatedAt - a.updatedAt);
+
   const list = getMyList();
-  const listItems = list.map((id) => state.byId.get(id)).filter(Boolean);
+  const listGroups = groupItems(groups, list);
+  const recent = [...groups].sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
 
   const rows = [];
-  if (progressList.length) {
-    rows.push({ title: 'Continue Watching', items: progressList.map((p) => p.item), progressMap });
+  if (watching.length) {
+    rows.push({ title: 'Continue Watching', items: watching.map((entry) => entry.group), progressMap });
   }
-  rows.push({ title: 'Recently Added', items: items.slice(0, 14) });
+  rows.push({ title: 'Recently Added', items: recent.slice(0, 14) });
 
-  if (items.length >= 5) {
-    rows.push({ title: 'Top 10 in Your Library Today', type: 'top10', items: topTen(items) });
+  if (groups.length >= 5) {
+    rows.push({ title: 'Top 10 in Your Library Today', type: 'top10', items: topTen(groups) });
   }
 
   for (const col of state.library.collections || []) {
     if (col.name === 'Movies' || col.items.length < 2) continue;
-    const rowItems = col.items.map((id) => state.byId.get(id)).filter(Boolean);
-    if (rowItems.length >= 2) rows.push({ title: col.name, items: rowItems, sub: `${rowItems.length} titles` });
+    const rowItems = groupItems(groups, col.items);
+    if (rowItems.length >= 2) {
+      rows.push({ title: col.name, items: rowItems, sub: `${rowItems.length} title${rowItems.length === 1 ? '' : 's'}` });
+    }
   }
 
-  if (listItems.length) {
-    rows.push({ title: 'My List', items: listItems, seeAll: 'mylist' });
+  if (listGroups.length) {
+    rows.push({ title: 'My List', items: listGroups, seeAll: 'mylist' });
   }
 
-  rows.push({ title: 'Movies in Your Library', items, seeAll: 'movies' });
+  rows.push({ title: 'Movies in Your Library', items: groups, seeAll: 'movies' });
 
   for (const row of rows) {
     els.rows.append(buildRow(row));
@@ -508,7 +822,7 @@ function arrowButton(dir) {
   return btn;
 }
 
-function buildCard(item, { progress } = {}) {
+function buildCard(item, { progress, width = 480 } = {}) {
   const card = createEl('div', 'card');
   card.tabIndex = 0;
   card.setAttribute('role', 'button');
@@ -520,15 +834,20 @@ function buildCard(item, { progress } = {}) {
   const img = document.createElement('img');
   img.className = 'card-img';
   img.loading = 'lazy';
+  img.decoding = 'async';
+  img.fetchPriority = 'low';
   img.alt = '';
-  img.src = thumbUrl(item);
+  img.src = thumbUrl(item, width);
   img.addEventListener('load', () => img.classList.add('loaded'));
   img.addEventListener('error', () => img.remove());
 
   const overlay = createEl('div', 'card-overlay');
   overlay.append(createEl('div', 'card-title', item.title));
   const meta = createEl('div', 'card-meta');
-  const bits = [item.year, formatDuration(item.durationSec), qualityLabel(item)].filter(Boolean);
+  const runtime = item.episodes
+    ? `${item.episodes.length} episode${item.episodes.length === 1 ? '' : 's'}`
+    : formatDuration(item.durationSec);
+  const bits = [item.year, runtime, qualityLabel(item)].filter(Boolean);
   meta.textContent = bits.join(' • ');
   overlay.append(meta);
 
@@ -537,7 +856,7 @@ function buildCard(item, { progress } = {}) {
   play.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M7 4.5v15l12-7.5z"/></svg>';
   play.addEventListener('click', (e) => {
     e.stopPropagation();
-    goWatch(item.id);
+    goWatch(item.playId || item.id);
   });
 
   card.append(fallback, img, overlay, play);
@@ -545,10 +864,12 @@ function buildCard(item, { progress } = {}) {
     card.classList.add('has-progress');
     const bar = createEl('div', 'card-progress');
     const fill = document.createElement('i');
-    fill.style.width = `${Math.round(progress * 100)}%`;
+    fill.style.width = `${Math.round(Math.min(1, progress) * 100)}%`;
     bar.append(fill);
     card.append(bar);
   }
+
+  applyAmbient(card, img, item);
 
   card.addEventListener('click', () => openModal(item.id));
   card.addEventListener('keydown', (e) => {
@@ -571,8 +892,10 @@ function buildTop10Card(item, rank, progress) {
   fallback.append(createEl('span', '', item.title));
   const img = document.createElement('img');
   img.loading = 'lazy';
+  img.decoding = 'async';
+  img.fetchPriority = 'low';
   img.alt = '';
-  img.src = thumbUrl(item);
+  img.src = thumbUrl(item, 480);
   img.addEventListener('load', () => img.classList.add('loaded'));
   img.addEventListener('error', () => img.remove());
   const title = createEl('div', 'card-title', item.title);
@@ -580,11 +903,12 @@ function buildTop10Card(item, rank, progress) {
   if (Number.isFinite(progress)) {
     const bar = createEl('div', 'card-progress');
     const fill = document.createElement('i');
-    fill.style.width = `${Math.round(progress * 100)}%`;
+    fill.style.width = `${Math.round(Math.min(1, progress) * 100)}%`;
     bar.append(fill);
     art.append(bar);
   }
   card.append(number, art);
+  applyAmbient(card, img, item);
   card.addEventListener('click', () => openModal(item.id));
   card.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -598,6 +922,7 @@ function buildTop10Card(item, rank, progress) {
 /* ---------- views ---------- */
 
 function setView(view) {
+  const changed = state.view !== view;
   state.view = view;
   const isHome = view === 'home';
   const isDiscover = view === 'discover';
@@ -606,9 +931,11 @@ function setView(view) {
   els.discoverView.hidden = !isDiscover;
   if (isHome) {
     stopPreview();
-    state.heroId = null;
-    renderHero();
-    renderRows();
+    if (changed || !els.rows.childElementCount) {
+      state.heroId = null;
+      renderHero();
+      renderRows();
+    }
   }
   if (isDiscover) stopPreview();
   document.querySelectorAll('.nav-link').forEach((link) => {
@@ -616,6 +943,17 @@ function setView(view) {
   });
   setMobileActive(['home', 'discover', 'movies', 'mylist'].includes(view) ? view : null);
   window.scrollTo(0, 0);
+  if (changed && els.main && !prefersReducedMotion()) {
+    els.main.classList.remove('view-in');
+    els.main.classList.add('view-fade');
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        els.main.classList.remove('view-fade');
+        els.main.classList.add('view-in');
+      });
+    });
+    setTimeout(() => els.main.classList.remove('view-in'), 400);
+  }
 }
 
 function setMobileActive(name) {
@@ -630,15 +968,16 @@ function showHome() {
 
 function showMovies() {
   setView('movies');
+  const groups = groupLibrary();
   els.gridTitle.textContent = 'Movies';
-  els.gridSub.textContent = `${state.items.length} title${state.items.length === 1 ? '' : 's'} in ${state.library?.root || 'your library'}`;
-  fillGrid(els.grid, state.items, els.gridEmpty, 'Nothing in your library yet.');
+  els.gridSub.textContent = `${groups.length} title${groups.length === 1 ? '' : 's'} in ${state.library?.root || 'your library'}`;
+  fillGrid(els.grid, groups, els.gridEmpty, 'Nothing in your library yet.');
 }
 
 function showMyList() {
   setView('mylist');
-  const list = getMyList();
-  const items = list.map((id) => state.byId.get(id)).filter(Boolean);
+  const groups = groupLibrary();
+  const items = groupItems(groups, getMyList());
   els.gridTitle.textContent = 'My List';
   els.gridSub.textContent = `${items.length} saved title${items.length === 1 ? '' : 's'}`;
   fillGrid(els.grid, items, els.gridEmpty, 'Add titles with the + button on any detail page.');
@@ -646,9 +985,11 @@ function showMyList() {
 
 function showCollection(name, items) {
   setView('collection');
+  const groups = groupLibrary();
+  const list = groupItems(groups, items.map((item) => item.id || item));
   els.gridTitle.textContent = name;
-  els.gridSub.textContent = `${items.length} title${items.length === 1 ? '' : 's'}`;
-  fillGrid(els.grid, items, els.gridEmpty, 'No titles here yet.');
+  els.gridSub.textContent = `${list.length} title${list.length === 1 ? '' : 's'}`;
+  fillGrid(els.grid, list, els.gridEmpty, 'No titles here yet.');
 }
 
 /* ---------- discover: archive.org catalog ---------- */
@@ -1285,13 +1626,16 @@ function renderGridForCurrentView() {
   else if (state.view === 'collection') {
     const name = els.gridTitle.textContent;
     const col = state.library.collections.find((c) => c.name === name);
-    if (col) fillGrid(els.grid, col.items.map((id) => state.byId.get(id)).filter(Boolean), els.gridEmpty, '');
+    if (col) {
+      const groups = groupLibrary();
+      fillGrid(els.grid, groupItems(groups, col.items), els.gridEmpty, '');
+    }
   }
 }
 
 function fillGrid(container, items, emptyEl, emptyText) {
   container.replaceChildren();
-  items.forEach((item) => container.append(buildCard(item)));
+  items.forEach((item) => container.append(buildCard(item, { width: 640 })));
   emptyEl.hidden = items.length > 0;
   if (!items.length && emptyText) emptyEl.querySelector('p').textContent = emptyText;
 }
@@ -1584,10 +1928,18 @@ function searchScore(query, item) {
 }
 
 function renderLocalResults(query, q) {
-  const results = state.items
-    .map((item, index) => ({ item, index, score: searchScore(q, item) }))
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score || a.index - b.index)
+  const groups = groupLibrary();
+  const index = groupIndex(groups);
+  const best = new Map();
+  state.items.forEach((item, i) => {
+    const score = searchScore(q, item);
+    if (score <= 0) return;
+    const group = index.get(item.id) || item;
+    const previous = best.get(group.id);
+    if (!previous || score > previous.score) best.set(group.id, { item: group, score, order: i });
+  });
+  const results = [...best.values()]
+    .sort((a, b) => b.score - a.score || a.order - b.order)
     .map((entry) => entry.item);
   els.searchResults.replaceChildren();
   results.forEach((item) => els.searchResults.append(buildCard(item)));
@@ -2254,62 +2606,191 @@ function isModalOpen() {
 }
 
 let modalItemId = null;
+let seriesToken = 0;
 let lastFocusEl = null;
 
 function openModal(id) {
   const item = state.byId.get(id);
   if (!item) return;
+  const groups = groupLibrary();
+  const index = groupIndex(groups);
+  const group = index.get(id) || item;
+  const isSeries = Boolean(group.episodes && group.episodes.length);
+  const episode = isSeries ? (group.episodes.find((entry) => entry.id === id) || primaryEpisode(group)) : group;
+
   if (!els.searchOverlay.hidden) closeSearch();
   stopPreview();
   lastFocusEl = document.activeElement;
-  modalItemId = id;
+  modalItemId = group.id;
+  state.modalPlayId = episode.id;
+  state.seriesSeason = episode.season || (group.episodes?.[0]?.season) || 0;
   els.modal.hidden = false;
   syncBodyLock();
   els.modal.scrollTop = 0;
-  els.modalImg.src = thumbUrl(item);
-  els.modalImg.alt = item.title;
-  els.modalTitle.textContent = item.title;
+  els.modalImg.src = thumbUrl(group);
+  els.modalImg.alt = group.title;
+  els.modalTitle.textContent = group.title;
 
   els.modalMeta.replaceChildren();
-  const metaBits = [item.year, formatDuration(item.durationSec), qualityLabel(item)].filter(Boolean);
+  const seasons = isSeries ? [...new Set(group.episodes.map((entry) => entry.season))].sort((a, b) => a - b) : [];
+  const metaBits = isSeries
+    ? [
+      group.year,
+      `${group.episodes.length} episode${group.episodes.length === 1 ? '' : 's'}`,
+      seasons.length > 1 ? `${seasons.length} seasons` : null,
+      qualityLabel(episode),
+    ].filter(Boolean)
+    : [group.year, formatDuration(group.durationSec), qualityLabel(group)].filter(Boolean);
   metaBits.forEach((bit, i) => {
     if (i > 0) els.modalMeta.append(createEl('span', 'dot', '•'));
     els.modalMeta.append(createEl('span', i === 0 ? 'year' : '', bit));
   });
-  if (item.rating) els.modalMeta.append(createEl('span', 'chip', item.rating));
-  if (item.genres?.length) els.modalMeta.append(createEl('span', '', item.genres.slice(0, 3).join(' · ')));
+  if (group.rating) els.modalMeta.append(createEl('span', 'chip', group.rating));
+  if (group.genres?.length) els.modalMeta.append(createEl('span', '', group.genres.slice(0, 3).join(' · ')));
 
-  els.modalPlot.textContent = item.plot
-    || `A title from your personal library, streamed directly from your drive. ${item.genres?.length ? `Genres: ${item.genres.join(', ')}.` : ''}`.trim();
+  els.modalPlot.textContent = group.plot
+    || `A title from your personal library, streamed directly from your drive. ${group.genres?.length ? `Genres: ${group.genres.join(', ')}.` : ''}`.trim();
 
   els.modalSide.replaceChildren();
   els.modalSide.append(createEl('h3', '', 'Details'));
   const dl = document.createElement('dl');
-  const details = [
-    ['File', item.fileName],
-    ['Folder', item.collection],
-    ['Resolution', item.width && item.height ? `${item.width} × ${item.height}` : 'Unknown'],
-    ['Video', item.videoCodec ? item.videoCodec.toUpperCase() : 'Unknown'],
-    ['Audio', item.audioCodec ? item.audioCodec.toUpperCase() : 'Unknown'],
-    ['Size', formatSize(item.size) || 'Unknown'],
-    ['Added', new Date(item.mtime).toLocaleDateString()],
-  ];
+  const totalSize = isSeries ? group.episodes.reduce((sum, entry) => sum + (entry.size || 0), 0) : group.size;
+  const details = isSeries
+    ? [
+      ['Folder', group.collection],
+      ['Seasons', String(seasons.length)],
+      ['Episodes', String(group.episodes.length)],
+      ['Resolution', episode.width && episode.height ? `${episode.width} × ${episode.height}` : 'Unknown'],
+      ['Video', episode.videoCodec ? episode.videoCodec.toUpperCase() : 'Unknown'],
+      ['Audio', episode.audioCodec ? episode.audioCodec.toUpperCase() : 'Unknown'],
+      ['Size', formatSize(totalSize) || 'Unknown'],
+      ['Added', new Date(group.mtime).toLocaleDateString()],
+    ]
+    : [
+      ['File', group.fileName],
+      ['Folder', group.collection],
+      ['Resolution', group.width && group.height ? `${group.width} × ${group.height}` : 'Unknown'],
+      ['Video', group.videoCodec ? group.videoCodec.toUpperCase() : 'Unknown'],
+      ['Audio', group.audioCodec ? group.audioCodec.toUpperCase() : 'Unknown'],
+      ['Size', formatSize(group.size) || 'Unknown'],
+      ['Added', new Date(group.mtime).toLocaleDateString()],
+    ];
   for (const [k, v] of details) {
     if (!v) continue;
     dl.append(createEl('dt', '', k), createEl('dd', '', v));
   }
   els.modalSide.append(dl);
 
-  updateModalPlayLabel(item);
-  updateModalListButton(item);
-  renderMore(item);
+  updateModalPlayLabel(episode);
+  updateModalListButton(group);
+  renderSeriesBlock(group);
+  if (isSeries) hydrateSeries(group);
+  renderMore(group);
   setTimeout(() => document.querySelector('.modal-close')?.focus(), 40);
+}
+
+function renderSeriesBlock(group) {
+  const episodes = group.episodes || [];
+  if (!group.isSeries || !episodes.length) {
+    els.seriesBlock.hidden = true;
+    els.seriesSeasons.replaceChildren();
+    els.seriesEpisodes.replaceChildren();
+    return;
+  }
+  els.seriesBlock.hidden = false;
+  const seasons = [...new Set(episodes.map((entry) => entry.season))].sort((a, b) => a - b);
+  if (!seasons.includes(state.seriesSeason)) state.seriesSeason = seasons[0];
+  els.seriesSeasons.replaceChildren();
+  for (const season of seasons) {
+    const btn = createEl('button', 'season-tab', `Season ${season}`);
+    btn.type = 'button';
+    btn.classList.toggle('active', season === state.seriesSeason);
+    btn.addEventListener('click', () => {
+      state.seriesSeason = season;
+      renderSeriesBlock(group);
+    });
+    els.seriesSeasons.append(btn);
+  }
+  els.seriesFind.disabled = state.offline;
+  els.seriesFind.textContent = state.offline ? 'Go online to find more' : 'Find more episodes';
+  renderSeriesEpisodes(episodes);
+}
+
+function renderSeriesEpisodes(episodes) {
+  els.seriesEpisodes.replaceChildren();
+  const list = episodes
+    .filter((entry) => entry.season === state.seriesSeason)
+    .sort((a, b) => a.episode - b.episode);
+  if (!list.length) {
+    els.seriesEpisodes.append(createEl('p', 'series-empty', 'No episodes on disk for this season.'));
+    return;
+  }
+  for (const raw of list) {
+    const ep = state.byId.get(raw.id) || raw;
+    const row = createEl('article', 'episode-row series-episode');
+    const img = document.createElement('img');
+    img.className = 'episode-thumb series-ep-thumb';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.alt = '';
+    img.src = thumbUrl(ep, 320);
+    img.addEventListener('error', () => img.remove());
+
+    const info = createEl('div', 'series-ep-info');
+    const label = ep.episodeLabel || `S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')}`;
+    info.append(createEl('span', 'series-ep-label', label));
+    info.append(createEl('strong', 'series-ep-name', `Episode ${ep.episode}`));
+    const bits = [formatDuration(ep.durationSec), formatSize(ep.size), qualityLabel(ep)].filter(Boolean);
+    info.append(createEl('span', 'series-ep-meta', bits.join(' · ')));
+    const progress = progressFor(ep.id);
+    if (progress && !progress.finished && progress.t > 5 && progress.d > 0) {
+      const bar = createEl('div', 'series-ep-bar');
+      const fill = document.createElement('i');
+      fill.style.width = `${Math.round(Math.min(1, progress.t / progress.d) * 100)}%`;
+      bar.append(fill);
+      info.append(bar);
+    }
+
+    const play = createEl('button', 'series-ep-play');
+    play.type = 'button';
+    play.setAttribute('aria-label', `Play episode ${ep.episode}`);
+    play.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg><span>Play</span>';
+    play.addEventListener('click', () => goWatch(ep.id));
+
+    row.append(img, info, play);
+    if (ep.id === state.modalPlayId) row.classList.add('current');
+    els.seriesEpisodes.append(row);
+  }
+}
+
+/* The local grouping is already complete; the API confirms it for rescan/quality changes. */
+async function hydrateSeries(group) {
+  if (!group.seriesKey || !group.episodes) return;
+  const token = ++seriesToken;
+  try {
+    const data = await getSeries(group.seriesKey);
+    if (token !== seriesToken || modalItemId !== group.id) return;
+    const episodes = (data.seasons || [])
+      .flatMap((season) => season.episodes || [])
+      .map((entry) => state.byId.get(entry.id) || entry)
+      .filter(Boolean);
+    if (!episodes.length) return;
+    const before = group.episodes.map((entry) => entry.id).join(',');
+    group.episodes = dedupeEpisodes(episodes);
+    group.seasons = [...new Set(group.episodes.map((entry) => entry.season))].sort((a, b) => a - b);
+    group.episodeCount = group.episodes.length;
+    const after = group.episodes.map((entry) => entry.id).join(',');
+    if (before !== after) renderSeriesBlock(group);
+  } catch {
+    /* offline or older server: keep the locally grouped episodes */
+  }
 }
 
 function updateModalPlayLabel(item) {
   const p = progressFor(item.id);
   const resume = p && !p.finished && p.t > 5;
-  els.modalPlayLabel.textContent = resume ? `Resume ${formatClock(p.t)}` : 'Play';
+  const label = item.episodeLabel ? `${item.episodeLabel} · ` : '';
+  els.modalPlayLabel.textContent = resume ? `Resume ${label}${formatClock(p.t)}` : 'Play';
 }
 
 function updateModalListButton(item) {
@@ -2322,13 +2803,14 @@ function updateModalListButton(item) {
 
 function renderMore(item) {
   els.moreGrid.replaceChildren();
-  let pool = state.items.filter((i) => i.id !== item.id && (
-    i.collection === item.collection
-    || (i.genres || []).some((g) => (item.genres || []).includes(g))
+  const groups = groupLibrary();
+  let pool = groups.filter((other) => other.id !== item.id && (
+    other.collection === item.collection
+    || (other.genres || []).some((g) => (item.genres || []).includes(g))
   ));
   if (pool.length < 3) {
-    const seen = new Set(pool.map((i) => i.id));
-    pool = pool.concat(state.items.filter((i) => i.id !== item.id && !seen.has(i.id)));
+    const seen = new Set(pool.map((other) => other.id));
+    pool = pool.concat(groups.filter((other) => other.id !== item.id && !seen.has(other.id)));
   }
   pool.slice(0, 6).forEach((other) => els.moreGrid.append(buildCard(other)));
 }
@@ -2337,6 +2819,9 @@ function closeModal() {
   if (!isModalOpen()) return;
   els.modal.hidden = true;
   modalItemId = null;
+  state.modalPlayId = null;
+  seriesToken += 1;
+  els.seriesBlock.hidden = true;
   syncBodyLock();
   lastFocusEl?.focus?.();
   if (state.view === 'home') {
@@ -2354,7 +2839,10 @@ function refreshModalIfOpen() {
 function goWatch(id) {
   const item = state.byId.get(id);
   if (!item) return;
-  location.href = `/watch?id=${encodeURIComponent(id)}`;
+  closeSearch();
+  fadeOut(() => {
+    location.href = `/watch?id=${encodeURIComponent(id)}`;
+  });
 }
 
 async function rescan() {
@@ -2478,11 +2966,57 @@ function bindNotifs() {
   setInterval(() => { if (!els.notifMenu.hidden) renderNotifs(); }, 30000);
 }
 
-function toast(message) {
+const TOAST_ICONS = {
+  info: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><circle cx="12" cy="7.5" r=".9" fill="currentColor" stroke="none"/></svg>',
+  done: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m5 12.5 4.5 4.5L19 7"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4 3 20h18z"/><path d="M12 10v4"/><circle cx="12" cy="17" r=".8" fill="currentColor" stroke="none"/></svg>',
+  fail: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 7v6"/><circle cx="12" cy="16.5" r=".7" fill="currentColor"/></svg>',
+};
+
+function inferToastType(message) {
+  const text = String(message || '');
+  if (/fail|could not|couldn't|error|unable|not found|no longer/i.test(text)) return 'fail';
+  if (/cancel|offline|paused|blocked|try again/i.test(text)) return 'warn';
+  if (/added|saved|removed|complete|finished|updated|downloaded|ready|done|library/i.test(text)) return 'done';
+  return 'info';
+}
+
+function toast(message, { type, title } = {}) {
+  const el = els.toast;
   clearTimeout(state.toastTimer);
-  els.toast.textContent = message;
-  els.toast.hidden = false;
-  state.toastTimer = setTimeout(() => { els.toast.hidden = true; }, 4200);
+  clearTimeout(state.toastExitTimer);
+  const kind = type || inferToastType(message);
+  el.dataset.type = kind;
+  el.replaceChildren();
+
+  const ico = createEl('div', 'toast-ico');
+  ico.innerHTML = TOAST_ICONS[kind] || TOAST_ICONS.info;
+  const body = createEl('div', 'toast-body');
+  if (title) body.append(createEl('div', 'toast-title', title));
+  body.append(createEl('div', 'toast-msg', String(message ?? '')));
+  const close = createEl('button', 'toast-x', '×');
+  close.type = 'button';
+  close.setAttribute('aria-label', 'Dismiss notification');
+  const bar = createEl('div', 'toast-progress');
+
+  el.append(ico, body, close, bar);
+  el.hidden = false;
+  el.classList.remove('is-out');
+  el.classList.remove('is-in');
+  void el.offsetWidth;
+  el.classList.add('is-in');
+
+  const dismiss = () => {
+    clearTimeout(state.toastTimer);
+    el.classList.remove('is-in');
+    el.classList.add('is-out');
+    state.toastExitTimer = setTimeout(() => {
+      el.hidden = true;
+      el.classList.remove('is-out');
+    }, 220);
+  };
+  close.addEventListener('click', dismiss, { once: true });
+  state.toastTimer = setTimeout(dismiss, 4200);
 }
 
 /* ---------- events ---------- */
@@ -2516,8 +3050,8 @@ function bindStaticEvents() {
   }, { passive: true });
 
   els.heroPlay.addEventListener('click', () => {
-    const item = state.byId.get(state.heroId);
-    if (item) goWatch(item.id);
+    const id = state.heroPlayId || state.heroId;
+    if (id) goWatch(id);
   });
   els.heroInfo.addEventListener('click', () => {
     if (state.heroId) openModal(state.heroId);
@@ -2636,7 +3170,18 @@ function bindStaticEvents() {
   });
 
   els.modalPlay.addEventListener('click', () => {
-    if (modalItemId) goWatch(modalItemId);
+    const id = state.modalPlayId || modalItemId;
+    if (id) goWatch(id);
+  });
+  els.seriesFind.addEventListener('click', () => {
+    if (state.offline) {
+      toast('Go online to find more episodes.', { type: 'warn' });
+      return;
+    }
+    const item = state.byId.get(modalItemId);
+    if (!item) return;
+    closeModal();
+    openCastleForTitle(item.seriesTitle || item.title);
   });
   els.modalList.addEventListener('click', () => {
     if (!modalItemId) return;
