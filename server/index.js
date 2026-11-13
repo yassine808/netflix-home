@@ -17,15 +17,26 @@ import { searchCastle, getCastleTitle, getCastleStream, isCastleId } from './cas
 import { initSettings, getSettings, isOffline, setOffline } from './settings.js';
 import { initFrames, frameMeta, ensureSprite, spriteFile } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
+import { initHero, heroStart, heroReady, ensureHero, warmHeroes } from './hero.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const publicDir = path.join(projectRoot, 'public');
-const cacheDir = path.join(projectRoot, '.cache');
 
+function exactDir(dir, name) {
+  try {
+    return fs.readdirSync(dir).includes(name);
+  } catch {
+    return false;
+  }
+}
+
+/* The deployed copy lives next to its own movies (G:\NETFLIX\Movies), so a
+ * "Movies" folder beside the app wins over the old fixed locations. */
 function resolveLibraryRoot() {
   if (process.env.LIBRARY_ROOT) return path.resolve(process.env.LIBRARY_ROOT);
-  for (const candidate of ['G:\\Movies', 'G:\\']) {
+  if (exactDir(projectRoot, 'Movies')) return projectRoot;
+  for (const candidate of ['G:\\NETFLIX', 'G:\\Movies', 'G:\\']) {
     try {
       if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) return candidate;
     } catch {
@@ -38,6 +49,9 @@ function resolveLibraryRoot() {
 }
 
 const libraryRoot = resolveLibraryRoot();
+/* The database and thumbnails live with the library, so G:\NETFLIX holds the
+ * movies, the cache and the launcher together. */
+const cacheDir = path.join(libraryRoot, '.cache');
 const preferredPort = Number(process.env.PORT) || 3000;
 
 // Anyone can already be on 3000 (another dev server, an old instance). Rather
@@ -48,11 +62,13 @@ initCache(cacheDir);
 initSettings(cacheDir);
 initFrames(cacheDir);
 initIntro(cacheDir);
+initHero(cacheDir);
 getLibrary().root = libraryRoot;
 initDownloads({
   root: libraryRoot,
   onDownloadComplete: async () => {
-    await scanLibrary(libraryRoot);
+    const lib = await scanLibrary(libraryRoot);
+    warmHeroes(lib.items, libraryRoot);
   },
 });
 
@@ -115,6 +131,7 @@ app.get('/api/library', (req, res) => {
 app.post('/api/rescan', async (req, res) => {
   try {
     const lib = await scanLibrary(libraryRoot);
+    warmHeroes(lib.items, libraryRoot);
     res.json({ ok: true, count: lib.items.length, updatedAt: lib.updatedAt });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });
@@ -177,6 +194,104 @@ app.get('/api/series/:key', (req, res) => {
   });
 });
 
+/* Every episode of the series that the download catalog knows about, so the
+ * detail modal can offer Play for files on disk and Download for the rest. */
+const seriesCatalogCache = new Map();
+const SERIES_CATALOG_TTL = 10 * 60 * 1000;
+
+function normalizeTitle(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function defaultQuality(resolutions) {
+  const list = Array.isArray(resolutions) ? resolutions : [];
+  return list.find((entry) => entry.resolution === 2 && !entry.premium)
+    || [...list].reverse().find((entry) => !entry.premium)
+    || list[0]
+    || null;
+}
+
+function shapeCatalogEpisode(entry) {
+  const quality = defaultQuality(entry.resolutions);
+  return {
+    episode: entry.episode,
+    title: entry.title,
+    duration: entry.duration,
+    thumbnail: entry.thumbnail,
+    movieId: entry.movieId,
+    episodeId: entry.episodeId,
+    quality: quality
+      ? { resolution: quality.resolution, label: quality.label, size: quality.size, premium: quality.premium }
+      : null,
+  };
+}
+
+async function catalogSeriesEpisodes(seriesTitle) {
+  const search = await searchCastle(seriesTitle);
+  const wanted = normalizeTitle(seriesTitle);
+  const candidates = (search.results || []).filter((entry) => entry.type === 'series' || entry.type === 'anime');
+  const exact = candidates.find((entry) => normalizeTitle(entry.title) === wanted);
+  const loose = candidates.find((entry) => {
+    const name = normalizeTitle(entry.title);
+    return name && (name.includes(wanted) || wanted.includes(name));
+  });
+  const hit = exact || loose;
+  if (!hit) return null;
+
+  const first = await getCastleTitle(hit.id);
+  const seasonRows = Array.isArray(first.seasons) ? first.seasons : [];
+  if (!seasonRows.length) {
+    return {
+      catalogId: hit.id,
+      title: hit.title,
+      poster: hit.poster,
+      seasons: [{
+        season: 0,
+        episodes: (first.episodes || []).map(shapeCatalogEpisode),
+      }],
+    };
+  }
+
+  const seasons = [];
+  for (const row of seasonRows) {
+    let episodes = [];
+    if (row.season === first.activeSeason) {
+      episodes = (first.seasons.find((entry) => entry.season === first.activeSeason)?.episodes) || [];
+    } else {
+      const detail = await getCastleTitle(hit.id, { season: row.season });
+      const active = (detail.seasons || []).find((entry) => entry.season === detail.activeSeason);
+      episodes = active?.episodes || [];
+    }
+    seasons.push({ season: row.season, episodes: episodes.map(shapeCatalogEpisode) });
+  }
+
+  return { catalogId: hit.id, title: hit.title, poster: hit.poster, seasons };
+}
+
+app.get('/api/series/:key/catalog', async (req, res) => {
+  if (isOffline()) {
+    return res.status(503).json({ error: 'offline mode is on — internet access is disabled', offline: true });
+  }
+  const key = String(req.params.key || '');
+  const episodes = getLibrary().items.filter((item) => item.seriesKey === key);
+  if (!episodes.length) return res.status(404).json({ error: 'series not found' });
+
+  const seriesTitle = episodes[0].seriesTitle || episodes[0].title;
+  const cached = seriesCatalogCache.get(key);
+  if (cached && Date.now() - cached.at < SERIES_CATALOG_TTL) return res.json(cached.value);
+
+  try {
+    const data = await catalogSeriesEpisodes(seriesTitle);
+    if (!data) return res.status(404).json({ error: `“${seriesTitle}” is not in the download catalog` });
+    const value = { seriesKey: key, seriesTitle, seasons: data.seasons, catalogTitle: data.title, catalogId: data.catalogId };
+    seriesCatalogCache.set(key, { at: Date.now(), value });
+    res.set('Cache-Control', 'public, max-age=600');
+    res.json(value);
+  } catch (err) {
+    res.status(err?.status || 502).json({ error: err?.message || String(err) });
+  }
+});
+
 app.get('/api/stream/:id', (req, res) => {
   const found = resolveItemFile(req.params.id);
   if (!found) return res.status(404).end();
@@ -234,6 +349,47 @@ app.get('/api/thumb/:id', async (req, res) => {
 });
 
 /* ---------- scrubber preview frames + intro markers (both local) ---------- */
+
+/* Hero cache: still + short preview clip stored in <library>/.cache/library.db.
+ * The still falls back to a generated thumbnail while the clip is being built. */
+app.get('/api/hero/:id/image.jpg', async (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).end();
+  const { item, full } = found;
+  const cached = heroReady(item);
+  if (cached) {
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.sendFile(cached.image);
+  }
+  ensureHero(item, full).catch(() => {});
+  const out = await ensureThumb(item, full, 1280);
+  if (!out) return res.status(404).end();
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.sendFile(out);
+});
+
+app.get('/api/hero/:id/preview.mp4', async (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).end();
+  const { item, full } = found;
+  const hero = await ensureHero(item, full);
+  if (!hero?.video) return res.status(503).json({ error: 'preview is not ready' });
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.setHeader('Content-Type', 'video/mp4');
+  res.sendFile(hero.video);
+});
+
+app.get('/api/hero/:id', (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).json({ error: 'not found' });
+  const { item } = found;
+  const cached = heroReady(item);
+  res.json({
+    ready: Boolean(cached),
+    startSec: cached ? cached.startSec : heroStart(item),
+    builtAt: cached ? cached.builtAt : null,
+  });
+});
 
 app.get('/api/frames/:id', (req, res) => {
   const found = resolveItemFile(req.params.id);
@@ -617,6 +773,7 @@ function listen(port, attempt = 0) {
     try {
       const lib = await scanLibrary(libraryRoot);
       console.log(`library ready: ${lib.items.length} title(s) in ${lib.scannedInMs} ms`);
+      warmHeroes(lib.items, libraryRoot);
     } catch (err) {
       console.error('scan failed:', err);
     }

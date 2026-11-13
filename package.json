@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node --watch server/index.js"
+    "dev": "node --watch server/index.js",
+    "deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File deploy.ps1"
   },
   "dependencies": {
     "express": "^4.21.2",

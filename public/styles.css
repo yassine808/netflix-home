@@ -949,7 +949,7 @@ code { font-family: Consolas, "Courier New", monospace; }
 /* ---------- online title modal ---------- */
 
 .modal-panel.online-panel { width: min(940px, 94vw); }
-.online-hero { position: relative; min-height: 410px; height: 50vh; background: #0f0f0f; }
+.online-hero { position: relative; min-height: 410px; height: 50vh; background: #0f0f0f; overflow: hidden; }
 .online-hero > img { width: 100%; height: 100%; object-fit: cover; object-position: center 28%; }
 .online-hero::after {
   content: "";
@@ -1122,7 +1122,7 @@ code { font-family: Consolas, "Courier New", monospace; }
 }
 .modal-close:hover { background: #000; }
 
-.modal-hero { position: relative; min-height: 430px; height: 52vh; background: #0f0f0f; }
+.modal-hero { position: relative; min-height: 430px; height: 52vh; background: #0f0f0f; overflow: hidden; }
 .modal-hero > img { width: 100%; height: 100%; object-fit: cover; object-position: center 30%; }
 .modal-hero-grad {
   position: absolute;
@@ -1563,7 +1563,7 @@ body::before {
 .btn-play:hover::after { transform: translateX(120%); }
 .btn-info { background: var(--glass); border: 1px solid var(--glass-line); backdrop-filter: blur(14px); }
 .btn-info:hover { background: rgba(255,255,255,.14); }
-.btn-round { border-radius: 50%; background: var(--glass); backdrop-filter: blur(12px); border: 1.5px solid rgba(255,255,255,.4); }
+.btn-round { border-radius: 50%; background: var(--glass); backdrop-filter: blur(12px); border: 1.5px solid rgba(255,255,255,.4); width: 50px; height: 50px; min-width: 50px; padding: 0; flex: 0 0 auto; }
 .btn-round:hover { border-color: #fff; transform: scale(1.1); }
 .empty-actions .btn { background: var(--red); color: #fff; box-shadow: var(--ember); }
 .empty-actions .btn:hover { background: #ff4350; }
@@ -1869,35 +1869,6 @@ body.dl-dragging, body.dl-dragging * { cursor: grabbing !important; user-select:
   object-fit: cover;
   background: #000;
 }
-.boot-controls {
-  position: absolute;
-  right: 24px;
-  bottom: 22px;
-  display: flex;
-  gap: 10px;
-}
-.boot-btn {
-  height: 36px;
-  padding: 0 16px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  backdrop-filter: blur(10px);
-  transition: background 0.2s, transform 0.25s var(--spring);
-}
-.boot-btn:hover { background: rgba(255, 255, 255, 0.16); transform: translateY(-1px); }
-.boot-sound { background: #fff; color: #0b0a0c; border-color: #fff; }
-.boot-sound:hover { background: #ececec; }
-.boot-sound[hidden] { display: none; }
-@media (max-width: 520px) {
-  .boot-controls { right: 14px; bottom: 14px; }
-}
-
 /* ---------- view + page fades (in and out) ---------- */
 main { transition: opacity 0.18s ease; }
 main.view-fade { opacity: 0; }
@@ -2020,6 +1991,12 @@ body.leaving .picker { opacity: 0; transition: opacity 0.18s ease; }
 }
 .series-ep-play:hover { background: #f0f0f0; transform: translateY(-1px); }
 .series-ep-play svg { width: 14px; height: 14px; }
+.series-ep-download { background: rgba(255, 255, 255, 0.16); color: #fff; }
+.series-ep-download:hover { background: var(--red); color: #fff; }
+.series-ep-download svg { width: 15px; height: 15px; }
+.series-ep-download.queued,
+.series-ep-download:disabled { opacity: 0.6; cursor: default; transform: none; }
+.series-episode.is-remote .series-ep-name { color: #d6d5dc; }
 .series-empty { color: var(--muted); font-size: 13px; padding: 10px 4px 0; }
 
 /* ---------- per-title ambient light on card hover ---------- */

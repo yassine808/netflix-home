@@ -144,6 +144,17 @@ export async function getSeries(key) {
   return res.json();
 }
 
+/* Episodes known to the download catalog, with local + missing merged by the UI. */
+export async function getSeriesCatalog(key, { signal } = {}) {
+  const res = await fetch(`/api/series/${encodeURIComponent(key)}/catalog`, { cache: 'no-store', signal });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    throw new Error(payload?.error || `series catalog ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function getSettings() {
   const res = await fetch('/api/settings', { cache: 'no-store' });
   if (!res.ok) throw new Error(`settings ${res.status}`);
@@ -229,6 +240,15 @@ export function thumbUrl(item, width) {
   if (item.hasBackdrop) return `/api/art/${item.id}/backdrop`;
   const query = width ? `?w=${encodeURIComponent(width)}` : '';
   return `/api/thumb/${item.id}${query}`;
+}
+
+/* Cached hero still + 12 s preview clip (see server/hero.js). */
+export function heroImageUrl(item) {
+  return `/api/hero/${encodeURIComponent(item.id)}/image.jpg`;
+}
+
+export function heroPreviewUrl(item) {
+  return `/api/hero/${encodeURIComponent(item.id)}/preview.mp4`;
 }
 
 export function posterUrl(item) {

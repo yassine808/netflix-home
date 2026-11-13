@@ -1,12 +1,12 @@
 import {
   getLibrary, rescanLibrary, formatDuration, formatSize, formatClock,
   qualityLabel, thumbUrl, toggleMyList, isInMyList, getMyList, progressFor,
-  getSeries, debounce, createEl,
+  getSeries, getSeriesCatalog, debounce, createEl,
   searchCatalog, getFallbackCatalog, getCatalogItem,
   searchOnline, getOnlineTitle, searchCastle, getCastleTitle, startCastleDownload,
   startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   getSettings, setOfflineMode,
-  readJson, writeJson,
+  readJson, writeJson, heroImageUrl, heroPreviewUrl,
 } from './common.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'downloading', 'cancelling']);
@@ -26,6 +26,7 @@ const state = {
   pollTimer: null,
   previewTimer: null,
   previewStart: 0,
+  previewMode: 'clip',
   previewMuted: readJson(PREVIEW_MUTED_KEY, false) === true,
   offline: false,
   searchHistory: readJson(SEARCH_HISTORY_KEY, []),
@@ -62,6 +63,9 @@ const state = {
   castleBusy: false,
   castleDetailToken: 0,
   castleSeasonToken: 0,
+  seriesCatalog: new Map(),
+  seriesCatalogLoading: new Set(),
+  queuedEpisodes: new Set(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -217,8 +221,6 @@ function initBoot() {
   const overlay = $('bootScreen');
   const video = $('bootVideo');
   if (!overlay || !video) return;
-  const soundBtn = $('bootSound');
-  const skipBtn = $('bootSkip');
   let finished = false;
 
   const cleanup = () => {
@@ -245,27 +247,27 @@ function initBoot() {
   }
   try { sessionStorage.setItem(BOOT_KEY, '1'); } catch { /* storage blocked */ }
 
-  video.volume = 0.7;
+  // The logo film always plays with sound, at a moderate level.
+  video.volume = 0.4;
   const safety = setTimeout(finish, 6500);
   video.addEventListener('ended', finish, { once: true });
   video.addEventListener('error', finish, { once: true });
-  skipBtn?.addEventListener('click', finish, { once: true });
 
-  const startMuted = () => {
-    video.muted = true;
-    if (soundBtn) soundBtn.hidden = false;
-    video.play().catch(finish);
+  const unmuteOnGesture = () => {
+    video.muted = false;
+    document.removeEventListener('pointerdown', unmuteOnGesture, true);
+    document.removeEventListener('keydown', unmuteOnGesture, true);
   };
 
-  soundBtn?.addEventListener('click', () => {
-    soundBtn.hidden = true;
-    video.muted = false;
-    try { video.currentTime = 0; } catch { /* ignore */ }
-    video.play().catch(startMuted);
-  });
-
   video.muted = false;
-  video.play().catch(startMuted);
+  video.play().catch(() => {
+    // Browsers block audible autoplay until the first interaction. Start muted
+    // and restore the sound as soon as the page is touched.
+    video.muted = true;
+    document.addEventListener('pointerdown', unmuteOnGesture, true);
+    document.addEventListener('keydown', unmuteOnGesture, true);
+    video.play().catch(finish);
+  });
 }
 
 async function boot() {
@@ -610,7 +612,8 @@ function renderHero() {
 
   els.heroTitle.textContent = item.title;
   els.heroImg.alt = item.title;
-  els.heroImg.src = thumbUrl(item);
+  // Backdrops are already local artwork; otherwise use the cached hero still.
+  els.heroImg.src = item.hasBackdrop ? thumbUrl(item) : heroImageUrl(item);
   els.heroRating.textContent = item.rating || (item.height >= 1000 ? 'HD' : 'NR');
 
   const progress = progressOfGroup(item);
@@ -649,17 +652,38 @@ function setupPreview(item) {
 
 function playPreview(item) {
   const video = els.heroVideo;
+  const id = item.playId || item.id;
   video.volume = 0.65;
   video.muted = state.previewMuted;
   syncHeroMute();
-  video.src = `/api/stream/${item.playId || item.id}`;
   video.classList.remove('playing');
   const start = state.previewStart;
-  video.addEventListener('loadedmetadata', () => {
-    try { video.currentTime = start; } catch { /* seek may fail on some formats */ }
-  }, { once: true });
+
+  const useStream = () => {
+    // No cached clip yet (or it failed): stream the real file and seek.
+    state.previewMode = 'stream';
+    video.loop = false;
+    video.src = `/api/stream/${encodeURIComponent(id)}`;
+    video.addEventListener('loadedmetadata', () => {
+      try { video.currentTime = start; } catch { /* seek may fail on some formats */ }
+    }, { once: true });
+    const playing = video.play();
+    if (playing && typeof playing.catch === 'function') {
+      playing.catch((err) => {
+        if (err?.name !== 'NotAllowedError' || video.muted) return;
+        video.muted = true;
+        syncHeroMute(true);
+        video.play().catch(() => {});
+      });
+    }
+  };
+
+  state.previewMode = 'clip';
+  video.loop = true;
+  video.addEventListener('error', useStream, { once: true });
   video.addEventListener('playing', () => video.classList.add('playing'), { once: true });
-  video.addEventListener('error', () => video.classList.remove('playing'));
+  video.src = heroPreviewUrl({ id });
+
   const started = video.play();
   if (started && typeof started.catch === 'function') {
     started.catch((err) => {
@@ -687,6 +711,7 @@ function syncHeroMute(blocked = false) {
 videoLoop();
 function videoLoop() {
   els.heroVideo.addEventListener('timeupdate', () => {
+    if (state.previewMode !== 'stream') return;
     if (!els.heroVideo.duration) return;
     if (els.heroVideo.currentTime > state.previewStart + 50) {
       try { els.heroVideo.currentTime = state.previewStart; } catch { /* ignore */ }
@@ -2685,6 +2710,7 @@ function openModal(id) {
   updateModalListButton(group);
   renderSeriesBlock(group);
   if (isSeries) hydrateSeries(group);
+  if (isSeries) hydrateSeriesCatalog(group);
   renderMore(group);
   setTimeout(() => document.querySelector('.modal-close')?.focus(), 40);
 }
@@ -2698,7 +2724,13 @@ function renderSeriesBlock(group) {
     return;
   }
   els.seriesBlock.hidden = false;
-  const seasons = [...new Set(episodes.map((entry) => entry.season))].sort((a, b) => a - b);
+
+  const catalog = seriesCatalogFor(group);
+  const localSeasons = [...new Set(episodes.map((entry) => entry.season))];
+  const catalogSeasons = catalog
+    ? catalog.seasons.map((entry) => entry.season).filter((season) => season > 0)
+    : [];
+  const seasons = [...new Set([...localSeasons, ...catalogSeasons])].sort((a, b) => a - b);
   if (!seasons.includes(state.seriesSeason)) state.seriesSeason = seasons[0];
   els.seriesSeasons.replaceChildren();
   for (const season of seasons) {
@@ -2713,53 +2745,178 @@ function renderSeriesBlock(group) {
   }
   els.seriesFind.disabled = state.offline;
   els.seriesFind.textContent = state.offline ? 'Go online to find more' : 'Find more episodes';
-  renderSeriesEpisodes(episodes);
+  renderSeriesEpisodes(episodes, group);
 }
 
-function renderSeriesEpisodes(episodes) {
+function seriesCatalogFor(group) {
+  if (!group?.seriesKey) return null;
+  const data = state.seriesCatalog.get(group.seriesKey);
+  return data && Array.isArray(data.seasons) ? data : null;
+}
+
+/* One row per episode: a file on disk plays, a catalog-only episode downloads. */
+function renderSeriesEpisodes(episodes, group) {
   els.seriesEpisodes.replaceChildren();
-  const list = episodes
-    .filter((entry) => entry.season === state.seriesSeason)
+  const season = state.seriesSeason;
+  const local = episodes
+    .filter((entry) => entry.season === season)
     .sort((a, b) => a.episode - b.episode);
-  if (!list.length) {
+  const catalog = seriesCatalogFor(group);
+  const catalogEpisodes = catalog?.seasons.find((entry) => entry.season === season)?.episodes || [];
+  const localByNumber = new Map(local.map((entry) => [entry.episode, entry]));
+
+  const rows = [];
+  for (const entry of catalogEpisodes) {
+    rows.push({ number: entry.episode, local: localByNumber.get(entry.episode) || null, catalog: entry });
+  }
+  for (const entry of local) {
+    if (!catalogEpisodes.some((other) => other.episode === entry.episode)) {
+      rows.push({ number: entry.episode, local: entry, catalog: null });
+    }
+  }
+  rows.sort((a, b) => a.number - b.number);
+
+  if (!rows.length) {
     els.seriesEpisodes.append(createEl('p', 'series-empty', 'No episodes on disk for this season.'));
     return;
   }
-  for (const raw of list) {
-    const ep = state.byId.get(raw.id) || raw;
-    const row = createEl('article', 'episode-row series-episode');
-    const img = document.createElement('img');
-    img.className = 'episode-thumb series-ep-thumb';
-    img.loading = 'lazy';
-    img.decoding = 'async';
-    img.alt = '';
-    img.src = thumbUrl(ep, 320);
+
+  for (const row of rows) {
+    if (row.local) els.seriesEpisodes.append(seriesEpisodeRow(row.local, group));
+    else els.seriesEpisodes.append(catalogEpisodeRow(row.catalog, group));
+  }
+}
+
+function seriesEpisodeRow(raw, group) {
+  const ep = state.byId.get(raw.id) || raw;
+  const row = createEl('article', 'episode-row series-episode');
+  const img = document.createElement('img');
+  img.className = 'episode-thumb series-ep-thumb';
+  img.loading = 'lazy';
+  img.decoding = 'async';
+  img.alt = '';
+  img.src = thumbUrl(ep, 320);
+  img.addEventListener('error', () => img.remove());
+
+  const info = createEl('div', 'series-ep-info');
+  const label = ep.episodeLabel || `S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')}`;
+  info.append(createEl('span', 'series-ep-label', label));
+  info.append(createEl('strong', 'series-ep-name', `Episode ${ep.episode}`));
+  const bits = [formatDuration(ep.durationSec), formatSize(ep.size), qualityLabel(ep)].filter(Boolean);
+  info.append(createEl('span', 'series-ep-meta', bits.join(' · ')));
+  const progress = progressFor(ep.id);
+  if (progress && !progress.finished && progress.t > 5 && progress.d > 0) {
+    const bar = createEl('div', 'series-ep-bar');
+    const fill = document.createElement('i');
+    fill.style.width = `${Math.round(Math.min(1, progress.t / progress.d) * 100)}%`;
+    bar.append(fill);
+    info.append(bar);
+  }
+
+  const play = createEl('button', 'series-ep-play');
+  play.type = 'button';
+  play.setAttribute('aria-label', `Play episode ${ep.episode}`);
+  play.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg><span>Play</span>';
+  play.addEventListener('click', () => goWatch(ep.id));
+
+  row.append(img, info, play);
+  if (ep.id === state.modalPlayId) row.classList.add('current');
+  return row;
+}
+
+function catalogEpisodeRow(entry, group) {
+  const row = createEl('article', 'episode-row series-episode is-remote');
+  const img = document.createElement('img');
+  img.className = 'episode-thumb series-ep-thumb';
+  img.loading = 'lazy';
+  img.decoding = 'async';
+  img.alt = '';
+  if (entry.thumbnail) {
+    img.src = entry.thumbnail;
     img.addEventListener('error', () => img.remove());
+  } else {
+    img.remove();
+  }
 
-    const info = createEl('div', 'series-ep-info');
-    const label = ep.episodeLabel || `S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')}`;
-    info.append(createEl('span', 'series-ep-label', label));
-    info.append(createEl('strong', 'series-ep-name', `Episode ${ep.episode}`));
-    const bits = [formatDuration(ep.durationSec), formatSize(ep.size), qualityLabel(ep)].filter(Boolean);
-    info.append(createEl('span', 'series-ep-meta', bits.join(' · ')));
-    const progress = progressFor(ep.id);
-    if (progress && !progress.finished && progress.t > 5 && progress.d > 0) {
-      const bar = createEl('div', 'series-ep-bar');
-      const fill = document.createElement('i');
-      fill.style.width = `${Math.round(Math.min(1, progress.t / progress.d) * 100)}%`;
-      bar.append(fill);
-      info.append(bar);
-    }
+  const season = state.seriesSeason;
+  const label = `S${String(season).padStart(2, '0')}E${String(entry.episode).padStart(2, '0')}`;
+  const info = createEl('div', 'series-ep-info');
+  info.append(createEl('span', 'series-ep-label', label));
+  info.append(createEl('strong', 'series-ep-name', `Episode ${entry.episode}`));
+  const bits = [
+    formatDuration(entry.duration),
+    entry.quality?.label || '',
+    entry.quality?.size ? formatSize(entry.quality.size) : '',
+  ].filter(Boolean);
+  info.append(createEl('span', 'series-ep-meta', bits.join(' · ')));
 
-    const play = createEl('button', 'series-ep-play');
-    play.type = 'button';
-    play.setAttribute('aria-label', `Play episode ${ep.episode}`);
-    play.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l12-7.5z"/></svg><span>Play</span>';
-    play.addEventListener('click', () => goWatch(ep.id));
+  const btn = createEl('button', 'series-ep-play series-ep-download');
+  btn.type = 'button';
+  btn.setAttribute('aria-label', `Download episode ${entry.episode}`);
+  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg><span>Download</span>';
 
-    row.append(img, info, play);
-    if (ep.id === state.modalPlayId) row.classList.add('current');
-    els.seriesEpisodes.append(row);
+  const queuedKey = `${group.seriesKey}:${season}x${entry.episode}`;
+  if (state.queuedEpisodes.has(queuedKey)) {
+    btn.disabled = true;
+    btn.classList.add('queued');
+    btn.querySelector('span').textContent = 'Queued';
+  } else if (!entry.quality) {
+    btn.disabled = true;
+    btn.querySelector('span').textContent = 'Unavailable';
+  } else {
+    btn.addEventListener('click', () => queueSeriesEpisode(group, entry, season, btn));
+  }
+
+  row.append(img, info, btn);
+  return row;
+}
+
+async function queueSeriesEpisode(group, entry, season, btn) {
+  if (!entry.quality) return;
+  const label = `S${String(season).padStart(2, '0')}E${String(entry.episode).padStart(2, '0')}`;
+  const title = group.seriesTitle || group.title;
+  btn.disabled = true;
+  btn.querySelector('span').textContent = 'Starting…';
+  try {
+    await startCastleDownload({
+      movieId: entry.movieId,
+      episodeId: entry.episodeId,
+      resolution: entry.quality.resolution,
+      title,
+      year: group.year,
+      season,
+      episode: entry.episode,
+      size: entry.quality.size,
+      poster: seriesCatalogFor(group)?.poster || '',
+    });
+    state.queuedEpisodes.add(`${group.seriesKey}:${season}x${entry.episode}`);
+    btn.classList.add('queued');
+    btn.querySelector('span').textContent = 'Queued';
+    toast(`${title} ${label} queued${entry.quality.label ? ` — ${entry.quality.label}` : ''}`);
+    notify('start', `${title} ${label}`, 'Queued for download');
+    openDownloads();
+    refreshDownloads();
+  } catch (err) {
+    btn.disabled = false;
+    btn.querySelector('span').textContent = 'Retry';
+    toast(`Could not queue ${label}: ${err.message}`, { type: 'warn' });
+  }
+}
+
+/* Episodes from the download catalog, merged into the modal for missing files. */
+async function hydrateSeriesCatalog(group) {
+  if (!group?.seriesKey || state.offline) return;
+  const key = group.seriesKey;
+  if (state.seriesCatalog.has(key) || state.seriesCatalogLoading.has(key)) return;
+  state.seriesCatalogLoading.add(key);
+  try {
+    const data = await getSeriesCatalog(key);
+    state.seriesCatalog.set(key, data);
+    if (modalItemId === group.id && state.seriesCatalog.size) renderSeriesBlock(group);
+  } catch {
+    /* offline, unknown title, or older server: keep local episodes */
+  } finally {
+    state.seriesCatalogLoading.delete(key);
   }
 }
 
@@ -2795,8 +2952,9 @@ function updateModalPlayLabel(item) {
 
 function updateModalListButton(item) {
   const inList = isInMyList(item.id);
-  els.modalList.querySelector('.i-plus').hidden = inList;
-  els.modalList.querySelector('.i-check').hidden = !inList;
+  // SVGElement has no hidden IDL property, so toggle the attribute itself.
+  els.modalList.querySelector('.i-plus').toggleAttribute('hidden', inList);
+  els.modalList.querySelector('.i-check').toggleAttribute('hidden', !inList);
   els.modalList.title = inList ? 'Remove from My List' : 'Add to My List';
   els.modalList.classList.toggle('in-list', inList);
 }

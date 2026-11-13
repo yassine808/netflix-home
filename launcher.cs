@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Net.Sockets;
 using System.Threading;
 using System.Windows.Forms;
@@ -20,11 +21,47 @@ namespace NetflixHome
     {
         private static readonly string Root = AppDomain.CurrentDomain.BaseDirectory;
         private static readonly string LogPath = Path.Combine(Root, "launcher.log");
-        private static readonly string PortFile = Path.Combine(Root, ".cache", "port");
 
         private static Process server;
         private static bool ownsServer;
         private static string baseUrl = "";
+
+        /// <summary>
+        /// Mirrors the server's root resolution: the deployed copy sits next to
+        /// its own Movies folder (G:\NETFLIX), otherwise the old G: locations.
+        /// The port file lives in that library root's .cache, like the server's.
+        /// </summary>
+        private static string LibraryRoot()
+        {
+            if (HasExactDir(Root, "Movies")) return Root;
+            foreach (string candidate in new[] { @"G:\NETFLIX", @"G:\Movies", @"G:\" })
+            {
+                try
+                {
+                    if (Directory.Exists(candidate)) return candidate;
+                }
+                catch { }
+            }
+            return Root;
+        }
+
+        private static bool HasExactDir(string dir, string name)
+        {
+            try
+            {
+                return Directory.GetDirectories(dir)
+                    .Any(path => string.Equals(Path.GetFileName(path), name, StringComparison.Ordinal));
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string PortFile
+        {
+            get { return Path.Combine(LibraryRoot(), ".cache", "port"); }
+        }
 
         [STAThread]
         private static void Main()

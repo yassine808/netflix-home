@@ -17,6 +17,7 @@ const SKIP_DIRS = new Set([
   '$recycle.bin', 'system volume information', 'recycler', 'node_modules',
   '.git', '.cache', 'lost+found', 'windows', 'program files',
   'program files (x86)', 'programdata', 'recovery', 'temp',
+  'public', 'server', 'app',
 ]);
 
 const QUALITY_TAGS = /\b(2160p|1080p|720p|480p|360p|4k|uhd|hdr10?|dv|dolby\s?vision|bluray|blu-ray|brrip|bdrip|webrip|web-dl|webdl|web|hdtv|dvdrip|dvdscr|hdrip|cam|ts|tc|remux|x264|x265|h264|h265|hevc|avc|10bit|8bit|aac\d?|ac3|eac3|dts(-hd)?|truehd|atmos|5\.1|7\.1|2\.0|proper|repack|extended|unrated|directors?\.?cut|imax|internal|multi|dual|subbed|dubbed)\b/gi;
