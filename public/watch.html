@@ -111,6 +111,20 @@
         </div>
         <p class="cc-timing-hint">Positive shows subtitles later, negative earlier. Step: 0.5s.</p>
       </div>
+      <div class="cc-style">
+        <span class="cc-timing-title">Subtitle appearance</span>
+        <div class="cc-style-row">
+          <span class="cc-style-label">Size</span>
+          <button type="button" class="cc-step" id="subSizeDown" aria-label="Smaller subtitles">A−</button>
+          <output class="cc-offset" id="subSizeValue">100%</output>
+          <button type="button" class="cc-step" id="subSizeUp" aria-label="Larger subtitles">A+</button>
+        </div>
+        <div class="cc-style-row">
+          <span class="cc-style-label">Background</span>
+          <input type="range" class="cc-range" id="subBg" min="0" max="100" step="5" value="66" aria-label="Subtitle background opacity">
+          <output class="cc-offset" id="subBgValue">66%</output>
+        </div>
+      </div>
     </div>
   </div>
 

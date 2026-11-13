@@ -460,13 +460,16 @@ body.leaving .player {
   padding: 0 6%;
   z-index: 4;
   pointer-events: none;
+  transition: bottom 0.28s var(--ease);
 }
+/* When the controls fade out, drop the subtitles into the empty bottom area. */
+.player.hide-ui .subtitle-layer { bottom: 4.5%; }
 .subtitle-text {
   max-width: min(1100px, 86%);
   padding: 0.12em 0.45em;
   border-radius: 3px;
-  background: rgba(0, 0, 0, 0.66);
-  font-size: clamp(17px, 2.2vw, 30px);
+  background: rgba(0, 0, 0, var(--sub-bg, 0.66));
+  font-size: calc(clamp(17px, 2.2vw, 30px) * var(--sub-scale, 1));
   font-weight: 600;
   line-height: 1.32;
   text-align: center;
@@ -487,6 +490,8 @@ body.leaving .player {
   right: 4%;
   bottom: 96px;
   width: min(320px, calc(100vw - 32px));
+  max-height: min(78vh, 640px);
+  overflow-y: auto;
   padding: 15px 15px 13px;
   z-index: 14;
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -558,6 +563,31 @@ body.leaving .player {
 }
 .cc-timing-hint { margin: 8px 0 0; color: #8b8b8b; font-size: 11.5px; line-height: 1.45; }
 
+.cc-style { margin-top: 10px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.1); }
+.cc-style-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.cc-style-label { flex: 0 0 74px; color: #cfcfcf; font-size: 12.5px; }
+.cc-range {
+  flex: 1;
+  min-width: 0;
+  height: 4px;
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.28);
+  accent-color: #fff;
+  cursor: pointer;
+}
+.cc-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+.cc-range::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: #fff; }
+.cc-style .cc-offset { min-width: 46px; }
+
 /* ---------- narrow screens ---------- */
 
 @media (max-width: 900px) {
@@ -578,7 +608,7 @@ body.leaving .player {
   .tl-preview { width: 132px; }
   .cc-panel { right: 12px; bottom: 88px; }
   .subtitle-layer { bottom: 20%; }
-  .subtitle-text { max-width: 92%; font-size: clamp(15px, 3.6vw, 22px); }
+  .subtitle-text { max-width: 92%; font-size: calc(clamp(15px, 3.6vw, 22px) * var(--sub-scale, 1)); }
 }
 
 @media (max-width: 420px) {

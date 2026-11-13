@@ -26,6 +26,11 @@ const ccBtn = $('ccBtn');
 const ccPanel = $('ccPanel');
 const ccList = $('ccList');
 const ccOffsetEl = $('ccOffset');
+const subSizeDown = $('subSizeDown');
+const subSizeUp = $('subSizeUp');
+const subSizeValue = $('subSizeValue');
+const subBg = $('subBg');
+const subBgValue = $('subBgValue');
 const subtitleLayer = $('subtitleLayer');
 const subtitleText = $('subtitleText');
 const preview = $('tlPreview');
@@ -58,6 +63,14 @@ let subtitleCues = [];
 let subtitleLang = '';
 let subtitleOffset = 0;
 let subtitleRequest = 0;
+
+/* Subtitle look: text scale and the opacity of the black box behind it. */
+const SUB_STYLE_KEY = 'netflix-home:subtitle-style';
+const SUB_SCALE_MIN = 0.8;
+const SUB_SCALE_MAX = 1.8;
+const SUB_SCALE_STEP = 0.1;
+let subScale = 1;
+let subBgOpacity = 0.66;
 
 const params = new URLSearchParams(location.search);
 const id = params.get('id');
@@ -100,6 +113,7 @@ async function init() {
   syncVolume();
   updateTimeline();
   initSubtitles();
+  initSubtitleStyle();
   setMediaSession();
 }
 
@@ -184,6 +198,13 @@ function bindEvents() {
     updateOffsetLabel();
     saveSubtitlePrefs();
     renderSubtitle();
+  });
+  subSizeDown.addEventListener('click', () => nudgeSubtitleScale(-SUB_SCALE_STEP));
+  subSizeUp.addEventListener('click', () => nudgeSubtitleScale(SUB_SCALE_STEP));
+  subBg.addEventListener('input', () => {
+    subBgOpacity = Math.max(0, Math.min(1, Number(subBg.value) / 100));
+    applySubtitleStyle();
+    saveSubtitleStyle();
   });
 
   volume.addEventListener('input', () => {
@@ -334,6 +355,35 @@ function loadSubtitlePrefs() {
 
 function saveSubtitlePrefs() {
   writeJson(SUB_PREFS_KEY, { lang: subtitleLang, offset: subtitleOffset });
+}
+
+function initSubtitleStyle() {
+  const saved = readJson(SUB_STYLE_KEY, null);
+  if (saved && typeof saved === 'object') {
+    const scale = Number(saved.scale);
+    if (Number.isFinite(scale)) subScale = Math.min(SUB_SCALE_MAX, Math.max(SUB_SCALE_MIN, scale));
+    const opacity = Number(saved.opacity);
+    if (Number.isFinite(opacity)) subBgOpacity = Math.min(1, Math.max(0, opacity));
+  }
+  applySubtitleStyle();
+}
+
+function applySubtitleStyle() {
+  document.documentElement.style.setProperty('--sub-scale', String(subScale));
+  document.documentElement.style.setProperty('--sub-bg', String(subBgOpacity));
+  subSizeValue.textContent = `${Math.round(subScale * 100)}%`;
+  subBg.value = String(Math.round(subBgOpacity * 100));
+  subBgValue.textContent = `${Math.round(subBgOpacity * 100)}%`;
+}
+
+function nudgeSubtitleScale(delta) {
+  subScale = Math.min(SUB_SCALE_MAX, Math.max(SUB_SCALE_MIN, Math.round((subScale + delta) * 10) / 10));
+  applySubtitleStyle();
+  saveSubtitleStyle();
+}
+
+function saveSubtitleStyle() {
+  writeJson(SUB_STYLE_KEY, { scale: subScale, opacity: subBgOpacity });
 }
 
 async function initSubtitles() {
