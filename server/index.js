@@ -8,9 +8,11 @@ import {
 } from './library.js';
 import {
   initDownloads, searchCatalog, getCatalogItem, fallbackCatalog,
-  addDownload, addSeriesDownload, listDownloads, getDownload, cancelDownload, retryDownload,
+  addDownload, addSeriesDownload, addHlsDownload,
+  listDownloads, getDownload, cancelDownload, retryDownload,
 } from './downloads.js';
 import { searchOnline, getOnlineTitle } from './online.js';
+import { searchCastle, getCastleTitle, getCastleStream, isCastleId } from './castle.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -191,6 +193,43 @@ app.get('/api/catalog/item/:identifier', async (req, res) => {
 
 /* ---------- online catalog (metadata only) ---------- */
 
+/* Cinemeta artwork is served from live.metahub.space, which now answers 404.
+ * Fill missing posters from the download catalog instead of shipping broken
+ * images; a failed lookup just leaves the original payload untouched. */
+const BROKEN_ART = /metahub\.space/i;
+
+function artKey(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+async function backfillArtwork(data) {
+  if (!data?.results?.length) return data;
+  try {
+    const castle = await searchCastle(data.query);
+    const map = new Map();
+    for (const item of castle.results) {
+      if (item.poster) map.set(artKey(item.title), item);
+    }
+    return {
+      ...data,
+      results: data.results.map((item) => {
+        const brokenPoster = !item.poster || BROKEN_ART.test(item.poster);
+        const brokenBackground = !item.background || BROKEN_ART.test(item.background);
+        if (!brokenPoster && !brokenBackground) return item;
+        const match = map.get(artKey(item.title));
+        if (!match) return item;
+        return {
+          ...item,
+          poster: brokenPoster ? match.poster || item.poster : item.poster,
+          background: brokenBackground ? match.background || item.background : item.background,
+        };
+      }),
+    };
+  } catch {
+    return data;
+  }
+}
+
 app.get('/api/online/search', async (req, res) => {
   const q = String(req.query.q || '').trim();
   if (!q) return res.status(400).json({ error: 'q is required' });
@@ -199,7 +238,7 @@ app.get('/api/online/search', async (req, res) => {
   try {
     const data = await searchOnline(q);
     res.set('Cache-Control', 'public, max-age=300');
-    res.json(data);
+    res.json(await backfillArtwork(data));
   } catch (err) {
     res.status(err?.status || 502).json({ error: err?.message || String(err) });
   }
@@ -208,10 +247,95 @@ app.get('/api/online/search', async (req, res) => {
 app.get('/api/online/title/:type/:id', async (req, res) => {
   try {
     const data = await getOnlineTitle(req.params.type, req.params.id);
+    const enriched = await backfillArtwork({ query: data.title, results: [data] });
+    res.set('Cache-Control', 'public, max-age=1800');
+    res.json(enriched.results[0] || data);
+  } catch (err) {
+    res.status(err?.status || 502).json({ error: err?.message || String(err) });
+  }
+});
+
+/* ---------- castle catalog (search + real downloads) ---------- */
+
+app.get('/api/castle/search', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const page = Math.max(1, Number(req.query.page) || 1);
+  if (!q) return res.status(400).json({ error: 'q is required' });
+  if (q.length > 80) return res.status(400).json({ error: 'q is too long' });
+
+  try {
+    const data = await searchCastle(q, page);
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json({ source: 'castle', ...data });
+  } catch (err) {
+    res.status(err?.status || 502).json({ error: err?.message || String(err) });
+  }
+});
+
+app.get('/api/castle/title/:id', async (req, res) => {
+  if (!isCastleId(req.params.id)) return res.status(400).json({ error: 'invalid id' });
+  try {
+    const data = await getCastleTitle(req.params.id, { season: req.query.season });
     res.set('Cache-Control', 'public, max-age=1800');
     res.json(data);
   } catch (err) {
     res.status(err?.status || 502).json({ error: err?.message || String(err) });
+  }
+});
+
+const QUALITY_LABEL = { 1: '480p', 2: '720p', 3: '1080p' };
+
+function pad2(value) {
+  return String(Math.max(0, Number(value) || 0)).padStart(2, '0');
+}
+
+app.post('/api/castle/download', async (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return res.status(400).json({ error: 'JSON body required' });
+  }
+
+  const movieId = String(body.movieId || '');
+  const episodeId = String(body.episodeId || '');
+  const resolution = Number(body.resolution) || 2;
+  if (!isCastleId(movieId)) return res.status(400).json({ error: 'movieId is required' });
+  if (!isCastleId(episodeId)) return res.status(400).json({ error: 'episodeId is required' });
+  if (!QUALITY_LABEL[resolution]) return res.status(400).json({ error: 'resolution must be 1, 2 or 3' });
+
+  const title = String(body.title || '').trim() || 'Untitled';
+  const season = Number(body.season) || 0;
+  const episode = Number(body.episode) || 0;
+  const quality = QUALITY_LABEL[resolution];
+  const isSeries = season > 0;
+  const fileName = isSeries
+    ? `${title} S${pad2(season)}E${pad2(episode)} ${quality}.mp4`
+    : `${title}${body.year ? ` (${body.year})` : ''} ${quality}.mp4`;
+
+  try {
+    const stream = await getCastleStream({ movieId, episodeId, resolution });
+    if (stream.preview) {
+      return res.status(409).json({ error: 'this quality is only available as a preview' });
+    }
+
+    const english = stream.subtitles.find((track) => track.language === 'en')
+      || stream.subtitles.find((track) => /^english/i.test(track.title));
+
+    const jobs = await addHlsDownload({
+      url: stream.url,
+      referer: 'https://api.hlowb.com/',
+      title: isSeries ? `${title} S${pad2(season)}E${pad2(episode)}` : title,
+      fileName,
+      collection: 'Downloads',
+      folder: isSeries ? title : '',
+      total: Number(body.size) || 0,
+      poster: String(body.poster || ''),
+      source: 'castle',
+      subtitleUrl: english?.url || '',
+      subtitleLang: english?.language || 'en',
+    });
+    res.status(201).json({ count: jobs.length, jobs, subtitleCount: stream.subtitles.length });
+  } catch (err) {
+    res.status(err?.status || 500).json({ error: err?.message || String(err) });
   }
 });
 

@@ -918,6 +918,54 @@ code { font-family: Consolas, "Courier New", monospace; }
 .episode-date { display: block; margin-top: 3px; color: var(--muted-2); font-size: 12px; }
 .episode-overview { margin: 7px 0 0; color: #b9b9b9; font-size: 13px; line-height: 1.6; }
 .online-note { margin: 28px 0 0; color: var(--muted-2); font-size: 12px; line-height: 1.6; }
+.online-badge.castle-badge { background: rgba(46, 204, 113, 0.92); color: #04140a; }
+
+/* ---------- castle download modal ---------- */
+
+.castle-download-block { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--line); }
+.castle-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; margin-bottom: 18px; }
+.castle-toolbar-label {
+  color: #8a8a8a;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.quality-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.quality-option {
+  padding: 6px 13px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #d5d5d5;
+  font-size: 12px;
+  font-weight: 700;
+  transition: background 0.16s, color 0.16s, border-color 0.16s;
+}
+.quality-option:hover { border-color: #fff; color: #fff; }
+.quality-option.active { background: #fff; border-color: #fff; color: #000; }
+.quality-option[data-premium="true"]::after { content: " ★"; color: #f5c518; }
+.castle-size { margin-left: auto; color: var(--muted); font-size: 12px; }
+.castle-episode-list { max-height: 360px; }
+.castle-episode .castle-dl-btn {
+  flex: 0 0 auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  transition: background 0.16s, color 0.16s, border-color 0.16s;
+}
+.castle-episode .castle-dl-btn:hover:not(:disabled) { background: #fff; border-color: #fff; color: #000; }
+.castle-episode .castle-dl-btn:disabled { opacity: 0.55; cursor: default; }
+.castle-episode .castle-dl-btn.queued { border-color: rgba(70, 211, 105, 0.55); background: rgba(70, 211, 105, 0.12); color: #7ee2a0; }
+.castle-status { min-height: 18px; margin: 12px 0 0; color: var(--muted); font-size: 13px; }
 
 .search-archive {
   display: flex;
@@ -1300,6 +1348,9 @@ code { font-family: Consolas, "Courier New", monospace; }
   .episode-thumb { flex-basis: 96px; width: 96px; }
   .episode-head { flex-wrap: wrap; gap: 4px 8px; }
   .episode-overview { display: none; }
+  .castle-episode { flex-wrap: wrap; }
+  .castle-episode .castle-dl-btn { margin-left: auto; }
+  .castle-size { margin-left: 0; }
   .catalog-grid { grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); gap: 18px 8px; }
   .catalog-download { opacity: 1; transform: none; padding: 7px; }
   .catalog-download span { display: none; }

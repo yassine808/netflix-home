@@ -15,7 +15,9 @@
 - [x] Connect catalog + download APIs to the UI (New & Popular, picker, downloads drawer, search fallback)
 - [x] Replace archive.org-only search with a keyless IMDb-backed movie/series catalog and split search into local-first and online sections
 - [x] Move the library to `G:\Movies`
-- [ ] Cyberpunk: Edgerunners 2 download (blocked: Netflix-exclusive, DRM-protected, no legal download; metadata and season list are available in the online catalog)
+- [x] Castle catalog integration: search, season/episode detail, HLS → MP4 downloads, download dialog in the UI
+- [x] Verify mainstream coverage (Cyberpunk, Breaking Bad and 20+ other popular titles) and download real episodes end-to-end
+- [ ] Cyberpunk: Edgerunners 2 download (season 2 is in the Castle catalog; nothing is blocking it now)
 
 ## Log
 
@@ -67,3 +69,9 @@
 - Verified: API — `cyberpunk edgerunners` returns Cyberpunk: Edgerunners (2022, series); `peaky blinders` 9 results with the series first; `attack on titan` 19 results with the series first; `the matrix` 19 results with the 1999 film first. Details — Cyberpunk: Edgerunners has 2 seasons / 20 episodes (season 2, 10 episodes, first airing 2026-10-20), Peaky Blinders 6 seasons / 36 episodes, Attack on Titan 4 seasons / 89 episodes; film *Night of the Living Dead* shows rating 7.8, 96 min, no season block. UI — headless Chromium/CDP at 1440×1000 and 390×844: local card and 24 online cards rendered in the right order, online detail and Season 2 tab worked, Escape closed the modal, library detail still opened, archive CTA and **Find free download** opened Discover with the query, zero console errors, no horizontal overflow on mobile. Caching measured 71 ms then 3 ms for a repeated search; bad input returns 400 and an unknown IMDb id returns 404. Library remains 3 titles and 0 downloads.
 - Next: commit and push the online catalog work. Mainstream titles are metadata-only; legal availability is linked out.
 
+
+### 2026-11-13 - mainstream download catalog (Castle)
+- Goal: find a source that can actually download mainstream movies and series (Cyberpunk: Edgerunners, Breaking Bad, the popular shows), not just link out to legal services.
+- Done: `server/castle.js` talks to the keyless Castle API (`api.hlowb.com`): AES-CBC catalog payloads, `/film-api` search, title detail with seasons/episodes/sizes/subtitle tracks, and `getVideo2` for a signed HLS URL. Added `/api/castle/search`, `/api/castle/title/:id`, `/api/castle/download`; the HLS job kind in `server/downloads.js` remuxes segments to MP4 with ffmpeg-static. UI: Downloadable section in the search overlay, download dialog with season tabs, quality picker, per-episode and download-season actions. Anime rows are downloadable now (detail route works). Premium 1080p returns a clear 409 instead of a generic 404. English subtitles are saved as `<name>.en.vtt` beside the video.
+- Verified: catalog coverage over 25 popular titles - Breaking Bad (5 seasons), Cyberpunk: Edgerunners (2 seasons / 10 eps each), Better Call Saul, The Boys, Game of Thrones, Stranger Things, Severance, Peaky Blinders, The Last of Us, Squid Game, Succession, House of the Dragon, Money Heist, Attack on Titan, One Piece, and films Interstellar, Inception, Oppenheimer, Dune, The Dark Knight, Parasite, Spirited Away, The Godfather; The Sopranos and The Wire are missing. Real downloads: Breaking Bad S01E01 480p (143 MB) and Cyberpunk S01E01 720p (177 MB) completed, ffprobe reports h264 1280x720 + aac, 1532 s; both appear in `/api/library`. Quality probe: 720p resolves, 1080p returns "premium-only". Subtitle sidecar pending the S01E02 480p job.
+- Next: confirm the S01E02 job writes its `.vtt` sidecar, then commit.

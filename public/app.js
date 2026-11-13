@@ -3,7 +3,7 @@ import {
   qualityLabel, thumbUrl, toggleMyList, isInMyList, getMyList, progressFor,
   continueWatching, debounce, createEl,
   searchCatalog, getFallbackCatalog, getCatalogItem,
-  searchOnline, getOnlineTitle,
+  searchOnline, getOnlineTitle, searchCastle, getCastleTitle, startCastleDownload,
   startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload,
 } from './common.js';
 
@@ -38,6 +38,17 @@ const state = {
   onlineAbort: null,
   onlineCache: new Map(),
   onlineTitle: null,
+  castleResults: [],
+  castleLoading: false,
+  castleToken: 0,
+  castleAbort: null,
+  castleCache: new Map(),
+  castleTitle: null,
+  castleSeason: 0,
+  castleQuality: 0,
+  castleBusy: false,
+  castleDetailToken: 0,
+  castleSeasonToken: 0,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -75,6 +86,12 @@ const els = {
   searchLocalSection: $('searchLocalSection'),
   searchLocalCount: $('searchLocalCount'),
   searchLocalEmpty: $('searchLocalEmpty'),
+  searchCastleSection: $('searchCastleSection'),
+  searchCastleCount: $('searchCastleCount'),
+  searchCastleResults: $('searchCastleResults'),
+  searchCastleLoading: $('searchCastleLoading'),
+  searchCastleEmpty: $('searchCastleEmpty'),
+  searchCastleError: $('searchCastleError'),
   searchOnlineSection: $('searchOnlineSection'),
   searchOnlineCount: $('searchOnlineCount'),
   searchOnlineResults: $('searchOnlineResults'),
@@ -101,10 +118,24 @@ const els = {
   onlinePlot: $('onlinePlot'),
   onlineWatchLink: $('onlineWatchLink'),
   onlineImdbLink: $('onlineImdbLink'),
+  onlineCastleBtn: $('onlineCastleBtn'),
   onlineFreeBtn: $('onlineFreeBtn'),
   onlineSeasonBlock: $('onlineSeasonBlock'),
   onlineSeasonTabs: $('onlineSeasonTabs'),
   onlineEpisodes: $('onlineEpisodes'),
+  castleModal: $('castleModal'),
+  castleBackdrop: $('castleBackdrop'),
+  castleKicker: $('castleKicker'),
+  castleTitle: $('castleTitle'),
+  castleMeta: $('castleMeta'),
+  castlePlot: $('castlePlot'),
+  castleSeasonDownload: $('castleSeasonDownload'),
+  castleDownloadBlock: $('castleDownloadBlock'),
+  castleQuality: $('castleQuality'),
+  castleSize: $('castleSize'),
+  castleSeasonTabs: $('castleSeasonTabs'),
+  castleEpisodes: $('castleEpisodes'),
+  castleStatus: $('castleStatus'),
   toast: $('toast'),
   profile: $('profile'),
   profileBtn: $('profileBtn'),
@@ -989,6 +1020,7 @@ function syncBodyLock() {
   const open = !els.searchOverlay.hidden
     || isModalOpen()
     || !els.onlineModal.hidden
+    || !els.castleModal.hidden
     || !els.picker.hidden
     || !els.downloadsPanel.hidden;
   document.body.classList.toggle('modal-open', open);
@@ -1037,6 +1069,20 @@ function resetOnlineSearch() {
   els.searchOnlineCount.textContent = '';
 }
 
+function resetCastleSearch() {
+  state.castleToken += 1;
+  state.castleAbort?.abort();
+  state.castleAbort = null;
+  state.castleResults = [];
+  state.castleLoading = false;
+  els.searchCastleSection.hidden = true;
+  els.searchCastleResults.replaceChildren();
+  els.searchCastleLoading.hidden = true;
+  els.searchCastleEmpty.hidden = true;
+  els.searchCastleError.hidden = true;
+  els.searchCastleCount.textContent = '';
+}
+
 function openSearch() {
   stopPreview();
   setMobileActive('search');
@@ -1047,10 +1093,11 @@ function openSearch() {
   els.searchLocalEmpty.hidden = true;
   els.searchLocalCount.textContent = '';
   resetOnlineSearch();
+  resetCastleSearch();
   updateSearchArchive('');
   els.searchHint.textContent = state.items.length
-    ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library and thousands of movies and series online`
-    : 'Search thousands of movies and series online';
+    ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library, the download catalog, and movies online`
+    : 'Search the download catalog and thousands of movies and series online';
   setTimeout(() => els.searchInput.focus(), 30);
 }
 
@@ -1059,7 +1106,7 @@ function closeSearch() {
   syncBodyLock();
   els.searchInput.blur();
   setMobileActive(['home', 'discover', 'movies', 'mylist'].includes(state.view) ? state.view : null);
-  if (state.view === 'home' && !isModalOpen() && els.onlineModal.hidden) {
+  if (state.view === 'home' && !isModalOpen() && els.onlineModal.hidden && els.castleModal.hidden) {
     setupPreview(state.byId.get(state.heroId));
   }
 }
@@ -1074,9 +1121,10 @@ const runSearch = debounce((raw) => {
     els.searchLocalCount.textContent = '';
     updateSearchArchive('');
     resetOnlineSearch();
+    resetCastleSearch();
     els.searchHint.textContent = state.items.length
-      ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library and thousands of movies and series online`
-      : 'Search thousands of movies and series online';
+      ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library, the download catalog, and movies online`
+      : 'Search the download catalog and thousands of movies and series online';
     return;
   }
 
@@ -1086,7 +1134,25 @@ const runSearch = debounce((raw) => {
 
   if (q.length < ONLINE_MIN_CHARS) {
     resetOnlineSearch();
+    resetCastleSearch();
     return;
+  }
+
+  els.searchCastleSection.hidden = false;
+  const castleCached = state.castleCache.get(q);
+  if (castleCached) {
+    state.castleToken += 1;
+    state.castleAbort?.abort();
+    state.castleAbort = null;
+    renderCastleResults(castleCached, query);
+  } else {
+    state.castleResults = [];
+    els.searchCastleResults.replaceChildren();
+    els.searchCastleCount.textContent = '';
+    els.searchCastleEmpty.hidden = true;
+    els.searchCastleError.hidden = true;
+    els.searchCastleLoading.hidden = false;
+    fetchCastleResults(query);
   }
 
   els.searchOnlineSection.hidden = false;
@@ -1121,7 +1187,52 @@ function renderLocalResults(query, q) {
     : '';
   els.searchLocalEmpty.hidden = results.length > 0;
   if (!results.length) {
-    els.searchLocalEmpty.textContent = `Nothing in your library matches “${query}”. Online results are below.`;
+    els.searchLocalEmpty.textContent = `Nothing in your library matches “${query}”. Downloadable and online results are below.`;
+  }
+}
+
+async function fetchCastleResults(query) {
+  const token = ++state.castleToken;
+  const q = query.toLowerCase();
+  state.castleAbort?.abort();
+  const controller = new AbortController();
+  state.castleAbort = controller;
+  state.castleLoading = true;
+
+  try {
+    const data = await searchCastle(query, { signal: controller.signal });
+    if (token !== state.castleToken) return;
+    const results = Array.isArray(data.results) ? data.results : [];
+    state.castleCache.set(q, results);
+    renderCastleResults(results, query);
+  } catch (err) {
+    if (token !== state.castleToken || err?.name === 'AbortError') return;
+    state.castleResults = [];
+    els.searchCastleResults.replaceChildren();
+    els.searchCastleCount.textContent = '';
+    els.searchCastleEmpty.hidden = true;
+    els.searchCastleError.textContent = `Could not load the download catalog (${err.message}).`;
+    els.searchCastleError.hidden = false;
+  } finally {
+    if (token === state.castleToken) {
+      state.castleLoading = false;
+      els.searchCastleLoading.hidden = true;
+    }
+  }
+}
+
+function renderCastleResults(items, query) {
+  const downloadable = items.filter((item) => item.downloadable !== false);
+  els.searchCastleResults.replaceChildren();
+  downloadable.forEach((item) => els.searchCastleResults.append(buildOnlineCard(item, { castle: true })));
+  els.searchCastleCount.textContent = downloadable.length
+    ? `${downloadable.length} title${downloadable.length === 1 ? '' : 's'}`
+    : '';
+  els.searchCastleLoading.hidden = true;
+  els.searchCastleError.hidden = true;
+  els.searchCastleEmpty.hidden = downloadable.length > 0;
+  if (!downloadable.length) {
+    els.searchCastleEmpty.textContent = `No downloadable titles found for “${query}”.`;
   }
 }
 
@@ -1170,11 +1281,13 @@ function renderOnlineResults(items, query) {
   }
 }
 
-function buildOnlineCard(item) {
+function buildOnlineCard(item, { castle = false } = {}) {
   const card = createEl('article', 'online-card');
   card.tabIndex = 0;
   card.setAttribute('role', 'button');
-  card.setAttribute('aria-label', `View details for ${item.title}`);
+  card.setAttribute('aria-label', castle
+    ? `View download options for ${item.title}`
+    : `View details for ${item.title}`);
 
   const art = createEl('div', 'online-card-art');
   const fallback = createEl('div', 'online-card-fallback');
@@ -1187,15 +1300,17 @@ function buildOnlineCard(item) {
   img.addEventListener('load', () => img.classList.add('loaded'));
   img.addEventListener('error', () => img.remove());
 
-  const badge = createEl('span', 'online-badge', item.type === 'series' ? 'Series' : 'Film');
+  const kind = item.type === 'series' || item.type === 'anime' ? 'Series' : 'Film';
+  const badgeText = castle ? 'Download' : kind;
+  const badge = createEl('span', `online-badge${castle ? ' castle-badge' : ''}`, badgeText);
   const overlay = createEl('div', 'online-card-overlay');
   overlay.append(createEl('strong', '', item.title));
-  overlay.append(createEl('span', '', [item.year, item.type === 'series' ? 'Series' : 'Film'].filter(Boolean).join(' • ')));
+  overlay.append(createEl('span', '', [item.year, kind].filter(Boolean).join(' • ')));
 
   art.append(fallback, img, badge, overlay);
   card.append(art);
 
-  const open = () => openOnlineModal(item);
+  const open = () => (castle ? openCastleModal(item) : openOnlineModal(item));
   card.addEventListener('click', open);
   card.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -1213,6 +1328,7 @@ let onlineDetailToken = 0;
 
 async function openOnlineModal(item) {
   if (!els.searchOverlay.hidden) closeSearch();
+  if (!els.castleModal.hidden) closeCastleModal();
   stopPreview();
   onlineFocusEl = document.activeElement;
   state.onlineTitle = item;
@@ -1339,6 +1455,380 @@ function closeOnlineModal() {
   onlineDetailToken += 1;
   syncBodyLock();
   onlineFocusEl?.focus?.();
+  if (state.view === 'home' && !isModalOpen()) {
+    setupPreview(state.byId.get(state.heroId));
+  }
+}
+
+/* ---------- castle download modal ---------- */
+
+const CASTLE_QUALITY = { 1: '480p', 2: '720p', 3: '1080p' };
+let castleFocusEl = null;
+
+function qualityName(resolution) {
+  return CASTLE_QUALITY[Number(resolution)] || `${resolution}K`;
+}
+
+function castleEpisodesOf(detail) {
+  if (!detail) return [];
+  if (detail.type !== 'series') return Array.isArray(detail.episodes) ? detail.episodes : [];
+  const active = (detail.seasons || []).find((entry) => entry.season === detail.activeSeason)
+    || (detail.seasons || []).find((entry) => entry.episodes?.length);
+  return Array.isArray(active?.episodes) ? active.episodes : [];
+}
+
+function populateCastleModal(item) {
+  els.castleBackdrop.src = item.background || item.poster || '';
+  els.castleBackdrop.hidden = !(item.background || item.poster);
+  els.castleTitle.textContent = item.title;
+  els.castleKicker.textContent = 'DOWNLOAD';
+  els.castlePlot.textContent = item.description || 'No overview available for this title yet.';
+  els.castleModal.scrollTop = 0;
+
+  const bits = [
+    item.year,
+    item.rating ? `★ ${Number(item.rating).toFixed(1)}` : '',
+    item.type === 'series' && item.seasonCount
+      ? `${item.seasonCount} season${item.seasonCount === 1 ? '' : 's'}`
+      : '',
+    Array.isArray(item.genres) ? item.genres.slice(0, 3).join(' · ') : '',
+  ].filter(Boolean);
+
+  els.castleMeta.replaceChildren();
+  bits.forEach((bit, index) => {
+    if (index > 0) els.castleMeta.append(createEl('span', 'dot', '•'));
+    els.castleMeta.append(createEl('span', index === 0 ? 'year' : '', bit));
+  });
+}
+
+async function openCastleModal(item) {
+  if (!els.searchOverlay.hidden) closeSearch();
+  if (!els.onlineModal.hidden) closeOnlineModal();
+  stopPreview();
+  castleFocusEl = document.activeElement;
+  state.castleTitle = item;
+  state.castleSeason = 0;
+  state.castleQuality = 0;
+  state.castleBusy = false;
+  const token = ++state.castleDetailToken;
+  els.castleModal.hidden = false;
+  syncBodyLock();
+  populateCastleModal(item);
+  els.castleDownloadBlock.hidden = true;
+  els.castleSeasonDownload.hidden = true;
+  els.castleEpisodes.replaceChildren();
+  els.castleQuality.replaceChildren();
+  els.castleSeasonTabs.replaceChildren();
+  els.castleStatus.textContent = 'Loading download options…';
+  setTimeout(() => els.castleModal.querySelector('.modal-close')?.focus(), 40);
+
+  try {
+    const detail = await getCastleTitle(item.id);
+    if (token !== state.castleDetailToken) return;
+    const merged = { ...item, ...detail };
+    state.castleTitle = merged;
+    state.castleSeason = detail.activeSeason || 0;
+    state.castleCache.set(`${detail.id}:${detail.activeSeason || 0}`, detail);
+    populateCastleModal(merged);
+    renderCastleDownloads(merged);
+  } catch (err) {
+    if (token !== state.castleDetailToken) return;
+    els.castleStatus.textContent = `Could not load download options (${err.message}).`;
+    els.castleStatus.hidden = false;
+  }
+}
+
+function renderCastleQuality(detail, episodes) {
+  const qualities = new Map();
+  episodes.forEach((episode) => {
+    (episode.resolutions || []).forEach((quality) => {
+      const entry = qualities.get(quality.resolution) || { resolution: quality.resolution, premium: true };
+      entry.premium = entry.premium && Boolean(quality.premium);
+      qualities.set(quality.resolution, entry);
+    });
+  });
+
+  const list = [...qualities.values()].sort((a, b) => a.resolution - b.resolution);
+  els.castleQuality.replaceChildren();
+  if (!list.length) return { selected: 0, total: 0, duration: 0, qualities };
+
+  let selected = Number(state.castleQuality);
+  if (!qualities.has(selected)) {
+    const free = [...list].reverse().find((entry) => !entry.premium);
+    selected = (free || list[list.length - 1]).resolution;
+  }
+  state.castleQuality = selected;
+
+  list.forEach((quality) => {
+    const btn = createEl('button', 'quality-option', qualityName(quality.resolution));
+    btn.type = 'button';
+    btn.dataset.resolution = String(quality.resolution);
+    btn.classList.toggle('active', quality.resolution === selected);
+    if (quality.premium) {
+      btn.dataset.premium = 'true';
+      btn.title = 'Premium quality — may only be available as a preview';
+    }
+    btn.addEventListener('click', () => {
+      state.castleQuality = quality.resolution;
+      renderCastleDownloads(state.castleTitle);
+    });
+    els.castleQuality.append(btn);
+  });
+
+  let total = 0;
+  let duration = 0;
+  episodes.forEach((episode) => {
+    const match = (episode.resolutions || []).find((entry) => entry.resolution === selected);
+    if (match) total += match.size;
+    duration += Number(episode.duration) || 0;
+  });
+  els.castleSize.textContent = [
+    detail.type === 'series' && episodes.length
+      ? `${episodes.length} episode${episodes.length === 1 ? '' : 's'} at ${qualityName(selected)}`
+      : qualityName(selected),
+    total ? `≈ ${formatSize(total)}` : '',
+  ].filter(Boolean).join(' · ');
+
+  return { selected, total, duration, qualities };
+}
+
+function renderCastleDownloads(detail) {
+  const episodes = castleEpisodesOf(detail);
+  els.castleDownloadBlock.hidden = false;
+  els.castleEpisodes.replaceChildren();
+  els.castleSeasonTabs.replaceChildren();
+  els.castleStatus.textContent = '';
+  els.castleStatus.hidden = false;
+
+  const { selected } = renderCastleQuality(detail, episodes);
+
+  const seasons = Array.isArray(detail.seasons) ? detail.seasons : [];
+  const canPickSeason = detail.type === 'series' && seasons.length > 1;
+  els.castleSeasonTabs.hidden = !canPickSeason;
+  if (canPickSeason) {
+    seasons.forEach((entry) => {
+      const btn = createEl('button', 'season-tab', `Season ${entry.season}`);
+      btn.type = 'button';
+      btn.classList.toggle('active', entry.season === detail.activeSeason);
+      btn.addEventListener('click', () => selectCastleSeason(entry.season));
+      els.castleSeasonTabs.append(btn);
+    });
+  }
+
+  els.castleSeasonDownload.hidden = !(detail.type === 'series' && episodes.length);
+  els.castleSeasonDownload.disabled = state.castleBusy;
+  els.castleSeasonDownload.textContent = 'Download season';
+
+  if (!episodes.length) {
+    els.castleStatus.textContent = 'No downloadable episodes are listed for this title.';
+    return;
+  }
+
+  episodes.forEach((episode) => {
+    const row = createEl('article', 'episode-row castle-episode');
+
+    if (episode.thumbnail) {
+      const thumb = document.createElement('img');
+      thumb.className = 'episode-thumb';
+      thumb.loading = 'lazy';
+      thumb.alt = '';
+      thumb.src = episode.thumbnail;
+      thumb.addEventListener('error', () => thumb.remove());
+      row.append(thumb);
+    }
+
+    const main = createEl('div', 'episode-main');
+    const head = createEl('div', 'episode-head');
+    head.append(createEl('span', 'episode-number', detail.type === 'series' ? `E${episode.episode}` : 'FILM'));
+    head.append(createEl('strong', '', detail.type === 'series' ? episode.title : detail.title));
+    main.append(head);
+
+    const quality = (episode.resolutions || []).find((entry) => entry.resolution === selected);
+    const sub = [
+      formatDuration(episode.duration),
+      quality ? qualityName(quality.resolution) : 'Not available',
+      quality?.size ? formatSize(quality.size) : '',
+    ].filter(Boolean).join(' · ');
+    main.append(createEl('span', 'episode-date', sub));
+    row.append(main);
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'castle-dl-btn';
+    btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg><span>Download</span>';
+    if (!quality) {
+      btn.disabled = true;
+      btn.querySelector('span').textContent = 'Unavailable';
+    } else {
+      btn.addEventListener('click', () => queueCastleEpisode(episode, btn));
+    }
+    row.append(btn);
+    els.castleEpisodes.append(row);
+  });
+}
+
+async function selectCastleSeason(season) {
+  const detail = state.castleTitle;
+  if (!detail || detail.type !== 'series' || state.castleBusy) return;
+  if (Number(season) === Number(detail.activeSeason)) return;
+
+  const token = ++state.castleSeasonToken;
+  const cacheKey = `${detail.id}:${season}`;
+  const cached = state.castleCache.get(cacheKey);
+
+  const apply = (data) => {
+    if (token !== state.castleSeasonToken) return;
+    state.castleTitle = {
+      ...detail,
+      seasons: data.seasons,
+      activeSeason: data.activeSeason,
+      episodeCount: data.episodeCount,
+    };
+    state.castleSeason = data.activeSeason;
+    renderCastleDownloads(state.castleTitle);
+  };
+
+  if (cached) {
+    apply(cached);
+    return;
+  }
+
+  els.castleStatus.textContent = `Loading season ${season}…`;
+  els.castleEpisodes.replaceChildren();
+  try {
+    const data = await getCastleTitle(detail.id, { season });
+    state.castleCache.set(cacheKey, data);
+    apply(data);
+  } catch (err) {
+    if (token !== state.castleSeasonToken) return;
+    els.castleStatus.textContent = `Could not load season ${season} (${err.message}).`;
+  }
+}
+
+async function queueCastleEpisode(episode, btn) {
+  const detail = state.castleTitle;
+  const quality = (episode.resolutions || []).find((entry) => entry.resolution === state.castleQuality);
+  if (!detail || !quality) return;
+
+  const isSeries = detail.type === 'series';
+  const label = isSeries
+    ? `S${String(state.castleSeason).padStart(2, '0')}E${String(episode.episode).padStart(2, '0')}`
+    : detail.title;
+
+  btn.disabled = true;
+  btn.querySelector('span').textContent = 'Starting…';
+  els.castleStatus.textContent = '';
+
+  try {
+    await startCastleDownload({
+      movieId: episode.movieId,
+      episodeId: episode.episodeId,
+      resolution: state.castleQuality,
+      title: detail.title,
+      year: detail.year,
+      season: isSeries ? state.castleSeason : 0,
+      episode: episode.episode,
+      size: quality.size,
+      poster: detail.poster,
+    });
+    btn.classList.add('queued');
+    btn.querySelector('span').textContent = 'Queued';
+    toast(`${label} queued — ${qualityName(state.castleQuality)}`);
+    openDownloads();
+    refreshDownloads();
+  } catch (err) {
+    btn.disabled = false;
+    btn.querySelector('span').textContent = 'Retry';
+    els.castleStatus.textContent = `Could not queue ${label}: ${err.message}`;
+  }
+}
+
+async function queueCastleSeason() {
+  const detail = state.castleTitle;
+  const episodes = castleEpisodesOf(detail);
+  if (!detail || !episodes.length || state.castleBusy) return;
+
+  state.castleBusy = true;
+  els.castleSeasonDownload.disabled = true;
+  els.castleStatus.textContent = '';
+  let queued = 0;
+  let skipped = 0;
+
+  for (let index = 0; index < episodes.length; index += 1) {
+    const episode = episodes[index];
+    els.castleSeasonDownload.textContent = `Queueing ${index + 1}/${episodes.length}…`;
+    const quality = (episode.resolutions || []).find((entry) => entry.resolution === state.castleQuality);
+    if (!quality) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      await startCastleDownload({
+        movieId: episode.movieId,
+        episodeId: episode.episodeId,
+        resolution: state.castleQuality,
+        title: detail.title,
+        year: detail.year,
+        season: state.castleSeason,
+        episode: episode.episode,
+        size: quality.size,
+        poster: detail.poster,
+      });
+      queued += 1;
+    } catch {
+      skipped += 1;
+    }
+  }
+
+  state.castleBusy = false;
+  els.castleSeasonDownload.disabled = false;
+  els.castleSeasonDownload.textContent = 'Download season';
+  els.castleStatus.textContent = [
+    queued ? `${queued} episode${queued === 1 ? '' : 's'} queued` : '',
+    skipped ? `${skipped} unavailable at ${qualityName(state.castleQuality)}` : '',
+  ].filter(Boolean).join(' · ') || 'Nothing was queued.';
+
+  if (queued) {
+    toast(`${queued} episode${queued === 1 ? '' : 's'} queued — ${detail.title}`);
+    openDownloads();
+    refreshDownloads();
+  }
+}
+
+async function openCastleForTitle(title) {
+  const name = String(title || '').trim();
+  if (!name) return;
+  const btn = els.onlineCastleBtn;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Looking up…';
+  try {
+    const data = await searchCastle(name);
+    const results = Array.isArray(data.results) ? data.results : [];
+    const match = results.find((entry) => entry.title.toLowerCase() === name.toLowerCase()) || results[0];
+    if (!match) {
+      toast(`No download found for “${name}”`);
+      return;
+    }
+    closeOnlineModal();
+    openCastleModal(match);
+  } catch (err) {
+    toast(`Could not reach the download catalog (${err.message})`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+function closeCastleModal() {
+  if (els.castleModal.hidden) return;
+  els.castleModal.hidden = true;
+  state.castleTitle = null;
+  state.castleDetailToken += 1;
+  state.castleSeasonToken += 1;
+  state.castleBusy = false;
+  syncBodyLock();
+  castleFocusEl?.focus?.();
   if (state.view === 'home' && !isModalOpen()) {
     setupPreview(state.byId.get(state.heroId));
   }
@@ -1536,6 +2026,7 @@ function bindStaticEvents() {
     if (e.target === els.searchOverlay) closeSearch();
   });
   els.searchResults.addEventListener('click', () => closeSearch());
+  els.searchCastleResults.addEventListener('click', () => closeSearch());
   els.searchOnlineResults.addEventListener('click', () => closeSearch());
   els.searchArchiveBtn.addEventListener('click', () => {
     const q = els.searchArchiveBtn.dataset.q || els.searchInput.value.trim();
@@ -1574,6 +2065,9 @@ function bindStaticEvents() {
 
   els.modal.querySelectorAll('[data-close-modal]').forEach((el) => el.addEventListener('click', closeModal));
   els.onlineModal.querySelectorAll('[data-close-online]').forEach((el) => el.addEventListener('click', closeOnlineModal));
+  els.castleModal.querySelectorAll('[data-close-castle]').forEach((el) => el.addEventListener('click', closeCastleModal));
+  els.castleSeasonDownload.addEventListener('click', queueCastleSeason);
+  els.onlineCastleBtn.addEventListener('click', () => openCastleForTitle(state.onlineTitle?.title));
   els.onlineFreeBtn.addEventListener('click', () => {
     const title = state.onlineTitle?.title;
     closeOnlineModal();
@@ -1583,6 +2077,7 @@ function bindStaticEvents() {
     if (e.key === 'Escape') {
       if (!els.picker.hidden) closePicker();
       else if (!els.downloadsPanel.hidden) closeDownloads();
+      else if (!els.castleModal.hidden) closeCastleModal();
       else if (!els.onlineModal.hidden) closeOnlineModal();
       else if (!els.searchOverlay.hidden) closeSearch();
       else if (isModalOpen()) closeModal();
@@ -1590,6 +2085,7 @@ function bindStaticEvents() {
     }
     if (e.key === 'Tab') {
       if (isModalOpen()) trapFocus(e, els.modal);
+      else if (!els.castleModal.hidden) trapFocus(e, els.castleModal);
       else if (!els.onlineModal.hidden) trapFocus(e, els.onlineModal);
       else if (!els.picker.hidden) trapFocus(e, els.picker);
     }

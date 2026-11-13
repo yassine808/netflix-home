@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import ffmpegPath from 'ffmpeg-static';
 
 const IA = 'https://archive.org';
 const SEARCH_URL = `${IA}/advancedsearch.php`;
@@ -148,10 +150,12 @@ function assertIdentifier(identifier) {
 function publicJob(job) {
   return {
     id: job.id,
+    kind: job.kind || 'http',
     title: job.title,
     fileName: job.fileName,
     collection: job.collection,
     identifier: job.identifier,
+    source: job.source || null,
     url: job.url,
     status: job.status,
     bytes: job.bytes,
@@ -470,6 +474,71 @@ export async function addSeriesDownload(body = {}) {
   });
 }
 
+/**
+ * Queue an HLS (m3u8) download. Segments are remuxed to MP4 by ffmpeg, so the
+ * finished file lands in the library exactly like an archive.org download.
+ */
+export async function addHlsDownload(body = {}) {
+  if (!libraryRoot) throw new Error('downloads are not initialized');
+
+  const url = String(body.url || '');
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    const err = new Error('invalid download url');
+    err.status = 400;
+    throw err;
+  }
+  if (parsed.protocol !== 'https:') {
+    const err = new Error('only https download urls are allowed');
+    err.status = 400;
+    throw err;
+  }
+
+  const collection = sanitizeSegment(body.collection || 'Downloads', 'Downloads');
+  const title = text(body.title) || 'video';
+  const fileName = sanitizeFileName(body.fileName || `${title}.mp4`);
+  const folder = body.folder ? sanitizeSegment(body.folder, '') : '';
+  const targetDir = folder
+    ? path.join(libraryRoot, collection, folder)
+    : path.join(libraryRoot, collection);
+  await fsp.mkdir(targetDir, { recursive: true });
+
+  const dest = await uniquePath(targetDir, fileName);
+  const job = {
+    id: crypto.randomUUID(),
+    kind: 'hls',
+    title,
+    fileName: path.basename(dest),
+    collection,
+    identifier: null,
+    source: text(body.source) || 'castle',
+    url,
+    referer: text(body.referer) || '',
+    dest,
+    status: 'queued',
+    bytes: 0,
+    total: Math.max(0, Number(body.total) || 0),
+    speed: 0,
+    error: null,
+    createdAt: Date.now(),
+    startedAt: null,
+    completedAt: null,
+    controller: null,
+    ffmpeg: null,
+    writeMeta: false,
+    meta: null,
+    poster: text(body.poster) || null,
+    subtitleUrl: /^https:\/\//i.test(String(body.subtitleUrl || '')) ? String(body.subtitleUrl) : '',
+    subtitleLang: text(body.subtitleLang) || 'en',
+  };
+  jobs.set(job.id, job);
+  queue.push(job);
+  pump();
+  return [publicJob(job)];
+}
+
 export function listDownloads() {
   return [...jobs.values()]
     .sort((a, b) => b.createdAt - a.createdAt)
@@ -573,7 +642,132 @@ async function writeSidecar(job) {
   await fsp.writeFile(`${stem}.nfo`, xml, 'utf8').catch(() => {});
 }
 
+function killTree(child) {
+  if (!child || child.killed) return;
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    /* already gone */
+  }
+  if (process.platform === 'win32' && child.pid) {
+    try {
+      spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
+async function saveSubtitle(job) {
+  if (!job.subtitleUrl) return;
+  const res = await fetch(job.subtitleUrl, {
+    headers: { 'User-Agent': USER_AGENT, Referer: job.referer || 'https://api.hlowb.com/' },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) return;
+  const body = await res.text();
+  if (!/^\uFEFF?WEBVTT/.test(body.trimStart())) return;
+
+  const stem = job.dest.slice(0, job.dest.length - path.extname(job.dest).length);
+  await fsp.writeFile(`${stem}.${job.subtitleLang}.vtt`, body, 'utf8');
+}
+
+async function runHlsJob(job) {
+  job.status = 'downloading';
+  job.startedAt = Date.now();
+  const controller = new AbortController();
+  job.controller = controller;
+  const part = `${job.dest}.part`;
+
+  await fsp.rm(part, { force: true }).catch(() => {});
+
+  const args = ['-y', '-loglevel', 'error'];
+  if (job.referer) args.push('-headers', `Referer: ${job.referer}\r\n`);
+  args.push(
+    '-i', job.url,
+    '-c', 'copy',
+    '-movflags', '+faststart',
+    '-f', 'mp4',
+    part,
+  );
+
+  let child = null;
+  let stderr = '';
+  let timer = null;
+
+  try {
+    child = spawn(ffmpegPath, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    job.ffmpeg = child;
+    child.stderr.on('data', (chunk) => {
+      stderr = (stderr + chunk.toString()).slice(-4000);
+    });
+
+    timer = setInterval(async () => {
+      try {
+        const stat = await fsp.stat(part);
+        job.bytes = stat.size;
+        const elapsed = (Date.now() - job.startedAt) / 1000;
+        job.speed = elapsed > 0 ? Math.round(stat.size / elapsed) : 0;
+      } catch {
+        /* file not created yet */
+      }
+    }, 1000);
+
+    const onAbort = () => killTree(child);
+    controller.signal.addEventListener('abort', onAbort);
+
+    const code = await new Promise((resolve) => {
+      child.on('error', (err) => {
+        stderr = `${stderr}\n${err.message}`;
+        resolve(-1);
+      });
+      child.on('close', resolve);
+    });
+
+    controller.signal.removeEventListener('abort', onAbort);
+
+    if (controller.signal.aborted) {
+      job.status = 'cancelled';
+      job.completedAt = Date.now();
+      job.error = null;
+      await fsp.rm(part, { force: true }).catch(() => {});
+      return;
+    }
+
+    if (code !== 0) {
+      const line = stderr.split('\n').map((value) => value.trim()).filter(Boolean).pop();
+      throw new Error(line || `ffmpeg exited with code ${code}`);
+    }
+
+    const stat = await fsp.stat(part);
+    if (!stat.size) throw new Error('ffmpeg produced an empty file');
+
+    await fsp.rename(part, job.dest);
+    job.bytes = stat.size;
+    job.total = stat.size;
+    job.speed = 0;
+    job.status = 'completed';
+    job.completedAt = Date.now();
+    await saveSubtitle(job).catch(() => {});
+    await onComplete(job).catch(() => {});
+  } catch (err) {
+    job.status = 'failed';
+    job.completedAt = Date.now();
+    job.error = err?.message || String(err);
+    await fsp.rm(part, { force: true }).catch(() => {});
+  } finally {
+    if (timer) clearInterval(timer);
+    job.controller = null;
+    job.ffmpeg = null;
+  }
+}
+
 async function runJob(job) {
+  if (job.kind === 'hls') return runHlsJob(job);
+
   job.status = 'downloading';
   job.startedAt = Date.now();
   const controller = new AbortController();

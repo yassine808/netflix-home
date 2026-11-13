@@ -76,6 +76,19 @@ Open **New & Popular** in the top nav (or **New** on mobile). Search archive.org
 
 In the local search overlay, every query shows two sections: **In your library** first, then **Movies & series online**. The online section uses the IMDb-backed catalog and opens a detail view with seasons and legal watch links. Below both sections, **Free downloads** opens the archive.org search with that query already applied.
 
+## Download sources
+
+Two independent sources feed the download queue:
+
+| Source | What it covers | Limits |
+| --- | --- | --- |
+| archive.org | Public-domain films and multi-part items | Public domain only |
+| Castle (`api.hlowb.com`) | Mainstream movies, series and anime, with seasons, episodes, sizes and subtitle tracks | Keyless, but 1080p is premium-only; 720p and 480p download normally |
+
+The Castle catalog is searched from the same overlay (**Downloadable** section) and from **New & Popular**. Any title opens a download dialog with season tabs, per-episode buttons, a quality picker, and **Download season**. The backend resolves a signed HLS playlist per episode and remuxes it to MP4 with ffmpeg, so the result is a plain H.264/AAC file the built-in player can stream. English subtitles are saved next to the video as `<name>.en.vtt`.
+
+Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Better Call Saul, The Boys, Game of Thrones, Stranger Things, Severance, Peaky Blinders, The Last of Us, Squid Game, Succession, House of the Dragon, Money Heist, Attack on Titan, One Piece, plus mainstream films such as Interstellar, Inception, Oppenheimer, Dune, The Dark Knight, Parasite, Spirited Away and The Godfather. The Sopranos and The Wire are absent from this catalog.
+
 ## Keyboard shortcuts (player)
 
 | Key | Action |
@@ -101,6 +114,9 @@ In the local search overlay, every query shows two sections: **In your library**
 | `GET /api/catalog/item/:identifier` | Video files and metadata for one archive.org item |
 | `GET /api/online/search?q=` | Search mainstream movies and series (Cinemeta metadata) |
 | `GET /api/online/title/:type/:id` | Title detail with seasons and episodes (`type` is `movie` or `series`, `id` is an IMDb id) |
+| `GET /api/castle/search?q=` | Search the downloadable Castle catalog (movies, series, anime) |
+| `GET /api/castle/title/:id?season=` | Season and episode list with per-resolution sizes and subtitle tracks |
+| `POST /api/castle/download` | Resolve one episode's HLS stream and queue an MP4 download |
 | `POST /api/downloads` | Queue a film (or several files) for download |
 | `POST /api/downloads/series` | Queue every video file from one item into a folder |
 | `GET /api/downloads` | All download jobs with progress |
@@ -138,6 +154,23 @@ curl -X POST "http://localhost:3000/api/downloads/<job-id>/retry"
 ```
 
 If the archive.org search API is down, `GET /api/catalog/search` returns `source: "fallback"` with the curated public-domain list instead of failing. `GET /api/catalog/fallback` always returns that list. Single-film downloads also write a `.nfo` metadata file and a `-poster.jpg` next to the video when artwork is available.
+
+### Download from the mainstream catalog
+
+```powershell
+# find a title and its catalogue id
+curl "http://localhost:3000/api/castle/search?q=cyberpunk%20edgerunners"
+
+# list seasons/episodes plus sizes and subtitle tracks
+curl "http://localhost:3000/api/castle/title/10234075158397263?season=1"
+
+# queue one episode: resolution 1=480p, 2=720p, 3=1080p (premium, usually refused)
+curl -X POST http://localhost:3000/api/castle/download `
+  -H "Content-Type: application/json" `
+  -d '{"movieId":"6161299972855808","episodeId":"6161299974526976","resolution":2,"title":"Cyberpunk Edgerunners","season":1,"episode":1}'
+```
+
+Use the `movieId` of the season (not the series id) and the `episodeId` from the detail response. Movies use the same call with `season` and `episode` omitted.
 
 ## Notes
 

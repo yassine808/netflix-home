@@ -52,6 +52,45 @@ export async function getOnlineTitle(type, id, { signal } = {}) {
   return res.json();
 }
 
+export async function searchCastle(query, { signal } = {}) {
+  const params = new URLSearchParams({ q: query });
+  const res = await fetch(`/api/castle/search?${params}`, { cache: 'no-store', signal });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    throw new Error(payload?.error || `download catalog search ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function getCastleTitle(id, { season, signal } = {}) {
+  const params = new URLSearchParams();
+  if (season) params.set('season', String(season));
+  const query = params.toString();
+  const url = `/api/castle/title/${encodeURIComponent(id)}${query ? `?${query}` : ''}`;
+  const res = await fetch(url, { cache: 'no-store', signal });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    throw new Error(payload?.error || `download catalog title ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function startCastleDownload(body) {
+  const res = await fetch('/api/castle/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    throw new Error(payload?.error || `download failed (${res.status})`);
+  }
+  return res.json();
+}
+
 export async function getCatalogItem(identifier) {
   const res = await fetch(`/api/catalog/item/${encodeURIComponent(identifier)}`, { cache: 'no-store' });
   if (!res.ok) {

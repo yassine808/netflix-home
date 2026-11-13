@@ -187,6 +187,21 @@
         <p class="search-empty" id="searchLocalEmpty" hidden></p>
       </section>
 
+      <section class="search-section" id="searchCastleSection" hidden>
+        <div class="search-section-head">
+          <h2>Ready to download</h2>
+          <span class="search-count" id="searchCastleCount"></span>
+        </div>
+        <p class="search-source">Movies and series from the built-in download catalog</p>
+        <div class="online-grid" id="searchCastleResults"></div>
+        <div class="online-loading" id="searchCastleLoading" hidden>
+          <div class="spinner"></div>
+          <span>Checking the download catalog…</span>
+        </div>
+        <p class="search-empty" id="searchCastleEmpty" hidden></p>
+        <p class="search-error" id="searchCastleError" hidden></p>
+      </section>
+
       <section class="search-section" id="searchOnlineSection" hidden>
         <div class="search-section-head">
           <h2>Movies &amp; series online</h2>
@@ -262,6 +277,7 @@
           <div class="modal-actions">
             <a class="btn btn-play" id="onlineWatchLink" target="_blank" rel="noopener noreferrer">Where to watch</a>
             <a class="btn btn-info" id="onlineImdbLink" target="_blank" rel="noopener noreferrer">IMDb</a>
+            <button class="btn btn-ghost" id="onlineCastleBtn">Download options</button>
             <button class="btn btn-ghost" id="onlineFreeBtn">Find free download</button>
           </div>
         </div>
@@ -274,6 +290,39 @@
           <div class="episode-list" id="onlineEpisodes"></div>
         </div>
         <p class="online-note">Metadata from IMDb via Cinemeta. This app links to legal watch pages; it does not stream or download copyrighted titles.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal online-modal castle-modal" id="castleModal" hidden>
+    <div class="modal-scrim" data-close-castle></div>
+    <div class="modal-panel online-panel" role="dialog" aria-modal="true" aria-labelledby="castleTitle">
+      <button class="modal-close" data-close-castle aria-label="Close">✕</button>
+      <div class="online-hero">
+        <img id="castleBackdrop" alt="">
+        <div class="modal-hero-grad"></div>
+        <div class="modal-hero-content">
+          <span class="online-kicker" id="castleKicker"></span>
+          <h1 id="castleTitle"></h1>
+          <div class="modal-meta" id="castleMeta"></div>
+          <div class="modal-actions">
+            <button class="btn btn-play" id="castleSeasonDownload" hidden>Download season</button>
+          </div>
+        </div>
+      </div>
+      <div class="online-body">
+        <p class="modal-plot" id="castlePlot"></p>
+        <div class="castle-download-block" id="castleDownloadBlock" hidden>
+          <div class="castle-toolbar">
+            <span class="castle-toolbar-label">Quality</span>
+            <div class="quality-options" id="castleQuality"></div>
+            <span class="castle-size" id="castleSize"></span>
+          </div>
+          <div class="season-tabs" id="castleSeasonTabs" hidden></div>
+          <div class="episode-list castle-episode-list" id="castleEpisodes"></div>
+          <p class="castle-status" id="castleStatus"></p>
+        </div>
+        <p class="online-note" id="castleNote">Downloads are queued in the background and land in your library automatically.</p>
       </div>
     </div>
   </div>
