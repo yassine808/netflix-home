@@ -2,9 +2,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import ffprobeStatic from 'ffprobe-static';
+import { searchOnline } from './online.js';
+import { isOffline } from './settings.js';
 
 const CHAPTER_INTRO = /\b(intro|opening|opening credits|main title|recap)\b/i;
 const chapterCache = new Map();
+
+/* IntroDB (https://api.introdb.app) is a free, keyless, community-run database
+ * of intro timestamps. It returns real start/end times for a series episode,
+ * which is what the player needs to offer "Skip Intro" at the right moment. */
+const INTRODB_BASE = 'https://api.introdb.app';
+const INTRODB_TIMEOUT = 8000;
+const imdbCache = new Map();
+const lookupCache = new Map();
 
 let cacheFile = null;
 let markers = {};
@@ -19,7 +29,12 @@ export function initIntro(cacheDir) {
   }
 }
 
+/* Intro timings differ per episode, so cache them per episode rather than per
+ * series: S01E01 can open with a cold open while S01E02 starts on the intro. */
 function keyFor(item) {
+  if (item.isSeries && item.season && item.episode) {
+    return `${item.seriesKey || item.id}#s${item.season}e${item.episode}`;
+  }
   return item.seriesKey || item.id;
 }
 
@@ -82,11 +97,65 @@ async function fromChapters(item, full) {
   return null;
 }
 
-function heuristic(item) {
-  if (!item.isSeries) return null;
-  const duration = Number(item.durationSec) || 0;
-  if (duration < 300) return null;
-  return { startSec: 0, endSec: Math.round(Math.min(90, duration * 0.1) * 10) / 10 };
+/* The library rarely carries an IMDb id, so ask Cinemeta for the series once
+ * and remember the answer for every episode of that series. */
+async function resolveImdbId(item) {
+  const direct = String(item.tmdbId || '');
+  if (/^tt\d{4,10}$/.test(direct)) return direct;
+
+  const key = keyFor(item);
+  if (imdbCache.has(key)) return imdbCache.get(key);
+
+  let id = '';
+  try {
+    const title = item.seriesTitle || item.title;
+    const data = await searchOnline(title);
+    const wanted = String(title || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    const series = (data.results || []).filter((hit) => hit.type === 'series');
+    const exact = series.find((hit) => String(hit.title || '').toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ').trim() === wanted);
+    id = (exact || series[0])?.id || '';
+  } catch {
+    /* offline or catalog down: no id, no lookup */
+  }
+  imdbCache.set(key, id);
+  return id;
+}
+
+async function fromIntroDb(item) {
+  if (!item.isSeries || isOffline()) return null;
+  const season = Number(item.season) || 0;
+  const episode = Number(item.episode) || 0;
+  if (!season || !episode) return null;
+
+  const imdbId = await resolveImdbId(item);
+  if (!imdbId) return null;
+
+  const key = `${imdbId}:${season}x${episode}`;
+  if (lookupCache.has(key)) return lookupCache.get(key);
+
+  const promise = (async () => {
+    try {
+      const url = `${INTRODB_BASE}/intro?imdb_id=${encodeURIComponent(imdbId)}&season=${season}&episode=${episode}`;
+      const res = await fetch(url, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(INTRODB_TIMEOUT),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const value = normalize(Number(data.start_ms) / 1000, Number(data.end_ms) / 1000, item.durationSec);
+      // A start at zero means the submitted window covers the whole opening,
+      // cold open included. Offering that would skip content before the intro.
+      if (!value || value.startSec < 3) return null;
+      if (Number(data.confidence) < 0.5) return null;
+      return value;
+    } catch {
+      return null;
+    }
+  })();
+
+  lookupCache.set(key, promise);
+  return promise;
 }
 
 export async function getIntroMarkers(item, full) {
@@ -96,27 +165,32 @@ export async function getIntroMarkers(item, full) {
   const saved = markers[keyFor(item)];
   if (saved) {
     const value = normalize(saved.startSec, saved.endSec, item.durationSec);
-    if (value) return { ...value, source: 'cache' };
+    if (value) return { ...value, source: saved.source || 'cache' };
   }
 
   const chapters = await fromChapters(item, full);
   if (chapters) return { ...chapters, source: 'chapters' };
 
-  const guess = heuristic(item);
-  if (guess) return { ...guess, source: 'heuristic' };
+  const detected = await fromIntroDb(item);
+  if (detected) {
+    // Keep it on disk so an offline play still gets the same window.
+    saveIntroMarkers(item, detected.startSec, detected.endSec, 'introdb');
+    return { ...detected, source: 'introdb' };
+  }
 
+  // No reliable window: show no button rather than skipping the cold open.
   return { startSec: null, endSec: null, source: null };
 }
 
-export function saveIntroMarkers(item, startSec, endSec) {
+export function saveIntroMarkers(item, startSec, endSec, source = 'cache') {
   const value = normalize(startSec, endSec, item.durationSec);
   if (!value) return null;
-  markers[keyFor(item)] = { ...value, updatedAt: Date.now() };
+  markers[keyFor(item)] = { ...value, source, updatedAt: Date.now() };
   try {
     fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
     fs.writeFileSync(cacheFile, JSON.stringify(markers, null, 2));
   } catch {
     /* keep the in-memory value for this run */
   }
-  return { ...value, source: 'cache' };
+  return { ...value, source };
 }

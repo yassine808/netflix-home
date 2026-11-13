@@ -92,7 +92,8 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 - Downloads drawer with live progress, speed, cancel/retry, and automatic library refresh
 - Free-download search for public-domain films when the online catalog has no local copy
 - Custom player: resume, seek preview, buffered bar, volume, large ±10 s skips, fullscreen, keyboard shortcuts
-- Player subtitles from the `.vtt` sidecars, with language switching and a per-title timing offset
+- Player subtitles from the `.vtt` sidecars, with language switching, a per-title timing offset, plus subtitle size and background-opacity controls
+- **Skip Intro** appears only during the real intro window, taken from a local marker, the file's chapters, or the free IntroDB API (cached to `.cache\intro.json`); episodes with no known timing get no button instead of a guessed window
 - Progress and My List saved in the browser
 - Range-request streaming, so seeking works without copying the file
 - Lazy thumbnail generation and persistent metadata cache
@@ -155,6 +156,8 @@ Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Bet
 | `POST /api/rescan` | Rescan the library folder |
 | `GET /api/item/:id` | One item's metadata |
 | `GET /api/next/:id` | Next episode of a series: `kind: "local"` with an id to play, `kind: "catalog"` with season/episode to download, or `kind: "none"` |
+| `GET /api/intro/:id` | Intro window for the Skip Intro button: `startSec`/`endSec` from a sidecar, the cache, chapters or IntroDB, or `null` when none is known |
+| `POST /api/intro/:id` | Save a manual intro window (`{"startSec": 71, "endSec": 161}`) |
 | `GET /api/subtitles/:id` | Subtitle tracks found next to the video (`.en.vtt`, `.fr.vtt`, …) |
 | `GET /api/subtitle/:id/:lang` | One WebVTT subtitle file |
 | `GET /api/settings` | App settings, including the offline flag |
