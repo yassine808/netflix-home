@@ -254,10 +254,9 @@ export function qualityLabel(item) {
   return item.height ? 'SD' : '';
 }
 
-export function thumbUrl(item, width) {
-  if (item.hasBackdrop) return `/api/art/${item.id}/backdrop`;
-  const query = width ? `?w=${encodeURIComponent(width)}` : '';
-  return `/api/thumb/${item.id}${query}`;
+export function thumbUrl(item) {
+  // Always the title's official artwork, never a frame from the video.
+  return `/api/art/${item.id}/backdrop`;
 }
 
 /* Cached hero still + 12 s preview clip (see server/hero.js). */
@@ -270,8 +269,8 @@ export function heroPreviewUrl(item) {
 }
 
 export function posterUrl(item) {
-  if (item.hasPoster) return `/api/art/${item.id}/poster`;
-  return `/api/thumb/${item.id}`;
+  // Poster art for portrait slots; the catalog's own image, cached locally.
+  return `/api/art/${item.id}/poster`;
 }
 
 export function readJson(key, fallback) {

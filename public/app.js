@@ -648,8 +648,8 @@ function renderHero() {
 
   els.heroTitle.textContent = item.title;
   els.heroImg.alt = item.title;
-  // Backdrops are already local artwork; otherwise use the cached hero still.
-  els.heroImg.src = item.hasBackdrop ? thumbUrl(item) : heroImageUrl(item);
+  // The title's main picture: official artwork first, cached hero still as the fallback.
+  heroArt(item);
   els.heroRating.textContent = item.rating || (item.height >= 1000 ? 'HD' : 'NR');
 
   const progress = progressOfGroup(item);
@@ -675,6 +675,17 @@ function renderHero() {
   if (!same) setupPreview(item);
 }
 
+/* Hero picture: the title's official artwork, with the cached still as a
+ * fallback when the catalog has no image for it. */
+function heroArt(item) {
+  const img = els.heroImg;
+  img.onerror = () => {
+    img.onerror = null;
+    img.src = heroImageUrl(item);
+  };
+  img.src = thumbUrl(item);
+}
+
 function setupPreview(item) {
   stopPreview();
   if (!item || item.durationSec < 90) return;
@@ -692,7 +703,7 @@ function playPreview(item) {
   video.volume = 0.65;
   video.muted = state.previewMuted;
   // Keep the title's own artwork on screen while the trailer buffers.
-  video.poster = item.hasBackdrop ? thumbUrl(item) : heroImageUrl(item);
+  video.poster = thumbUrl(item);
   syncHeroMute();
   video.classList.remove('playing');
   const start = state.previewStart;
@@ -2523,15 +2534,20 @@ async function openCastleModal(item) {
     state.castleTitle = merged;
     state.castleSeason = detail.activeSeason || 0;
     state.castleCatalog = null;
-    if (detail.type === 'series') {
-      // The open tab only carries one season; "Download all" needs every one.
-      const full = await getCastleSeriesEpisodes(detail.id).catch(() => null);
-      if (token !== state.castleDetailToken) return;
-      state.castleCatalog = full && Array.isArray(full.seasons) ? { seasons: full.seasons } : null;
-    }
     state.castleCache.set(`${detail.id}:${detail.activeSeason || 0}`, detail);
     populateCastleModal(merged);
     renderCastleDownloads(merged);
+    if (detail.type === 'series') {
+      // "Download all" needs every season, but the sheet must not wait for them.
+      getCastleSeriesEpisodes(detail.id).then((full) => {
+        if (token !== state.castleDetailToken) return;
+        if (!full || !Array.isArray(full.seasons)) return;
+        state.castleCatalog = { seasons: full.seasons };
+        if (!els.castleModal.hidden && state.castleTitle === merged) {
+          els.castleSeasonDownload.disabled = state.castleBusy || castleAllLocal(merged);
+        }
+      }).catch(() => { /* the button falls back to the open season */ });
+    }
   } catch (err) {
     if (token !== state.castleDetailToken) return;
     els.castleStatus.textContent = `Could not load download options (${err.message}).`;
@@ -2600,11 +2616,19 @@ const EP_PLAY_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="curr
  * carry season/episode and the series title, so parallel downloads of another
  * show never leak into this list. */
 function castleJobFor(detail, season, episode) {
-  const title = String(detail?.title || '').toLowerCase();
+  // Download titles carry " SxxExx" and the catalogue spelling (colons, dashes),
+  // so compare the bare show name after normalising punctuation.
+  const clean = (value) => String(value || '')
+    .replace(/\s*[._-]?\s*s\d{1,2}\s*e\d{1,2}\b.*$/i, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+  const wanted = clean(detail?.title);
   return state.downloads.find((job) => {
     if (!job.season && !job.episode) return false;
     if (Number(job.season) !== Number(season) || Number(job.episode) !== Number(episode)) return false;
-    return !title || String(job.title || '').toLowerCase() === title;
+    if (!wanted) return true;
+    return clean(job.title) === wanted || clean(job.seriesTitle) === wanted;
   }) || null;
 }
 
@@ -2618,11 +2642,29 @@ function castleCatalogEpisodes() {
   })));
 }
 
+/* Every episode of this series that already sits anywhere in the library,
+ * across collections, keyed "SxE". Download all skips those. */
+function seriesLocalEpisodes(detail) {
+  const norm = (value) => String(value || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+  const wanted = norm(detail?.title || detail?.seriesTitle);
+  const map = new Map();
+  if (!wanted) return map;
+  for (const item of state.items) {
+    if (!item.isSeries) continue;
+    if (norm(item.seriesTitle || item.title) !== wanted) continue;
+    map.set(`${item.season}x${item.episode}`, item);
+  }
+  return map;
+}
+
 function castleAllLocal(detail) {
   const episodes = castleCatalogEpisodes();
   if (!episodes.length) return false;
-  const localMap = state.castleLocal?.local || null;
-  if (!localMap) return false;
+  const localMap = seriesLocalEpisodes(detail);
+  if (!localMap.size) return false;
   return episodes.every((episode) => localMap.has(`${episode.season}x${episode.episode}`));
 }
 
@@ -2829,6 +2871,17 @@ async function selectCastleSeason(season) {
 
   els.castleStatus.textContent = `Loading season ${season}…`;
   els.castleEpisodes.replaceChildren();
+  if (!/^\d{6,20}$/.test(String(detail.id || ''))) {
+    // Library preview is on screen before the catalog answered: switch tabs
+    // from local data and let the catalog merge pick the season up.
+    const preview = localSheetDetail(state.castleLocal?.group, season);
+    if (preview) {
+      state.castleSeason = preview.activeSeason;
+      state.castleTitle = preview;
+      renderCastleDownloads(preview);
+    }
+    return;
+  }
   try {
     const data = await getCastleTitle(detail.id, { season });
     state.castleCache.set(cacheKey, data);
@@ -2883,24 +2936,54 @@ async function queueCastleSeason() {
   const detail = state.castleTitle;
   if (!detail || detail.type !== 'series' || state.castleBusy) return;
 
-  const all = castleCatalogEpisodes();
+  state.castleBusy = true;
+  els.castleSeasonDownload.disabled = true;
+
+  let all = castleCatalogEpisodes();
+  if (!all.length) {
+    // The sheet renders before the catalog arrives; pull it in now so
+    // "Download all" still covers every season, not just the open tab.
+    els.castleSeasonDownload.textContent = 'Loading episodes…';
+    const group = state.castleLocal?.group;
+    if (group?.seriesKey) {
+      const catalog = state.seriesCatalog.get(group.seriesKey)
+        || await getSeriesCatalog(group.seriesKey).catch(() => null);
+      if (catalog) {
+        state.seriesCatalog.set(group.seriesKey, catalog);
+        state.castleCatalog = catalog;
+        all = castleCatalogEpisodes();
+      }
+    }
+    if (!all.length && /^\d{6,20}$/.test(String(detail.id || ''))) {
+      const full = await getCastleSeriesEpisodes(detail.id).catch(() => null);
+      if (full && Array.isArray(full.seasons)) state.castleCatalog = { seasons: full.seasons };
+      all = castleCatalogEpisodes();
+    }
+  }
   const episodes = all.length ? all : castleEpisodesOf(detail).map((episode) => ({
     ...episode,
     season: detail.activeSeason ?? state.castleSeason,
   }));
-  if (!episodes.length) return;
+  if (!episodes.length) {
+    state.castleBusy = false;
+    els.castleSeasonDownload.disabled = false;
+    els.castleSeasonDownload.textContent = 'Download all';
+    return;
+  }
 
   state.castleBusy = true;
   els.castleSeasonDownload.disabled = true;
   els.castleStatus.textContent = '';
   let queued = 0;
   let skipped = 0;
-  const localMap = state.castleLocal?.local || null;
+  const localMap = seriesLocalEpisodes(detail);
+  const localGroupMap = state.castleLocal?.local || null;
 
   for (let index = 0; index < episodes.length; index += 1) {
     const episode = episodes[index];
-    // Episodes already on disk do not need downloading again.
-    if (localMap && localMap.has(`${episode.season}x${episode.episode}`)) {
+    // Episodes already on disk anywhere in the library do not need a second copy.
+    if (localMap.has(`${episode.season}x${episode.episode}`)
+      || (localGroupMap && localGroupMap.has(`${episode.season}x${episode.episode}`))) {
       skipped += 1;
       continue;
     }
@@ -2939,10 +3022,11 @@ async function queueCastleSeason() {
 
   state.castleBusy = false;
   els.castleSeasonDownload.disabled = false;
-  els.castleStatus.textContent = [
+  const summary = [
     queued ? `${queued} episode${queued === 1 ? '' : 's'} queued` : '',
     skipped ? `${skipped} already here or unavailable` : '',
   ].filter(Boolean).join(' · ') || 'Nothing was queued.';
+  els.castleStatus.textContent = summary;
 
   if (queued) {
     toast(`${queued} episode${queued === 1 ? '' : 's'} queued — ${detail.title}`);
@@ -2950,7 +3034,11 @@ async function queueCastleSeason() {
     openDownloads();
   }
   await refreshDownloads();
-  if (!els.castleModal.hidden && state.castleTitle) renderCastleDownloads(state.castleTitle);
+  if (!els.castleModal.hidden && state.castleTitle) {
+    // Re-rendering clears the status line, so put the summary back.
+    renderCastleDownloads(state.castleTitle);
+    els.castleStatus.textContent = summary;
+  }
 }
 
 async function openCastleForTitle(title) {
@@ -3028,6 +3116,35 @@ function localEpisodesFor(group) {
   const map = new Map();
   for (const ep of group.episodes || []) map.set(`${ep.season}x${ep.episode}`, ep);
   return map;
+}
+
+/* The library already knows its own episodes, so draw them before the catalog
+ * answers: Play buttons appear immediately instead of a long skeleton. */
+function localSheetDetail(group, season) {
+  const all = group.episodes || [];
+  if (!group.isSeries || !all.length) return null;
+  const seasons = [...new Set(all.map((ep) => ep.season))].sort((a, b) => a - b);
+  const activeSeason = seasons.includes(Number(season)) ? Number(season) : seasons[0];
+  const episodes = all
+    .filter((ep) => ep.season === activeSeason)
+    .sort((a, b) => a.episode - b.episode)
+    .map((ep) => ({
+      episode: ep.episode,
+      season: ep.season,
+      movieId: ep.id,
+      episodeId: ep.id,
+      thumbnail: thumbUrl(ep),
+      resolutions: [],
+    }));
+  return {
+    id: group.id,
+    type: 'series',
+    title: group.title,
+    activeSeason,
+    seasons: seasons.map((value) => ({ season: value, episodes: value === activeSeason ? episodes : [] })),
+    episodeCount: all.length,
+    episodes,
+  };
 }
 
 function resumeTarget(group) {
@@ -3113,6 +3230,13 @@ async function openSeriesSheet(group, focusId) {
   els.castleStatus.hidden = false;
   renderCastleSkeleton();
   setTimeout(() => els.castleModal.querySelector('.modal-close')?.focus(), 40);
+
+  // Draw the library's own episodes first; the catalog merge follows right after.
+  const preview = localSheetDetail(group, state.castleSeason);
+  if (preview) {
+    state.castleTitle = preview;
+    renderCastleDownloads(preview);
+  }
 
   try {
     const catalog = state.seriesCatalog.get(group.seriesKey) || await getSeriesCatalog(group.seriesKey);
@@ -3935,6 +4059,7 @@ function bindStaticEvents() {
     if (!els.profile.contains(e.target)) closeProfile();
   });
 
+  els.heroVideo.addEventListener('playing', () => els.heroVideo.classList.add('playing'));
   els.heroVideo.addEventListener('error', () => els.heroVideo.classList.remove('playing'));
 }
 

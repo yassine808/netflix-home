@@ -6,6 +6,7 @@ import {
   initCache, scanLibrary, getLibrary, getItem, resolveItemFile,
   ensureThumb, artPath, isScanning,
 } from './library.js';
+import { initArtwork, officialArt, cachedArt } from './artwork.js';
 import {
   initDownloads, searchCatalog, getCatalogItem, fallbackCatalog,
   addDownload, addSeriesDownload, addHlsDownload,
@@ -71,6 +72,7 @@ const PORT_FILE = path.join(cacheDir, 'port');
 
 initCache(cacheDir);
 initSettings(cacheDir);
+initArtwork(cacheDir);
 initFrames(cacheDir);
 initIntro(cacheDir);
 initHero(cacheDir);
@@ -519,9 +521,19 @@ app.post('/api/intro/:id', (req, res) => {
   res.json(saved);
 });
 
-app.get('/api/art/:id/:kind', (req, res) => {
+app.get('/api/art/:id/:kind', async (req, res) => {
   const kind = req.params.kind === 'poster' ? 'poster' : 'backdrop';
-  const art = artPath(kind, req.params.id);
+  const sidecar = artPath(kind, req.params.id);
+  if (sidecar) return res.sendFile(sidecar);
+  const item = getItem(req.params.id);
+  if (!item) return res.status(404).end();
+  // Official artwork from the catalog, cached next to the other pictures.
+  const cached = cachedArt(item.seriesKey || item.id, kind);
+  if (cached) {
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.sendFile(cached);
+  }
+  const art = await officialArt(item, kind);
   if (!art) return res.status(404).end();
   res.setHeader('Cache-Control', 'public, max-age=86400');
   res.sendFile(art);
@@ -815,6 +827,8 @@ app.post('/api/castle/download', async (req, res) => {
       fileName,
       collection: 'Downloads',
       folder: isSeries ? title : '',
+      season,
+      episode,
       total: Number(body.size) || 0,
       poster: String(body.poster || ''),
       source: 'castle',

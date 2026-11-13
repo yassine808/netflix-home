@@ -62,7 +62,8 @@ G:\NETFLIX\
 - Years in filenames like `Movie (2019).mp4` are parsed and shown as metadata.
 - Optional Kodi-style `.nfo` files next to a video add title, plot, genres, and rating.
 - Optional `poster.jpg` / `fanart.jpg` (or `<name>-poster.jpg` / `<name>-fanart.jpg`) are used as artwork.
-- Thumbnails come from a picture database: for each title several moments between 12 % and 82 % of the runtime are sampled, each frame is scored by edge density, and the best one is stored in `.cache\pictures.db` with its JPEG in `.cache\pictures\`. Black frames and baked-in title cards lose to real scenes.
+- Cards and the billboard use the title's **official artwork** (poster and backdrop) fetched once through Cinemeta and cached in `.cache\art\`; a frame sampled from the video is never used for a card. Local `poster.jpg` / `fanart.jpg` sidecars win when present.
+- The sampled-frame picture database is only a legacy fallback: for each title several moments between 12 % and 82 % of the runtime are sampled, each frame is scored by edge density, and the best one is stored in `.cache\pictures.db` with its JPEG in `.cache\pictures\`.
 - The cache lives in the library root, so moving the drive carries the database with it.
 
 ### Change the library root
@@ -79,8 +80,8 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 ## Features
 
 - Netflix-style billboard with a cached hero still and a 12 s preview clip (built with ffmpeg, indexed in SQLite under `.cache\library.db`), so the home page never seeks a multi-GB file
-- The billboard picks a different title on every load and plays that title's official trailer (id from Cinemeta, downloaded once with `yt-dlp` into `.cache\trailers`), falling back to the cached clip and then the real stream; the title's main picture stays visible while the trailer buffers
-- Series in your library open a catalog-style sheet: hero art, **+ My List**, **Resume**, **Download all**, quality chips and season tabs; episodes already on disk get **Play** with their watched progress bar, the rest get **Download**. Episode art is the catalog's own thumbnail — no frames are generated
+- The billboard picks a different title on every load and plays that title's official trailer (id from Cinemeta, downloaded one at a time with `yt-dlp` into `.cache\trailers`), falling back to the cached clip and then the real stream; the title's main picture stays visible while the trailer buffers, then the video fades in when it actually plays
+- Series in your library open a catalog-style sheet: hero art, **+ My List**, **Resume**, **Download all**, quality chips and season tabs; episodes already on disk get **Play** with their watched progress bar, the rest get **Download**. The library's own episodes draw immediately, so a local series opens without a loading wait (the catalog merge and skeleton only cover remote titles). Episode art is the catalog's own thumbnail — no frames are generated
 - **Download all** queues every episode of every season, skips what is already on disk, and only turns into **Everything downloaded** when the whole series is local
 - **Next episode** in the player: a downloaded episode plays straight away; one that is not on disk opens the series sheet on that season with the episode highlighted, ready to download
 - One picture per title in `.cache\pictures.db`, picked by sampling the film so a card never shows a black frame or the film's own title text
@@ -174,7 +175,7 @@ Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Bet
 | `GET /api/hero/:id/image.jpg` | Cached hero still (falls back to a generated thumbnail) |
 | `GET /api/hero/:id/preview.mp4` | 12 s cached preview clip used by the home billboard |
 | `GET /api/hero/:id/trailer.mp4` | Official trailer for the billboard (downloaded once with `yt-dlp`) |
-| `GET /api/art/:id/poster\|backdrop` | Local artwork if present |
+| `GET /api/art/:id/poster\|backdrop` | Official catalog artwork (local sidecar file first, then `.cache\art\`) |
 | `GET /api/series/:key/catalog` | Every known episode of a series with catalog ids and a default quality |
 | `GET /api/catalog/search?q=` | Search public-domain films on archive.org |
 | `GET /api/catalog/fallback` | Built-in catalog used when archive.org is unreachable |

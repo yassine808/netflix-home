@@ -30,7 +30,6 @@ let db = null;
 let trailerDir = null;
 let ytDlp = process.env.YTDLP_PATH || 'yt-dlp.exe';
 const resolving = new Map();
-const downloading = new Map();
 
 function hashFor(id) {
   return crypto.createHash('sha1').update(String(id)).digest('hex').slice(0, 20);
@@ -153,8 +152,10 @@ async function download(item, youtubeId) {
   return { file, size: stat.size };
 }
 
-/* One download at a time: trailers are a background nicety, not playback. */
+/* One download at a time: trailers are a background nicety, not playback.
+ * The queue holds the work itself, so yt-dlp runs for one title at a time. */
 const queue = [];
+const queued = new Map();
 let active = 0;
 
 function pump() {
@@ -162,15 +163,16 @@ function pump() {
   const next = queue.shift();
   if (!next) return;
   active += 1;
-  next().finally(() => { active -= 1; pump(); });
+  next.work().finally(() => { active -= 1; pump(); });
 }
 
 export function warmTrailer(item) {
-  if (!item || isOffline()) return;
+  if (!item || isOffline()) return null;
   const key = trailerKey(item);
-  if (downloading.has(key)) return;
-  if (trailerReady(item)) return;
-  const task = (async () => {
+  if (queued.has(key)) return queued.get(key);
+  if (trailerReady(item)) return null;
+
+  const work = async () => {
     const resolved = await resolveYoutubeId(item);
     if (!resolved?.youtubeId) {
       writeRow({ id: key, imdbId: resolved?.imdbId, status: 'missing' });
@@ -200,10 +202,13 @@ export function warmTrailer(item) {
       });
       return null;
     }
-  })();
-  downloading.set(key, task);
-  task.then(() => queueMicrotask(() => downloading.delete(key)), () => queueMicrotask(() => downloading.delete(key)));
-  queue.push(() => task);
+  };
+
+  const task = new Promise((resolve) => {
+    queue.push({ work: async () => resolve(await work()) });
+  });
+  queued.set(key, task);
+  task.finally(() => { queued.delete(key); });
   pump();
   return task;
 }
@@ -230,7 +235,7 @@ export function trailerStatus(item) {
   if (ready) return { ...ready, status: 'ready' };
   const key = trailerKey(item);
   const row = rowFor(key);
-  if (!row) return { status: downloading.has(key) ? 'pending' : 'none' };
+  if (!row) return { status: queued.has(key) ? 'pending' : 'none' };
   return { status: row.status, youtubeId: row.youtube_id, error: row.error };
 }
 
