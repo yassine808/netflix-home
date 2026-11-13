@@ -15,6 +15,16 @@ Open http://localhost:3000
 
 The server scans the library on startup. Use the refresh button in the header (or the profile menu) to rescan after adding files.
 
+### Launch from the desktop (no console)
+
+Double-click **`start.vbs`** (or a shortcut to it). It starts the server hidden, opens the app in your default browser, and leaves a minimized **netflix-home** button in the taskbar:
+
+- click the taskbar button → the page opens in the default browser again and the button drops back to minimized
+- close that button (right-click → Close window) → the server it started is stopped
+- if port 3000 is already served, the launcher attaches to it instead of starting a second server
+
+Diagnostics go to `launcher.log` (gitignored). The script is `launcher.ps1`; `start.vbs` just runs it without flashing a console.
+
 ## Library folder
 
 Default root is `G:\Movies` when that drive is mounted. If it isn't, the app falls back to `media\` inside the project (created automatically), so you can test without the external drive. Videos are picked up recursively from either location:
