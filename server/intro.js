@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import ffprobeStatic from 'ffprobe-static';
-import { searchOnline } from './online.js';
+import { resolveImdbId } from './imdb.js';
 import { isOffline } from './settings.js';
 
 const CHAPTER_INTRO = /\b(intro|opening|opening credits|main title|recap)\b/i;
@@ -13,7 +13,6 @@ const chapterCache = new Map();
  * which is what the player needs to offer "Skip Intro" at the right moment. */
 const INTRODB_BASE = 'https://api.introdb.app';
 const INTRODB_TIMEOUT = 8000;
-const imdbCache = new Map();
 const lookupCache = new Map();
 
 let cacheFile = null;
@@ -95,31 +94,6 @@ async function fromChapters(item, full) {
     if (value) return value;
   }
   return null;
-}
-
-/* The library rarely carries an IMDb id, so ask Cinemeta for the series once
- * and remember the answer for every episode of that series. */
-async function resolveImdbId(item) {
-  const direct = String(item.tmdbId || '');
-  if (/^tt\d{4,10}$/.test(direct)) return direct;
-
-  const key = keyFor(item);
-  if (imdbCache.has(key)) return imdbCache.get(key);
-
-  let id = '';
-  try {
-    const title = item.seriesTitle || item.title;
-    const data = await searchOnline(title);
-    const wanted = String(title || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
-    const series = (data.results || []).filter((hit) => hit.type === 'series');
-    const exact = series.find((hit) => String(hit.title || '').toLowerCase()
-      .replace(/[^\p{L}\p{N}]+/gu, ' ').trim() === wanted);
-    id = (exact || series[0])?.id || '';
-  } catch {
-    /* offline or catalog down: no id, no lookup */
-  }
-  imdbCache.set(key, id);
-  return id;
 }
 
 async function fromIntroDb(item) {

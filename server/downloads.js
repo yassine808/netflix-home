@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import ffmpegPath from 'ffmpeg-static';
+import { ensureEnglishSubtitle, vttFromSubtitle } from './subs.js';
 
 const IA = 'https://archive.org';
 const SEARCH_URL = `${IA}/advancedsearch.php`;
@@ -86,30 +87,29 @@ function firstText(value) {
   return value == null ? '' : String(value);
 }
 
-// Subtitles come from Castle as {language, url}. Keep only https .vtt tracks
-// with a short language code, one per language.
-const SUBTITLE_LANGS = new Set(['en', 'fr', 'ar', 'it']);
-
+// Subtitles come from Castle as {language, url}. Keep every language the
+// service offers (original audio track + English and the rest), one per code.
 function normalizeSubtitleTracks(body) {
   const seen = new Set();
   const tracks = [];
-  const push = (url, lang) => {
-    const code = String(lang || '').toLowerCase();
+  const push = (url, lang, literal) => {
+    const code = String(lang || '').toLowerCase().slice(0, 3);
     const link = String(url || '');
-    if (!SUBTITLE_LANGS.has(code) || seen.has(code)) return;
-    if (!/^https:\/\//i.test(link)) return;
+    if (!/^[a-z]{2,3}$/.test(code) || seen.has(code)) return;
+    if (!literal && !/^https:\/\//i.test(link)) return;
     seen.add(code);
-    tracks.push({ lang: code, url: link });
+    tracks.push({ lang: code, url: link, text: literal ? String(literal) : '' });
   };
 
   if (Array.isArray(body.subtitles)) {
-    for (const entry of body.subtitles) push(entry?.url, entry?.language ?? entry?.lang);
+    for (const entry of body.subtitles) push(entry?.url, entry?.language ?? entry?.lang, entry?.text);
   }
   // Back-compat with the single-track fields.
   push(body.subtitleUrl, body.subtitleLang);
 
-  const order = ['en', 'fr', 'ar', 'it'];
-  return tracks.sort((a, b) => order.indexOf(a.lang) - order.indexOf(b.lang));
+  // English first, everything else alphabetical so the original language is
+  // still listed after it.
+  return tracks.sort((a, b) => (a.lang === 'en' ? -1 : b.lang === 'en' ? 1 : a.lang.localeCompare(b.lang)));
 }
 
 function parseYear(value) {
@@ -186,6 +186,8 @@ function publicJob(job) {
     status: job.status,
     bytes: job.bytes,
     total: job.total,
+    season: Number(job.season) || 0,
+    episode: Number(job.episode) || 0,
     progress: job.total ? Math.min(1, job.bytes / job.total) : 0,
     speed: job.speed,
     error: job.error,
@@ -536,11 +538,14 @@ export async function addHlsDownload(body = {}) {
     id: crypto.randomUUID(),
     kind: 'hls',
     title,
+    seriesTitle: text(body.seriesTitle) || title,
     fileName: path.basename(dest),
     collection,
     identifier: null,
     source: text(body.source) || 'castle',
     url,
+    season: Number(body.season) || 0,
+    episode: Number(body.episode) || 0,
     referer: text(body.referer) || '',
     dest,
     status: 'queued',
@@ -737,21 +742,50 @@ function killTree(child) {
 }
 
 async function saveSubtitle(job) {
-  if (!job.subtitles?.length) return;
+  if (!job.subtitles?.length) {
+    if (job.kind === 'hls') {
+      await ensureEnglishSubtitle(job.dest, {
+        seriesTitle: job.seriesTitle || job.title,
+        title: job.title,
+        season: job.season,
+        episode: job.episode,
+        isSeries: Number(job.season) > 0,
+      }).catch(() => {});
+    }
+    return;
+  }
   const stem = job.dest.slice(0, job.dest.length - path.extname(job.dest).length);
+  let wroteEnglish = false;
   for (const track of job.subtitles) {
     try {
-      const res = await fetch(track.url, {
-        headers: { 'User-Agent': USER_AGENT, Referer: job.referer || 'https://api.hlowb.com/' },
-        signal: AbortSignal.timeout(20000),
-      });
-      if (!res.ok) continue;
-      const body = await res.text();
-      if (!/^\uFEFF?WEBVTT/.test(body.trimStart())) continue;
+      let body;
+      if (track.text) {
+        body = vttFromSubtitle(track.text);
+      } else {
+        const res = await fetch(track.url, {
+          headers: { 'User-Agent': USER_AGENT, Referer: job.referer || 'https://api.hlowb.com/' },
+          signal: AbortSignal.timeout(20000),
+        });
+        if (!res.ok) continue;
+        const raw = await res.text();
+        if (!/^\uFEFF?WEBVTT/.test(raw.trimStart()) && !/-->/.test(raw)) continue;
+        body = vttFromSubtitle(raw);
+      }
+      if (!body || body.length < 20) continue;
       await fsp.writeFile(`${stem}.${track.lang}.vtt`, body, 'utf8');
+      if (track.lang === 'en') wroteEnglish = true;
     } catch {
       /* a missing subtitle should never fail the download */
     }
+  }
+  if (!wroteEnglish) {
+    await ensureEnglishSubtitle(job.dest, {
+      seriesTitle: job.seriesTitle || job.title,
+      title: job.title,
+      season: job.season,
+      episode: job.episode,
+      isSeries: Number(job.season) > 0,
+    }).catch(() => {});
   }
 }
 

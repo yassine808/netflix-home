@@ -79,10 +79,15 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 ## Features
 
 - Netflix-style billboard with a cached hero still and a 12 s preview clip (built with ffmpeg, indexed in SQLite under `.cache\library.db`), so the home page never seeks a multi-GB file
-- Series in your library open a catalog-style sheet: hero art, **Resume**, **Download season**, quality chips and season tabs; episodes already on disk get **Play** with their watched progress bar, the rest get **Download**. Episode art is the catalog's own thumbnail — no frames are generated
+- The billboard picks a different title on every load and plays that title's official trailer (id from Cinemeta, downloaded once with `yt-dlp` into `.cache\trailers`), falling back to the cached clip and then the real stream; the title's main picture stays visible while the trailer buffers
+- Series in your library open a catalog-style sheet: hero art, **+ My List**, **Resume**, **Download all**, quality chips and season tabs; episodes already on disk get **Play** with their watched progress bar, the rest get **Download**. Episode art is the catalog's own thumbnail — no frames are generated
+- **Download all** queues every episode of every season, skips what is already on disk, and only turns into **Everything downloaded** when the whole series is local
 - **Next episode** in the player: a downloaded episode plays straight away; one that is not on disk opens the series sheet on that season with the episode highlighted, ready to download
 - One picture per title in `.cache\pictures.db`, picked by sampling the film so a card never shows a black frame or the film's own title text
-- Rows: Continue Watching, Recently Added, Top 10, collections, My List
+- Rows: Continue Watching, Recently Added, Top 10, collections, My List. Continue Watching lists a show once — the latest episode of the season watched last — even when it lives in two folders
+- My List saves library titles and downloadable catalog titles alike; catalog entries are stored as small snapshots and reopen their download sheet
+- Skeleton placeholders while a series sheet loads its seasons and episodes
+- Notifications (download started, finished, failed) show the title's picture, not just an icon
 - Hover cards with play shortcut, detail modal with technical metadata
 - Search across your library and the online movie/series catalog, split into local results first and online results second
 - Local search tolerates typos ("cyberpunck" finds Cyberpunk) and keeps the last searches as removable chips
@@ -92,7 +97,7 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 - Downloads drawer with live progress, speed, cancel/retry, and automatic library refresh
 - Free-download search for public-domain films when the online catalog has no local copy
 - Custom player: resume, seek preview, buffered bar, volume, large ±10 s skips, fullscreen, keyboard shortcuts
-- Player subtitles from the `.vtt` sidecars, with language switching, a per-title timing offset, plus subtitle size and background-opacity controls
+- Player subtitles from the `.vtt` sidecars, with language switching, a per-title timing offset, plus subtitle size and background-opacity controls. Defaults are English on, 100 % size, 0 % background, and the choice is stored once per series so every episode opens the same way
 - **Skip Intro** appears only during the real intro window, taken from a local marker, the file's chapters, or the free IntroDB API (cached to `.cache\intro.json`); episodes with no known timing get no button instead of a guessed window
 - Progress and My List saved in the browser
 - Range-request streaming, so seeking works without copying the file
@@ -131,9 +136,9 @@ Two independent sources feed the download queue:
 | archive.org | Public-domain films and multi-part items | Public domain only |
 | Castle (`api.hlowb.com`) | Mainstream movies, series and anime, with seasons, episodes, sizes and subtitle tracks | Keyless, but 1080p is premium-only; 720p and 480p download normally |
 
-The Castle catalog is searched from the same overlay (**Downloadable** section) and from **New & Popular**. Any title opens a download dialog with season tabs, per-episode buttons, a quality picker, and **Download season**. The backend resolves a signed HLS playlist per episode and remuxes it to MP4 with ffmpeg, so the result is a plain H.264/AAC file the built-in player can stream. Every available subtitle track in English, French, Arabic, or Italian is saved next to the video as `<name>.<lang>.vtt`, tried in that order.
+The Castle catalog is searched from the same overlay (**Downloadable** section) and from **New & Popular**. Any title opens a download dialog with season tabs, per-episode buttons, a quality picker, and **Download all**, which covers every season of the series. The backend resolves a signed HLS playlist per episode and remuxes it to MP4 with ffmpeg, so the result is a plain H.264/AAC file the built-in player can stream. Every subtitle track the service offers (original language, English and the rest) is saved next to the video as `<name>.<lang>.vtt`.
 
-When Castle has no subtitle for a language, the free OpenSubtitles REST endpoint (`rest.opensubtitles.org`) fills the gap: it is searched by IMDb id, season and episode, the best `.srt` is downloaded and converted to `.vtt`. Some seasons simply have no Italian or French release; the player then lists only the tracks that exist.
+When Castle has no English track, the free OpenSubtitles REST endpoint (`rest.opensubtitles.org`) fills the gap: it is searched by IMDb id, season and episode, the best `.srt` is downloaded and converted to `.vtt`. The player also calls the same fallback lazily through `/api/subtitles/:id`, so older local downloads gain an English track next to their original-language one. Some seasons simply have no Italian release; the player then lists only the tracks that exist.
 
 Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Better Call Saul, The Boys, Game of Thrones, Stranger Things, Severance, Peaky Blinders, The Last of Us, Squid Game, Succession, House of the Dragon, Money Heist, Attack on Titan, One Piece, plus mainstream films such as Interstellar, Inception, Oppenheimer, Dune, The Dark Knight, Parasite, Spirited Away and The Godfather. The Sopranos and The Wire are absent from this catalog.
 
@@ -168,6 +173,7 @@ Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Bet
 | `GET /api/hero/:id` | Whether the cached hero still/clip is ready, and where it starts |
 | `GET /api/hero/:id/image.jpg` | Cached hero still (falls back to a generated thumbnail) |
 | `GET /api/hero/:id/preview.mp4` | 12 s cached preview clip used by the home billboard |
+| `GET /api/hero/:id/trailer.mp4` | Official trailer for the billboard (downloaded once with `yt-dlp`) |
 | `GET /api/art/:id/poster\|backdrop` | Local artwork if present |
 | `GET /api/series/:key/catalog` | Every known episode of a series with catalog ids and a default quality |
 | `GET /api/catalog/search?q=` | Search public-domain films on archive.org |
@@ -177,6 +183,7 @@ Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Bet
 | `GET /api/online/title/:type/:id` | Title detail with seasons and episodes (`type` is `movie` or `series`, `id` is an IMDb id) |
 | `GET /api/castle/search?q=` | Search the downloadable Castle catalog (movies, series, anime) |
 | `GET /api/castle/title/:id?season=` | Season and episode list with per-resolution sizes and subtitle tracks |
+| `GET /api/castle/series/:id/episodes` | Every season with its full episode list, used by **Download all** |
 | `POST /api/castle/download` | Resolve one episode's HLS stream and queue an MP4 download |
 | `POST /api/downloads` | Queue a film (or several files) for download |
 | `POST /api/downloads/series` | Queue every video file from one item into a folder |

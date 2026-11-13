@@ -268,6 +268,24 @@ export async function getCastleTitle(id, { season } = {}) {
   });
 }
 
+/* Every season with its full episode list (resolutions included). Used by the
+ * "Download all" action, which needs all seasons, not just the open tab. */
+export async function getCastleSeries(id) {
+  if (!isCastleId(id)) throw httpError('invalid castle id', 400);
+  const first = await getCastleTitle(id);
+  if (!first.seasons?.length) {
+    return { id: first.id, title: first.title, seasons: [{ season: 0, episodes: first.episodes || [] }] };
+  }
+  const rows = await Promise.all(first.seasons.map(async (row) => {
+    const detail = row.season === first.activeSeason
+      ? first
+      : await getCastleTitle(id, { season: row.season });
+    const active = (detail.seasons || []).find((entry) => entry.season === detail.activeSeason);
+    return { season: row.season, episodes: active?.episodes || [] };
+  }));
+  return { id: first.id, title: first.title, seasons: rows };
+}
+
 export async function getCastleStream({ movieId, episodeId, resolution = 2, languageId } = {}) {
   if (!isCastleId(movieId)) throw httpError('invalid movieId', 400);
   if (!isCastleId(episodeId)) throw httpError('invalid episodeId', 400);

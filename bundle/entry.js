@@ -148,6 +148,7 @@ async function main() {
   process.env.PUBLIC_DIR = path.join(appDir, 'public');
   process.env.FFMPEG_PATH = path.join(appDir, 'bin', 'ffmpeg.exe');
   process.env.FFPROBE_PATH = path.join(appDir, 'bin', 'ffprobe.exe');
+  process.env.YTDLP_PATH = path.join(appDir, 'bin', 'yt-dlp.exe');
   log(`unpacked app files into ${appDir}`);
 
   await import('../server/index.js');

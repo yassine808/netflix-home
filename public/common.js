@@ -84,6 +84,17 @@ export async function getCastleTitle(id, { season, signal } = {}) {
   return res.json();
 }
 
+/* Every season with its episodes, used by "Download all". */
+export async function getCastleSeriesEpisodes(id, { signal } = {}) {
+  const res = await fetch(`/api/castle/series/${encodeURIComponent(id)}/episodes`, { cache: 'no-store', signal });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    throw new Error(payload?.error || `download catalog series ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function startCastleDownload(body) {
   const res = await fetch('/api/castle/download', {
     method: 'POST',
@@ -296,6 +307,29 @@ export function toggleMyList(id) {
 
 export function isInMyList(id) {
   return getMyList().includes(id);
+}
+
+/* Titles that live in the download catalog, not on disk. They are kept as
+ * small snapshot objects so the My List row can draw them without a lookup. */
+const REMOTE_LIST_KEY = 'netflix-home:my-list-remote';
+
+export function getRemoteList() {
+  const list = readJson(REMOTE_LIST_KEY, []);
+  return Array.isArray(list) ? list.filter((entry) => entry && entry.key && entry.title) : [];
+}
+
+export function isInRemoteList(key) {
+  return getRemoteList().some((entry) => entry.key === key);
+}
+
+export function toggleRemoteList(entry) {
+  if (!entry?.key) return false;
+  const list = getRemoteList();
+  const idx = list.findIndex((item) => item.key === entry.key);
+  if (idx >= 0) list.splice(idx, 1);
+  else list.unshift(entry);
+  writeJson(REMOTE_LIST_KEY, list);
+  return idx < 0;
 }
 
 export function getProgress() {

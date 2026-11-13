@@ -1,9 +1,10 @@
 import {
   getLibrary, rescanLibrary, quitApp, formatDuration, formatSize, formatClock,
-  qualityLabel, thumbUrl, toggleMyList, isInMyList, getMyList, progressFor,
+  qualityLabel, thumbUrl, posterUrl, toggleMyList, isInMyList, getMyList, progressFor,
+  getRemoteList, isInRemoteList, toggleRemoteList,
   getSeries, getSeriesCatalog, debounce, createEl,
   searchCatalog, getFallbackCatalog, getCatalogItem,
-  searchOnline, getOnlineTitle, searchCastle, getCastleTitle, startCastleDownload,
+  searchOnline, getOnlineTitle, searchCastle, getCastleTitle, getCastleSeriesEpisodes, startCastleDownload,
   startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   getSettings, setOfflineMode,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
@@ -64,7 +65,10 @@ const state = {
   castleDetailToken: 0,
   castleSeasonToken: 0,
   castleLocal: null,
+  castleCatalog: null,
+  castleSig: '',
   sheetTarget: null,
+  heroPickId: null,
   seriesCatalog: new Map(),
   seriesCatalogLoading: new Set(),
   queuedEpisodes: new Set(),
@@ -157,6 +161,7 @@ const els = {
   castleMeta: $('castleMeta'),
   castlePlot: $('castlePlot'),
   castleSeasonDownload: $('castleSeasonDownload'),
+  castleList: $('castleList'),
   castleResume: $('castleResume'),
   castleDownloadBlock: $('castleDownloadBlock'),
   castleQuality: $('castleQuality'),
@@ -616,14 +621,16 @@ function renderAll() {
   updateLoadingState();
 }
 
+/* A random title every time the page opens, so the billboard is never stuck on
+ * the last thing watched. The pick stays put while the session lasts. */
 function pickHero() {
   const groups = groupLibrary();
   if (!groups.length) return null;
-  const watching = groups
-    .map((group) => ({ group, progress: progressOfGroup(group) }))
-    .filter((entry) => entry.progress)
-    .sort((a, b) => b.progress.updatedAt - a.progress.updatedAt);
-  return watching.length ? watching[0].group : groups[0];
+  const current = state.heroPickId && groups.find((group) => group.id === state.heroPickId);
+  if (current) return current;
+  const pick = groups[Math.floor(Math.random() * groups.length)];
+  state.heroPickId = pick.id;
+  return pick;
 }
 
 function renderHero() {
@@ -684,18 +691,13 @@ function playPreview(item) {
   const id = item.playId || item.id;
   video.volume = 0.65;
   video.muted = state.previewMuted;
+  // Keep the title's own artwork on screen while the trailer buffers.
+  video.poster = item.hasBackdrop ? thumbUrl(item) : heroImageUrl(item);
   syncHeroMute();
   video.classList.remove('playing');
   const start = state.previewStart;
 
-  const useStream = () => {
-    // No cached clip yet (or it failed): stream the real file and seek.
-    state.previewMode = 'stream';
-    video.loop = false;
-    video.src = `/api/stream/${encodeURIComponent(id)}`;
-    video.addEventListener('loadedmetadata', () => {
-      try { video.currentTime = start; } catch { /* seek may fail on some formats */ }
-    }, { once: true });
+  const attempt = () => {
     const playing = video.play();
     if (playing && typeof playing.catch === 'function') {
       playing.catch((err) => {
@@ -707,23 +709,33 @@ function playPreview(item) {
     }
   };
 
-  state.previewMode = 'clip';
-  video.loop = true;
-  video.addEventListener('error', useStream, { once: true });
-  video.addEventListener('playing', () => video.classList.add('playing'), { once: true });
-  video.src = heroPreviewUrl({ id });
+  const useStream = () => {
+    // No cached clip and no trailer: stream the real file and seek.
+    state.previewMode = 'stream';
+    video.onerror = null;
+    video.loop = false;
+    video.src = `/api/stream/${encodeURIComponent(id)}`;
+    video.addEventListener('loadedmetadata', () => {
+      try { video.currentTime = start; } catch { /* seek may fail on some formats */ }
+    }, { once: true });
+    attempt();
+  };
 
-  const started = video.play();
-  if (started && typeof started.catch === 'function') {
-    started.catch((err) => {
-      // Browsers block audible autoplay until the page has been clicked once.
-      // Keep the preview going muted and flag the button instead of failing.
-      if (err?.name !== 'NotAllowedError' || video.muted) return;
-      video.muted = true;
-      syncHeroMute(true);
-      video.play().catch(() => {});
-    });
-  }
+  const useClip = () => {
+    state.previewMode = 'clip';
+    video.loop = true;
+    video.onerror = useStream;
+    video.src = heroPreviewUrl({ id });
+    attempt();
+  };
+
+  // Prefer the official trailer downloaded from YouTube; the generated clip
+  // and then the real stream are fallbacks while it is still being fetched.
+  state.previewMode = 'trailer';
+  video.loop = true;
+  video.onerror = useClip;
+  video.src = `/api/hero/${encodeURIComponent(item.id)}/trailer.mp4`;
+  attempt();
 }
 
 function syncHeroMute(blocked = false) {
@@ -754,6 +766,7 @@ function stopPreview() {
   try {
     video.pause();
     video.removeAttribute('src');
+    video.removeAttribute('poster');
     video.load();
   } catch { /* ignore */ }
   video.classList.remove('playing');
@@ -766,22 +779,63 @@ function renderRows() {
 
   const groups = groupLibrary(items);
   const progressMap = new Map();
+  const episodeMap = new Map();
+
+  // The same show can sit in two folders (Movies + Downloads). Continue
+  // Watching lists it once: the latest episode of the season watched last.
   const watching = [];
+  const watchingSeen = new Map();
   for (const group of groups) {
     const progress = progressOfGroup(group);
     if (!progress) continue;
+    const ep = progress.episode || {};
+    const candidate = {
+      group,
+      progress,
+      updatedAt: progress.updatedAt || 0,
+      season: Number(ep.season) || 0,
+      episode: Number(ep.episode) || 0,
+    };
+    const key = group.isSeries
+      ? `series:${String(group.seriesTitle || group.title).toLowerCase()}`
+      : `movie:${group.id}`;
+    const current = watchingSeen.get(key);
+    if (!current) {
+      watchingSeen.set(key, candidate);
+      watching.push(candidate);
+      continue;
+    }
+    const newer = candidate.updatedAt > current.updatedAt
+      || (candidate.updatedAt === current.updatedAt
+        && (candidate.season > current.season
+          || (candidate.season === current.season && candidate.episode > current.episode)));
+    if (!newer) continue;
+    watching[watching.indexOf(current)] = candidate;
+    watchingSeen.set(key, candidate);
+  }
+
+  for (const { group, progress } of watching) {
     progressMap.set(group.id, progress.ratio);
-    watching.push({ group, updatedAt: progress.updatedAt });
+
+    // Continue Watching cards name the episode and how much is left.
+    if (group.episodes && progress.episode) {
+      const ep = progress.episode;
+      const total = Number(ep.durationSec) || 0;
+      const left = total > 0 ? Math.max(0, total * (1 - progress.ratio)) : 0;
+      const label = `S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')}`;
+      episodeMap.set(group.id, [label, left ? `${formatDuration(left)} left` : ''].filter(Boolean).join(' • '));
+    }
   }
   watching.sort((a, b) => b.updatedAt - a.updatedAt);
 
   const list = getMyList();
   const listGroups = groupItems(groups, list);
+  const remoteList = remoteListCards();
   const recent = [...groups].sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
 
   const rows = [];
   if (watching.length) {
-    rows.push({ title: 'Continue Watching', items: watching.map((entry) => entry.group), progressMap });
+    rows.push({ title: 'Continue Watching', items: watching.map((entry) => entry.group), progressMap, episodeMap });
   }
   rows.push({ title: 'Recently Added', items: recent.slice(0, 14) });
 
@@ -797,8 +851,8 @@ function renderRows() {
     }
   }
 
-  if (listGroups.length) {
-    rows.push({ title: 'My List', items: listGroups, seeAll: 'mylist' });
+  if (listGroups.length || remoteList.length) {
+    rows.push({ title: 'My List', items: [...listGroups, ...remoteList], seeAll: 'mylist' });
   }
 
   rows.push({ title: 'Movies in Your Library', items: groups, seeAll: 'movies' });
@@ -822,7 +876,7 @@ function hash(str) {
   return h;
 }
 
-function buildRow({ title, items, progressMap, type, sub, seeAll }) {
+function buildRow({ title, items, progressMap, episodeMap, type, sub, seeAll }) {
   const row = createEl('div', `row${type === 'top10' ? ' top10' : ''}`);
   const head = createEl('div', 'row-head');
   const h2 = createEl('h2', 'row-title', title);
@@ -846,7 +900,7 @@ function buildRow({ title, items, progressMap, type, sub, seeAll }) {
     if (type === 'top10') {
       track.append(buildTop10Card(item, index + 1, progressMap?.get(item.id)));
     } else {
-      track.append(buildCard(item, { progress: progressMap?.get(item.id) }));
+      track.append(buildCard(item, { progress: progressMap?.get(item.id), episode: episodeMap?.get(item.id) }));
     }
   });
 
@@ -876,11 +930,13 @@ function arrowButton(dir) {
   return btn;
 }
 
-function buildCard(item, { progress, width = 480 } = {}) {
+function buildCard(item, { progress, width = 480, episode = '' } = {}) {
   const card = createEl('div', 'card');
   card.tabIndex = 0;
   card.setAttribute('role', 'button');
   card.setAttribute('aria-label', item.title);
+  const remote = Boolean(item.remote && item.castleId);
+  const open = () => (remote ? openCastleModal(item) : openModal(item.id));
 
   const fallback = createEl('div', 'card-fallback');
   fallback.append(createEl('span', '', item.title));
@@ -891,26 +947,34 @@ function buildCard(item, { progress, width = 480 } = {}) {
   img.decoding = 'async';
   img.fetchPriority = 'low';
   img.alt = '';
-  img.src = thumbUrl(item, width);
+  img.src = remote ? (item.background || item.poster || '') : thumbUrl(item, width);
   img.addEventListener('load', () => img.classList.add('loaded'));
   img.addEventListener('error', () => img.remove());
 
   const overlay = createEl('div', 'card-overlay');
   overlay.append(createEl('div', 'card-title', item.title));
   const meta = createEl('div', 'card-meta');
-  const runtime = item.episodes
-    ? `${item.episodes.length} episode${item.episodes.length === 1 ? '' : 's'}`
-    : formatDuration(item.durationSec);
-  const bits = [item.year, runtime, qualityLabel(item)].filter(Boolean);
+  const runtime = remote
+    ? (item.type === 'series'
+      ? `${Number(item.seasonCount) || 1} season${Number(item.seasonCount) === 1 ? '' : 's'}`
+      : 'Movie')
+    : item.episodes
+      ? `${item.episodes.length} episode${item.episodes.length === 1 ? '' : 's'}`
+      : formatDuration(item.durationSec);
+  const bits = episode
+    ? [episode, qualityLabel(item)].filter(Boolean)
+    : [item.year, runtime, remote ? '' : qualityLabel(item)].filter(Boolean);
   meta.textContent = bits.join(' • ');
+  if (episode) meta.classList.add('card-episode-meta');
   overlay.append(meta);
 
   const play = createEl('button', 'card-play');
-  play.setAttribute('aria-label', `Play ${item.title}`);
+  play.setAttribute('aria-label', remote ? `Open ${item.title}` : `Play ${item.title}`);
   play.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M7 4.5v15l12-7.5z"/></svg>';
   play.addEventListener('click', (e) => {
     e.stopPropagation();
-    goWatch(item.playId || item.id);
+    if (remote) open();
+    else goWatch(item.playId || item.id);
   });
 
   card.append(fallback, img, overlay, play);
@@ -925,11 +989,11 @@ function buildCard(item, { progress, width = 480 } = {}) {
 
   applyAmbient(card, img, item);
 
-  card.addEventListener('click', () => openModal(item.id));
+  card.addEventListener('click', open);
   card.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      openModal(item.id);
+      open();
     }
   });
   return card;
@@ -1028,10 +1092,18 @@ function showMovies() {
   fillGrid(els.grid, groups, els.gridEmpty, 'Nothing in your library yet.');
 }
 
+function remoteListCards() {
+  return getRemoteList().map((entry) => ({
+    ...entry,
+    id: entry.castleId || String(entry.key).replace(/^castle:/, ''),
+    remote: true,
+  }));
+}
+
 function showMyList() {
   setView('mylist');
   const groups = groupLibrary();
-  const items = groupItems(groups, getMyList());
+  const items = [...groupItems(groups, getMyList()), ...remoteListCards()];
   els.gridTitle.textContent = 'My List';
   els.gridSub.textContent = `${items.length} saved title${items.length === 1 ? '' : 's'}`;
   fillGrid(els.grid, items, els.gridEmpty, 'Add titles with the + button on any detail page.');
@@ -1361,6 +1433,7 @@ async function refreshDownloads({ initial = false } = {}) {
     if (data.root) els.downloadsRoot.textContent = `Saving to ${data.root}`;
     renderDownloads();
     updateDownloadsBadge();
+    syncCastleSheet();
 
     if (!state.downloadsSynced) {
       state.downloadsSynced = true;
@@ -1375,11 +1448,17 @@ async function refreshDownloads({ initial = false } = {}) {
         ? `Download complete — ${completed[0].title}`
         : `${completed.length} downloads complete`);
       await loadLibrary();
-      completed.forEach((job) => notify('done', job.title || job.fileName, 'Download complete — ready to watch'));
+      completed.forEach((job) => notify('done', job.title || job.fileName, 'Download complete — ready to watch', {
+        fileName: job.fileName,
+        seriesTitle: job.seriesTitle,
+      }));
     }
     if (failed.length) {
       toast(`Download failed — ${failed[0].title}`);
-      failed.forEach((job) => notify('fail', job.title || job.fileName, job.error || 'Download failed'));
+      failed.forEach((job) => notify('fail', job.title || job.fileName, job.error || 'Download failed', {
+        fileName: job.fileName,
+        seriesTitle: job.seriesTitle,
+      }));
     }
   } catch {
     /* keep the last known list when the server is unreachable */
@@ -2294,6 +2373,101 @@ function castleEpisodesOf(detail) {
   return Array.isArray(active?.episodes) ? active.episodes : [];
 }
 
+const LIST_PLUS_ICON = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>';
+const LIST_CHECK_ICON = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m5 12 5 5 9-10"/></svg>';
+
+/* The sheet can save either a local group or a catalog title. Catalog titles
+ * store a small snapshot so the My List row renders them without a lookup. */
+function castleListEntry(detail) {
+  const group = state.castleLocal?.group || null;
+  if (group?.id) return { local: true, id: group.id };
+  if (!detail?.id) return null;
+  return {
+    local: false,
+    entry: {
+      key: `castle:${detail.id}`,
+      castleId: String(detail.id),
+      title: detail.title,
+      poster: detail.poster || '',
+      background: detail.background || '',
+      year: detail.year || '',
+      rating: detail.rating || 0,
+      type: detail.type || 'movie',
+      description: detail.description || '',
+      seasonCount: detail.seasonCount || 0,
+      genres: Array.isArray(detail.genres) ? detail.genres : [],
+    },
+  };
+}
+
+function updateCastleListButton(detail) {
+  const info = castleListEntry(detail);
+  if (!info) {
+    els.castleList.hidden = true;
+    return;
+  }
+  const inList = info.local ? isInMyList(info.id) : isInRemoteList(info.entry.key);
+  els.castleList.hidden = false;
+  els.castleList.classList.toggle('in-list', inList);
+  els.castleList.innerHTML = `${inList ? LIST_CHECK_ICON : LIST_PLUS_ICON}<span>${inList ? 'In My List' : 'My List'}</span>`;
+  els.castleList.title = inList ? 'Remove from My List' : 'Add to My List';
+}
+
+function toggleCastleList() {
+  const detail = state.castleTitle;
+  const info = castleListEntry(detail);
+  if (!info) return;
+  const added = info.local ? toggleMyList(info.id) : toggleRemoteList(info.entry);
+  updateCastleListButton(detail);
+  toast(added ? 'Added to My List' : 'Removed from My List');
+  renderRows();
+  if (state.view === 'mylist') showMyList();
+}
+
+/* Shimmer placeholders while a catalogue sheet loads its seasons/episodes. */
+function renderCastleSkeleton(count = 5) {
+  els.castleStatus.textContent = '';
+  els.castleStatus.hidden = false;
+  els.castleSeasonTabs.hidden = false;
+  els.castleSeasonTabs.replaceChildren();
+  for (let i = 0; i < 2; i += 1) {
+    els.castleSeasonTabs.append(createEl('div', 'season-tab skeleton skeleton-pill'));
+  }
+  els.castleEpisodes.replaceChildren();
+  for (let i = 0; i < count; i += 1) {
+    const row = createEl('div', 'castle-skel-row');
+    row.append(createEl('div', 'skeleton castle-skel-thumb'));
+    const lines = createEl('div', 'castle-skel-lines');
+    lines.append(createEl('div', 'skeleton castle-skel-title'));
+    lines.append(createEl('div', 'skeleton castle-skel-sub'));
+    row.append(lines);
+    row.append(createEl('div', 'skeleton castle-skel-btn'));
+    els.castleEpisodes.append(row);
+  }
+}
+
+/* Keep the open sheet in step with the download queue: queued turns into a
+ * percentage, finished episodes turn into Play after the library rescans. */
+function castleSignature() {
+  return state.downloads
+    .map((job) => `${job.id}:${job.status}:${Math.round((job.progress || 0) * 20)}`)
+    .sort()
+    .join('|');
+}
+
+function syncCastleSheet() {
+  if (els.castleModal.hidden || !state.castleTitle) return;
+  const sig = castleSignature();
+  if (sig === state.castleSig) return;
+  state.castleSig = sig;
+  const group = state.castleLocal?.group;
+  if (group) {
+    const fresh = groupLibrary().find((entry) => entry.id === group.id) || group;
+    state.castleLocal = { ...state.castleLocal, group: fresh, local: localEpisodesFor(fresh) };
+  }
+  renderCastleDownloads(state.castleTitle);
+}
+
 function populateCastleModal(item) {
   els.castleBackdrop.src = item.background || item.poster || '';
   els.castleBackdrop.hidden = !(item.background || item.poster);
@@ -2316,6 +2490,7 @@ function populateCastleModal(item) {
     if (index > 0) els.castleMeta.append(createEl('span', 'dot', '•'));
     els.castleMeta.append(createEl('span', index === 0 ? 'year' : '', bit));
   });
+  updateCastleListButton(item);
 }
 
 async function openCastleModal(item) {
@@ -2338,7 +2513,7 @@ async function openCastleModal(item) {
   els.castleEpisodes.replaceChildren();
   els.castleQuality.replaceChildren();
   els.castleSeasonTabs.replaceChildren();
-  els.castleStatus.textContent = 'Loading download options…';
+  renderCastleSkeleton();
   setTimeout(() => els.castleModal.querySelector('.modal-close')?.focus(), 40);
 
   try {
@@ -2347,6 +2522,13 @@ async function openCastleModal(item) {
     const merged = { ...item, ...detail };
     state.castleTitle = merged;
     state.castleSeason = detail.activeSeason || 0;
+    state.castleCatalog = null;
+    if (detail.type === 'series') {
+      // The open tab only carries one season; "Download all" needs every one.
+      const full = await getCastleSeriesEpisodes(detail.id).catch(() => null);
+      if (token !== state.castleDetailToken) return;
+      state.castleCatalog = full && Array.isArray(full.seasons) ? { seasons: full.seasons } : null;
+    }
     state.castleCache.set(`${detail.id}:${detail.activeSeason || 0}`, detail);
     populateCastleModal(merged);
     renderCastleDownloads(merged);
@@ -2411,6 +2593,100 @@ function renderCastleQuality(detail, episodes) {
   return { selected, total, duration, qualities };
 }
 
+const EP_DOWNLOAD_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg>';
+const EP_PLAY_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M7 4.5v15l12-7.5z"/></svg>';
+
+/* The job that is currently handling one episode of the open sheet. HLS jobs
+ * carry season/episode and the series title, so parallel downloads of another
+ * show never leak into this list. */
+function castleJobFor(detail, season, episode) {
+  const title = String(detail?.title || '').toLowerCase();
+  return state.downloads.find((job) => {
+    if (!job.season && !job.episode) return false;
+    if (Number(job.season) !== Number(season) || Number(job.episode) !== Number(episode)) return false;
+    return !title || String(job.title || '').toLowerCase() === title;
+  }) || null;
+}
+
+/* Every catalogue episode, across every season, in one flat list. */
+function castleCatalogEpisodes() {
+  const catalog = state.castleCatalog;
+  if (!catalog || !Array.isArray(catalog.seasons)) return [];
+  return catalog.seasons.flatMap((row) => (row.episodes || []).map((episode) => ({
+    ...episode,
+    season: Number(row.season) || 0,
+  })));
+}
+
+function castleAllLocal(detail) {
+  const episodes = castleCatalogEpisodes();
+  if (!episodes.length) return false;
+  const localMap = state.castleLocal?.local || null;
+  if (!localMap) return false;
+  return episodes.every((episode) => localMap.has(`${episode.season}x${episode.episode}`));
+}
+
+function appendCastleAction(row, detail, episode, local, quality) {
+  const season = detail.activeSeason ?? state.castleSeason;
+  const action = createEl('div', 'castle-ep-action');
+  const job = local ? null : castleJobFor(detail, season, episode.episode);
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'castle-dl-btn';
+
+  const label = document.createElement('span');
+  const paint = (icon, text) => {
+    btn.innerHTML = icon;
+    label.textContent = text;
+    btn.append(label);
+  };
+
+  const showProgress = (value) => {
+    action.querySelector('.castle-ep-bar')?.remove();
+    const bar = createEl('div', 'castle-ep-bar');
+    const fill = document.createElement('i');
+    fill.style.width = `${Math.max(0, Math.min(100, Math.round(value)))}%`;
+    bar.append(fill);
+    action.append(bar);
+  };
+
+  if (local) {
+    btn.classList.add('is-play');
+    btn.setAttribute('aria-label', `Play episode ${local.episode}`);
+    paint(EP_PLAY_ICON, 'Play');
+    btn.addEventListener('click', () => goWatch(local.id));
+  } else if (job && (job.status === 'downloading' || job.status === 'cancelling')) {
+    btn.classList.add('is-active');
+    btn.title = 'Open downloads';
+    paint(EP_DOWNLOAD_ICON, `${Math.round((job.progress || 0) * 100)}%`);
+    showProgress((job.progress || 0) * 100);
+    btn.addEventListener('click', openDownloads);
+  } else if (job && job.status === 'queued') {
+    btn.classList.add('queued');
+    btn.title = 'Open downloads';
+    paint(EP_DOWNLOAD_ICON, 'Queued');
+    showProgress(0);
+    btn.addEventListener('click', openDownloads);
+  } else if (job && job.status === 'paused') {
+    btn.classList.add('queued');
+    btn.title = 'Open downloads';
+    paint(EP_DOWNLOAD_ICON, 'Paused');
+    btn.addEventListener('click', openDownloads);
+  } else if (job && job.status === 'failed') {
+    paint(EP_DOWNLOAD_ICON, 'Retry');
+    btn.disabled = !quality;
+    btn.addEventListener('click', () => queueCastleEpisode(episode, btn));
+  } else {
+    paint(EP_DOWNLOAD_ICON, quality ? 'Download' : 'Unavailable');
+    if (!quality) btn.disabled = true;
+    else btn.addEventListener('click', () => queueCastleEpisode(episode, btn));
+  }
+
+  action.prepend(btn);
+  row.append(action);
+}
+
 function renderCastleDownloads(detail) {
   const episodes = castleEpisodesOf(detail);
   els.castleDownloadBlock.hidden = false;
@@ -2418,6 +2694,7 @@ function renderCastleDownloads(detail) {
   els.castleSeasonTabs.replaceChildren();
   els.castleStatus.textContent = '';
   els.castleStatus.hidden = false;
+  updateCastleListButton(detail);
 
   const localGroup = state.castleLocal?.group || null;
   const localMap = state.castleLocal?.local || null;
@@ -2425,7 +2702,7 @@ function renderCastleDownloads(detail) {
 
   const resume = localGroup ? resumeTarget(localGroup) : null;
   els.castleResume.hidden = !resume;
-  els.castleResume.textContent = resume ? `Resume S${String(resume.episode.season).padStart(2, '0')}E${String(resume.episode.episode).padStart(2, '0')}` : 'Resume';
+  els.castleResume.innerHTML = `${EP_PLAY_ICON}<span>${resume ? `Resume S${String(resume.episode.season).padStart(2, '0')}E${String(resume.episode.episode).padStart(2, '0')}` : 'Resume'}</span>`;
 
   const { selected } = renderCastleQuality(detail, episodes);
 
@@ -2442,9 +2719,11 @@ function renderCastleDownloads(detail) {
     });
   }
 
+  const allDone = castleAllLocal(detail);
   els.castleSeasonDownload.hidden = !(detail.type === 'series' && episodes.length);
-  els.castleSeasonDownload.disabled = state.castleBusy;
-  els.castleSeasonDownload.textContent = 'Download season';
+  els.castleSeasonDownload.disabled = state.castleBusy || allDone;
+  els.castleSeasonDownload.classList.toggle('is-done', allDone);
+  els.castleSeasonDownload.textContent = allDone ? 'Everything downloaded' : 'Download all';
 
   if (!episodes.length) {
     els.castleStatus.textContent = 'No downloadable episodes are listed for this title.';
@@ -2455,9 +2734,25 @@ function renderCastleDownloads(detail) {
     const row = createEl('article', 'episode-row castle-episode');
     row.dataset.episode = String(episode.episode);
 
+    const local = localFor(detail.activeSeason ?? state.castleSeason, episode.episode);
+
     if (episode.thumbnail) {
       const thumb = document.createElement('img');
       thumb.className = 'episode-thumb';
+      if (local) {
+        thumb.classList.add('is-playable');
+        thumb.title = 'Play episode';
+        thumb.tabIndex = 0;
+        thumb.setAttribute('role', 'button');
+        thumb.setAttribute('aria-label', `Play episode ${local.episode}`);
+        thumb.addEventListener('click', () => goWatch(local.id));
+        thumb.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            goWatch(local.id);
+          }
+        });
+      }
       thumb.loading = 'lazy';
       thumb.alt = '';
       thumb.src = episode.thumbnail;
@@ -2471,8 +2766,9 @@ function renderCastleDownloads(detail) {
     head.append(createEl('strong', '', detail.type === 'series' ? episode.title : detail.title));
     main.append(head);
 
-    const local = localFor(detail.activeSeason ?? state.castleSeason, episode.episode);
-    const quality = (episode.resolutions || []).find((entry) => entry.resolution === selected);
+    const quality = (episode.resolutions || []).find((entry) => entry.resolution === selected)
+      || (episode.quality && episode.quality.resolution === selected ? episode.quality : null);
+    const job = local ? null : castleJobFor(detail, detail.activeSeason ?? state.castleSeason, episode.episode);
     const sub = local
       ? [
         local.episodeLabel || `S${String(local.season).padStart(2, '0')}E${String(local.episode).padStart(2, '0')}`,
@@ -2483,6 +2779,7 @@ function renderCastleDownloads(detail) {
         formatDuration(episode.duration),
         quality ? qualityName(quality.resolution) : 'Not available',
         quality?.size ? formatSize(quality.size) : '',
+        job && job.status === 'downloading' ? 'Downloading' : '',
       ].filter(Boolean).join(' · ');
     main.append(createEl('span', 'episode-date', sub));
 
@@ -2499,29 +2796,7 @@ function renderCastleDownloads(detail) {
     }
     row.append(main);
 
-    if (local) {
-      const play = document.createElement('button');
-      play.type = 'button';
-      play.className = 'castle-dl-btn is-play';
-      play.setAttribute('aria-label', `Play episode ${local.episode}`);
-      play.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M7 4.5v15l12-7.5z"/></svg><span>Play</span>';
-      play.addEventListener('click', () => goWatch(local.id));
-      row.append(play);
-      els.castleEpisodes.append(row);
-      return;
-    }
-
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'castle-dl-btn';
-    btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg><span>Download</span>';
-    if (!quality) {
-      btn.disabled = true;
-      btn.querySelector('span').textContent = 'Unavailable';
-    } else {
-      btn.addEventListener('click', () => queueCastleEpisode(episode, btn));
-    }
-    row.append(btn);
+    appendCastleAction(row, detail, episode, local, quality);
     els.castleEpisodes.append(row);
   });
 }
@@ -2603,10 +2878,17 @@ async function queueCastleEpisode(episode, btn) {
   }
 }
 
+/* "Download all" covers every season of the series, not just the open tab. */
 async function queueCastleSeason() {
   const detail = state.castleTitle;
-  const episodes = castleEpisodesOf(detail);
-  if (!detail || !episodes.length || state.castleBusy) return;
+  if (!detail || detail.type !== 'series' || state.castleBusy) return;
+
+  const all = castleCatalogEpisodes();
+  const episodes = all.length ? all : castleEpisodesOf(detail).map((episode) => ({
+    ...episode,
+    season: detail.activeSeason ?? state.castleSeason,
+  }));
+  if (!episodes.length) return;
 
   state.castleBusy = true;
   els.castleSeasonDownload.disabled = true;
@@ -2618,12 +2900,21 @@ async function queueCastleSeason() {
   for (let index = 0; index < episodes.length; index += 1) {
     const episode = episodes[index];
     // Episodes already on disk do not need downloading again.
-    if (localMap && localMap.has(`${state.castleSeason}x${episode.episode}`)) {
+    if (localMap && localMap.has(`${episode.season}x${episode.episode}`)) {
+      skipped += 1;
+      continue;
+    }
+    const current = castleJobFor(detail, episode.season, episode.episode);
+    if (current && current.status !== 'failed') {
       skipped += 1;
       continue;
     }
     els.castleSeasonDownload.textContent = `Queueing ${index + 1}/${episodes.length}…`;
-    const quality = (episode.resolutions || []).find((entry) => entry.resolution === state.castleQuality);
+    // The catalogue lists one default quality per episode; the sheet's chosen
+    // quality wins when it is the same one.
+    const quality = (episode.resolutions || []).find((entry) => entry.resolution === state.castleQuality)
+      || episode.quality
+      || null;
     if (!quality) {
       skipped += 1;
       continue;
@@ -2632,10 +2923,10 @@ async function queueCastleSeason() {
       await startCastleDownload({
         movieId: episode.movieId,
         episodeId: episode.episodeId,
-        resolution: state.castleQuality,
+        resolution: quality.resolution,
         title: detail.title,
         year: detail.year,
-        season: state.castleSeason,
+        season: episode.season,
         episode: episode.episode,
         size: quality.size,
         poster: detail.poster,
@@ -2648,18 +2939,18 @@ async function queueCastleSeason() {
 
   state.castleBusy = false;
   els.castleSeasonDownload.disabled = false;
-  els.castleSeasonDownload.textContent = 'Download season';
   els.castleStatus.textContent = [
     queued ? `${queued} episode${queued === 1 ? '' : 's'} queued` : '',
-    skipped ? `${skipped} unavailable at ${qualityName(state.castleQuality)}` : '',
+    skipped ? `${skipped} already here or unavailable` : '',
   ].filter(Boolean).join(' · ') || 'Nothing was queued.';
 
   if (queued) {
     toast(`${queued} episode${queued === 1 ? '' : 's'} queued — ${detail.title}`);
     notify('start', detail.title, `${queued} episode${queued === 1 ? '' : 's'} queued`);
     openDownloads();
-    refreshDownloads();
   }
+  await refreshDownloads();
+  if (!els.castleModal.hidden && state.castleTitle) renderCastleDownloads(state.castleTitle);
 }
 
 async function openCastleForTitle(title) {
@@ -2691,6 +2982,8 @@ function closeCastleModal() {
   if (els.castleModal.hidden) return;
   els.castleModal.hidden = true;
   state.castleTitle = null;
+  state.castleCatalog = null;
+  state.castleSig = '';
   state.castleDetailToken += 1;
   state.castleSeasonToken += 1;
   state.castleBusy = false;
@@ -2773,6 +3066,7 @@ function populateSeriesHero(group, detail) {
     if (index > 0) els.castleMeta.append(createEl('span', 'dot', '•'));
     els.castleMeta.append(createEl('span', index === 0 ? 'year' : '', bit));
   });
+  updateCastleListButton(group);
 }
 
 function highlightSheetTarget() {
@@ -2797,6 +3091,8 @@ async function openSeriesSheet(group, focusId) {
   const local = localEpisodesFor(group);
   state.castleLocal = { group, local, focusId };
   state.castleTitle = { type: 'series', title: group.title, seasons: [] };
+  state.castleCatalog = null;
+  state.castleSig = '';
   state.castleSeason = state.sheetTarget?.season
     || (state.byId.get(focusId)?.season)
     || group.episodes[0]?.season
@@ -2815,12 +3111,13 @@ async function openSeriesSheet(group, focusId) {
   els.castleSeasonDownload.hidden = true;
   els.castleResume.hidden = true;
   els.castleStatus.hidden = false;
-  els.castleStatus.textContent = 'Loading episodes…';
+  renderCastleSkeleton();
   setTimeout(() => els.castleModal.querySelector('.modal-close')?.focus(), 40);
 
   try {
     const catalog = state.seriesCatalog.get(group.seriesKey) || await getSeriesCatalog(group.seriesKey);
     state.seriesCatalog.set(group.seriesKey, catalog);
+    state.castleCatalog = catalog;
     if (!catalog?.catalogId) throw new Error('series is not in the download catalog');
     const detail = await getCastleTitle(catalog.catalogId);
     if (token !== state.castleDetailToken) return;
@@ -3257,8 +3554,8 @@ function loadNotifs() {
 
 function saveNotifs() { writeJson(NOTIF_KEY, state.notifs.slice(0, 30)); }
 
-function notify(type, title, text) {
-  state.notifs.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, type, title, text: text || '', time: Date.now(), read: false });
+function notify(type, title, text, extra = {}) {
+  state.notifs.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, type, title, text: text || '', time: Date.now(), read: false, ...extra });
   state.notifs = state.notifs.slice(0, 30);
   saveNotifs();
   renderNotifs();
@@ -3275,6 +3572,46 @@ function timeAgo(ts) {
   return `${Math.round(s / 86400)}d ago`;
 }
 
+/* A notification only stores text, so find the library title it belongs to:
+ * by file name, by exact title, or by the "Series S01E02" label the download
+ * queue produces. The result feeds the thumbnail in the bell menu. */
+function notifMatch(n) {
+  const items = state.items || [];
+  if (!items.length) return null;
+  const norm = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+  const fileName = norm(n.fileName);
+  if (fileName) {
+    const byFile = items.find((it) => norm(it.fileName) === fileName);
+    if (byFile) return byFile;
+  }
+
+  const title = norm(n.title);
+  if (!title) return null;
+  const exact = items.find((it) => norm(it.seriesTitle) === title || norm(it.title) === title);
+  if (exact) return exact;
+
+  const tag = /s(\d{1,2})\s*e(\d{1,2})\b/i.exec(n.title || '');
+  const seriesName = norm(tag ? String(n.title).slice(0, tag.index) : title).replace(/[\s·\-–—]+$/, '');
+  if (!seriesName || seriesName.length < 3) return null;
+  const episodes = items.filter((it) => it.isSeries && norm(it.seriesTitle || it.title) === seriesName);
+  if (episodes.length) {
+    if (!tag) return episodes[0];
+    const season = Number(tag[1]);
+    const episode = Number(tag[2]);
+    return episodes.find((it) => it.season === season && it.episode === episode) || episodes[0];
+  }
+
+  // Longest prefix wins, so "Cyberpunk Edgerunners S01E02 720p" finds the show.
+  let best = null;
+  for (const item of items) {
+    const name = norm(item.seriesTitle || item.title);
+    if (name.length < 3 || !title.startsWith(name)) continue;
+    if (!best || name.length > norm(best.seriesTitle || best.title).length) best = item;
+  }
+  return best;
+}
+
 function renderNotifs() {
   const unread = state.notifs.filter((n) => !n.read).length;
   els.notifBadge.hidden = unread === 0;
@@ -3284,13 +3621,15 @@ function renderNotifs() {
   state.notifs.forEach((n) => {
     const row = createEl('div', `notif-item${n.read ? '' : ' unread'}`);
     const ico = createEl('div', `notif-ico t-${n.type}`);
-    const match = n.type === 'done' && state.items.find((it) => (it.title || '').toLowerCase() === (n.title || '').toLowerCase());
+    const match = notifMatch(n);
     if (match) {
       const img = document.createElement('img');
-      img.src = thumbUrl(match);
+      img.src = thumbUrl(match, 240);
       img.alt = '';
-      img.onerror = () => { img.remove(); ico.innerHTML = NOTIF_ICONS.done; };
+      img.loading = 'lazy';
+      img.onerror = () => { img.remove(); ico.innerHTML = NOTIF_ICONS[n.type] || NOTIF_ICONS.info; };
       ico.append(img);
+      ico.classList.add('has-art');
     } else {
       ico.innerHTML = NOTIF_ICONS[n.type] || NOTIF_ICONS.info;
     }
@@ -3519,6 +3858,7 @@ function bindStaticEvents() {
   els.onlineModal.querySelectorAll('[data-close-online]').forEach((el) => el.addEventListener('click', closeOnlineModal));
   els.castleModal.querySelectorAll('[data-close-castle]').forEach((el) => el.addEventListener('click', closeCastleModal));
   els.castleSeasonDownload.addEventListener('click', queueCastleSeason);
+  els.castleList.addEventListener('click', toggleCastleList);
   els.castleResume.addEventListener('click', () => {
     const target = resumeTarget(state.castleLocal?.group);
     if (target) goWatch(target.id);

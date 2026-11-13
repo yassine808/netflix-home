@@ -60,22 +60,35 @@ const SUB_OFFSET_STEP = 0.5;
 const SUB_OFFSET_LIMIT = 10;
 let subtitleTracks = [];
 let subtitleCues = [];
-let subtitleLang = '';
+let subtitleLang = 'en';
 let subtitleOffset = 0;
 let subtitleRequest = 0;
 
-/* Subtitle look: text scale and the opacity of the black box behind it. */
-const SUB_STYLE_KEY = 'netflix-home:subtitle-style';
+/* Subtitle look: text scale and the opacity of the black box behind it.
+ * Defaults: English on, 100 % size, no background. Every change is stored per
+ * series, so the next episode opens with the same look and language. */
 const SUB_SCALE_MIN = 0.8;
 const SUB_SCALE_MAX = 1.8;
 const SUB_SCALE_STEP = 0.1;
 let subScale = 1;
-let subBgOpacity = 0.66;
+let subBgOpacity = 0;
 
 const params = new URLSearchParams(location.search);
 const id = params.get('id');
-const SUB_PREFS_KEY = `netflix-home:subtitles:${id}`;
 const INTRO_SKIP_KEY = `netflix-home:intro-skipped:${id}`;
+
+/* One series shares one set of subtitle settings across all its episodes. */
+function subtitleScope() {
+  return `series:${item?.seriesKey || item?.id || id}`;
+}
+
+function subtitleStyleKey() {
+  return `netflix-home:subtitle-style:${subtitleScope()}`;
+}
+
+function subtitlePrefsKey() {
+  return `netflix-home:subtitles:${subtitleScope()}`;
+}
 
 init();
 
@@ -345,7 +358,7 @@ function syncVolume() {
 /* ---------- subtitles ---------- */
 
 function loadSubtitlePrefs() {
-  const saved = readJson(SUB_PREFS_KEY, null);
+  const saved = readJson(subtitlePrefsKey(), null);
   if (!saved || typeof saved !== 'object') return;
   if (typeof saved.lang === 'string') subtitleLang = saved.lang;
   if (Number.isFinite(saved.offset)) {
@@ -354,11 +367,11 @@ function loadSubtitlePrefs() {
 }
 
 function saveSubtitlePrefs() {
-  writeJson(SUB_PREFS_KEY, { lang: subtitleLang, offset: subtitleOffset });
+  writeJson(subtitlePrefsKey(), { lang: subtitleLang, offset: subtitleOffset });
 }
 
 function initSubtitleStyle() {
-  const saved = readJson(SUB_STYLE_KEY, null);
+  const saved = readJson(subtitleStyleKey(), null);
   if (saved && typeof saved === 'object') {
     const scale = Number(saved.scale);
     if (Number.isFinite(scale)) subScale = Math.min(SUB_SCALE_MAX, Math.max(SUB_SCALE_MIN, scale));
@@ -383,7 +396,7 @@ function nudgeSubtitleScale(delta) {
 }
 
 function saveSubtitleStyle() {
-  writeJson(SUB_STYLE_KEY, { scale: subScale, opacity: subBgOpacity });
+  writeJson(subtitleStyleKey(), { scale: subScale, opacity: subBgOpacity });
 }
 
 async function initSubtitles() {

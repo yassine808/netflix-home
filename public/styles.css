@@ -1005,6 +1005,13 @@ code { font-family: Consolas, "Courier New", monospace; }
   border-radius: 3px;
   background: #232323;
 }
+.episode-thumb.is-playable { cursor: pointer; transition: transform 0.16s var(--ease), box-shadow 0.16s; }
+.episode-thumb.is-playable:hover,
+.episode-thumb.is-playable:focus-visible {
+  transform: scale(1.03);
+  box-shadow: 0 0 0 2px #fff;
+  outline: none;
+}
 .episode-main { min-width: 0; flex: 1; }
 .episode-head { display: flex; align-items: baseline; gap: 10px; }
 .episode-number { flex: 0 0 auto; color: var(--muted-2); font-size: 12px; font-weight: 700; letter-spacing: 0.06em; }
@@ -1042,6 +1049,53 @@ code { font-family: Consolas, "Courier New", monospace; }
 .castle-size { margin-left: auto; color: var(--muted); font-size: 12px; }
 /* The sheet scrolls as one surface: no inner scrollbar over the episode list. */
 .castle-episode-list { max-height: none; overflow: visible; padding-right: 0; }
+
+/* Season tabs on the left, "Download all" on the right of the same row. */
+.season-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.season-bar .season-tabs { margin-bottom: 0; flex: 1 1 auto; }
+.castle-all-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 13px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: background 0.16s, border-color 0.16s, color 0.16s;
+}
+.castle-all-btn:hover:not(:disabled) { background: #fff; border-color: #fff; color: #000; }
+.castle-all-btn:disabled,
+.castle-all-btn.is-done {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+  color: #7d7d7d;
+  cursor: default;
+}
+
+/* One action per row; Play and Download share the same width. */
+.castle-ep-action { flex: 0 0 auto; align-self: center; display: flex; flex-direction: column; gap: 6px; }
+.castle-episode .castle-ep-action .castle-dl-btn { min-width: 128px; justify-content: center; }
+.castle-ep-bar {
+  height: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.16);
+}
+.castle-ep-bar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: #e50914;
+  transition: width 0.4s var(--ease);
+}
 .castle-episode .castle-dl-btn {
   flex: 0 0 auto;
   align-self: center;
@@ -1063,6 +1117,13 @@ code { font-family: Consolas, "Courier New", monospace; }
 /* Episodes already on disk: white Play, like the rest of the app. */
 .castle-episode .castle-dl-btn.is-play { background: #fff; border-color: #fff; color: #000; }
 .castle-episode .castle-dl-btn.is-play:hover { background: rgba(255, 255, 255, 0.86); transform: translateY(-1px); }
+/* Downloading: red accent, percent label, progress bar underneath. */
+.castle-episode .castle-dl-btn.is-active {
+  border-color: rgba(229, 9, 20, 0.55);
+  background: rgba(229, 9, 20, 0.14);
+  color: #ff8489;
+}
+.castle-episode .castle-dl-btn.is-active:hover { background: rgba(229, 9, 20, 0.24); border-color: rgba(229, 9, 20, 0.8); color: #fff; }
 .castle-episode.is-local .episode-main { min-width: 0; }
 .castle-episode.is-target {
   background: rgba(229, 9, 20, 0.14);
@@ -1145,6 +1206,51 @@ code { font-family: Consolas, "Courier New", monospace; }
   background: linear-gradient(0deg, var(--panel) 0%, rgba(24, 24, 24, 0.55) 22%, transparent 60%, rgba(0, 0, 0, 0.25) 100%);
 }
 .modal-hero-content { position: absolute; left: 46px; right: 46px; bottom: 34px; }
+/* The hero gradient is painted above the artwork; keep the actions above it so
+ * white buttons stay white instead of being dimmed by the overlay. */
+.online-hero .modal-hero-content { z-index: 2; }
+.castle-modal #castleResume {
+  background: #fff;
+  color: #000;
+  box-shadow: 0 8px 30px rgba(255, 255, 255, 0.18);
+}
+.castle-modal #castleResume svg { flex: 0 0 auto; }
+.castle-list-btn { border: 1px solid rgba(255, 255, 255, 0.24); }
+.castle-list-btn.in-list { border-color: rgba(70, 211, 105, 0.55); color: #7ee2a0; }
+
+/* ---------- loading skeletons ---------- */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  animation: skeleton-sweep 1.25s ease-in-out infinite;
+}
+@keyframes skeleton-sweep { 100% { transform: translateX(100%); } }
+.skeleton-pill { width: 96px; height: 32px; border-radius: 999px; }
+.castle-skel-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.castle-skel-thumb { flex: 0 0 130px; width: 130px; aspect-ratio: 16 / 9; border-radius: 8px; }
+.castle-skel-lines { flex: 1; display: flex; flex-direction: column; gap: 9px; }
+.castle-skel-title { height: 13px; width: 42%; }
+.castle-skel-sub { height: 10px; width: 26%; }
+.castle-skel-btn { flex: 0 0 auto; width: 128px; height: 33px; border-radius: 4px; }
+@media (max-width: 760px) {
+  .castle-skel-thumb { flex-basis: 96px; width: 96px; }
+  .castle-skel-btn { width: 96px; }
+}
 .modal-hero-content h1 {
   font-size: clamp(30px, 4vw, 56px);
   font-weight: 900;

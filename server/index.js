@@ -13,11 +13,14 @@ import {
   pauseDownloads, resumeDownloads,
 } from './downloads.js';
 import { searchOnline, getOnlineTitle } from './online.js';
-import { searchCastle, getCastleTitle, getCastleStream, isCastleId } from './castle.js';
+import { searchCastle, getCastleTitle, getCastleSeries, getCastleStream, isCastleId } from './castle.js';
 import { initSettings, getSettings, isOffline, setOffline } from './settings.js';
 import { initFrames, frameMeta, ensureSprite, spriteFile } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
 import { initHero, heroStart, heroReady, ensureHero, warmHeroes } from './hero.js';
+import { initTrailers, trailerPathFor, trailerStatus, warmTrailer, warmTrailers } from './trailers.js';
+import { resolveImdbId } from './imdb.js';
+import { ensureEnglishSubtitle, fetchEnglishSubtitle } from './subs.js';
 
 /* In the single-file build there is no real file on disk, so the bundle passes
  * APP_ROOT (where the exe lives) and PUBLIC_DIR (extracted UI files). */
@@ -71,12 +74,16 @@ initSettings(cacheDir);
 initFrames(cacheDir);
 initIntro(cacheDir);
 initHero(cacheDir);
+initTrailers(cacheDir, {
+  ytDlpPath: process.env.YTDLP_PATH || path.join(process.env.APP_ROOT || path.join(__dirname, '..'), 'bin', 'yt-dlp.exe'),
+});
 getLibrary().root = libraryRoot;
 initDownloads({
   root: libraryRoot,
   onDownloadComplete: async () => {
     const lib = await scanLibrary(libraryRoot);
     warmHeroes(lib.items, libraryRoot);
+    warmTrailers(lib.items);
   },
 });
 
@@ -140,6 +147,7 @@ app.post('/api/rescan', async (req, res) => {
   try {
     const lib = await scanLibrary(libraryRoot);
     warmHeroes(lib.items, libraryRoot);
+    warmTrailers(lib.items);
     res.json({ ok: true, count: lib.items.length, updatedAt: lib.updatedAt });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });
@@ -442,11 +450,28 @@ app.get('/api/hero/:id', (req, res) => {
   if (!found) return res.status(404).json({ error: 'not found' });
   const { item } = found;
   const cached = heroReady(item);
+  // Fetch the billboard trailer in the background the first time it is asked for.
+  warmTrailer(item);
   res.json({
     ready: Boolean(cached),
     startSec: cached ? cached.startSec : heroStart(item),
     builtAt: cached ? cached.builtAt : null,
+    trailer: trailerStatus(item),
   });
+});
+
+/* Official trailer downloaded from YouTube, used by the home billboard. */
+app.get('/api/hero/:id/trailer.mp4', (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).end();
+  const file = trailerPathFor(found.item);
+  if (!file) {
+    warmTrailer(found.item);
+    return res.status(404).end();
+  }
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.setHeader('Content-Type', 'video/mp4');
+  res.sendFile(file);
 });
 
 app.get('/api/frames/:id', (req, res) => {
@@ -515,6 +540,10 @@ const SUBTITLE_LABELS = {
   en: 'English', fr: 'Français', ar: 'العربية', it: 'Italiano', es: 'Español',
   de: 'Deutsch', pt: 'Português', nl: 'Nederlands', pl: 'Polski', ru: 'Русский',
   tr: 'Türkçe', ja: '日本語', ko: '한국어', zh: '中文', hi: 'हिन्दी',
+  th: 'ไทย', vi: 'Tiếng Việt', id: 'Bahasa Indonesia', ms: 'Bahasa Melayu',
+  tl: 'Filipino', sv: 'Svenska', da: 'Dansk', no: 'Norsk', fi: 'Suomi',
+  cs: 'Čeština', el: 'Ελληνικά', he: 'עברית', hu: 'Magyar', ro: 'Română',
+  uk: 'Українська', bg: 'Български', hr: 'Hrvatski', sr: 'Српски', sk: 'Slovenčina',
 };
 const SUBTITLE_ORDER = ['en', 'fr', 'ar', 'it'];
 
@@ -546,10 +575,21 @@ function subtitleTracks(full) {
   return tracks.sort((a, b) => rank(a.lang) - rank(b.lang) || a.lang.localeCompare(b.lang));
 }
 
-app.get('/api/subtitles/:id', (req, res) => {
+app.get('/api/subtitles/:id', async (req, res) => {
   const found = resolveItemFile(req.params.id);
   if (!found) return res.status(404).json({ error: 'not found' });
-  res.json({ tracks: subtitleTracks(found.full) });
+  let tracks = subtitleTracks(found.full);
+  // Old downloads may predate the English track. Fetch it once on demand so the
+  // player always offers English next to the original language.
+  if (!tracks.some((track) => track.lang === 'en') && !isOffline()) {
+    try {
+      const added = await ensureEnglishSubtitle(found.full, found.item);
+      if (added) tracks = subtitleTracks(found.full);
+    } catch {
+      /* stay with whatever sidecars exist */
+    }
+  }
+  res.json({ tracks });
 });
 
 app.get('/api/subtitle/:id/:lang', (req, res) => {
@@ -696,6 +736,18 @@ app.get('/api/castle/title/:id', async (req, res) => {
   }
 });
 
+/* All seasons with full episode lists, for "Download all". */
+app.get('/api/castle/series/:id/episodes', async (req, res) => {
+  if (!isCastleId(req.params.id)) return res.status(400).json({ error: 'invalid id' });
+  try {
+    const data = await getCastleSeries(req.params.id);
+    res.set('Cache-Control', 'public, max-age=1800');
+    res.json(data);
+  } catch (err) {
+    res.status(err?.status || 502).json({ error: err?.message || String(err) });
+  }
+});
+
 const QUALITY_LABEL = { 1: '480p', 2: '720p', 3: '1080p' };
 
 function pad2(value) {
@@ -730,16 +782,36 @@ app.post('/api/castle/download', async (req, res) => {
       return res.status(409).json({ error: 'this quality is only available as a preview' });
     }
 
-    const SUB_LANGS = ['en', 'fr', 'ar', 'it'];
-    const subtitles = SUB_LANGS
-      .map((lang) => stream.subtitles.find((track) => track.language === lang))
-      .filter(Boolean)
-      .map((track) => ({ language: track.language, url: track.url }));
+    // Keep every track the service ships (original language + English and the
+    // rest), then add an English track from OpenSubtitles if it is missing.
+    const seen = new Set();
+    const subtitles = [];
+    for (const track of stream.subtitles || []) {
+      const code = String(track.language || '').toLowerCase();
+      if (!/^[a-z]{2,3}$/.test(code) || seen.has(code) || !track.url) continue;
+      seen.add(code);
+      subtitles.push({ language: code, url: track.url });
+    }
+    if (!seen.has('en') && !isOffline()) {
+      try {
+        const imdbId = await resolveImdbId({
+          title,
+          seriesTitle: title,
+          isSeries,
+          tmdbId: body.imdbId,
+        });
+        const english = await fetchEnglishSubtitle({ imdbId, season, episode });
+        if (english) subtitles.push({ language: 'en', text: english });
+      } catch {
+        /* the download still succeeds without the extra track */
+      }
+    }
 
     const jobs = await addHlsDownload({
       url: stream.url,
       referer: 'https://api.hlowb.com/',
       title: isSeries ? `${title} S${pad2(season)}E${pad2(episode)}` : title,
+      seriesTitle: title,
       fileName,
       collection: 'Downloads',
       folder: isSeries ? title : '',
@@ -843,6 +915,7 @@ function listen(port, attempt = 0) {
       const lib = await scanLibrary(libraryRoot);
       console.log(`library ready: ${lib.items.length} title(s) in ${lib.scannedInMs} ms`);
       warmHeroes(lib.items, libraryRoot);
+    warmTrailers(lib.items);
     } catch (err) {
       console.error('scan failed:', err);
     }
