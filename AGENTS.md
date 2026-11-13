@@ -2,13 +2,13 @@
 
 ## What this is
 
-A local, Netflix-style streaming app. Node/Express backend scans a movie folder (default `G:\`), probes files with ffmpeg/ffprobe, generates thumbnails, and streams video with HTTP range support. Vanilla JS frontend in `public/`.
+A local, Netflix-style streaming app. Node/Express backend scans a movie folder (default `G:\Movies`), probes files with ffmpeg/ffprobe, generates thumbnails, streams video with HTTP range support, and downloads public-domain films from archive.org. Vanilla JS frontend in `public/`.
 
 ## Commands
 
 ```powershell
 npm install          # deps: express, ffmpeg-static, ffprobe-static
-npm start            # http://localhost:3000, scans G:\
+npm start            # http://localhost:3000, scans G:\Movies
 npm run dev          # node --watch
 ```
 
@@ -26,7 +26,7 @@ Invoke-RestMethod http://localhost:3000/api/library
 - `public/watch.html` + `watch.js` + `watch.css` — custom player
 - `public/common.js` — shared formatting, storage, and API helpers
 - `.cache/` — generated metadata and thumbnails (gitignored)
-- `media/` — fallback library used when `G:\` is not mounted; test videos can live here (gitignored)
+- `media/` — fallback library used when `G:\Movies` is not mounted; test videos can live here (gitignored)
 - `G:\Movies` — preferred library location; root is configurable via `LIBRARY_ROOT`
 
 ## Conventions

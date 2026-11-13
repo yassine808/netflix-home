@@ -9,6 +9,10 @@
 - [x] Download sample movies (to project `media\` fallback — G: absent) and verify end-to-end
 - [x] Visual QA in the browser and fixes
 - [x] Commit
+- [x] Make the GitHub repo private
+- [x] Add archive.org catalog + download APIs with fallback
+- [x] Move the library to `G:\Movies`
+- [ ] Cyberpunk: Edgerunners 2 (blocked: Netflix-exclusive, DRM-protected, no legal download)
 
 ## Log
 
@@ -29,4 +33,10 @@
 - Done: inspected disks/volumes/PnP. Windows shows only internal SATA disks (0–3); no `G:` volume. USB device `USB\VID_0000&PID_0002\5&244075AE&0&8` fails enumeration with Code 43 "Device Descriptor Request Failed"; Disk 4 logged IO retries (Event 153) at 07:03–07:11 then disappeared. Tried rescan, disable/enable, and remove + rescan — device reappears still failing.
 - Verified: `Get-Disk`, `Get-Volume`, `Get-PSDrive G` all show no USB disk/G:.
 - Next: abandoned in software — needs physical check (different USB port/cable/power, test on another PC). App auto-selects `G:\` on next restart once mounted.
+
+### 2026-11-13 — G: back, private repo, film download API
+- Goal: move the library to `G:\`, publish the repo privately, add catalog/download APIs with a fallback.
+- Done: G: returned as Disk 4 (ST1000LM USB, label `Other`, 1 TB). Moved both test films to `G:\Movies\Classics`, removed the 0/12 KB partials left from the failed G: downloads, and changed root resolution to prefer `G:\Movies` then `G:\` then project `media\`. Created `server/downloads.js`; added `GET /api/catalog/search`, `GET /api/catalog/fallback`, `GET /api/catalog/item/:identifier`, `POST/GET /api/downloads`, `GET/DELETE /api/downloads/:id`, and `POST /api/downloads/:id/retry`. Downloads stream archive.org files to `<root>\<collection>\`, write `.nfo` + `-poster.jpg` for single films, and rescan the library. Created private repo `https://github.com/yassine808/netflix-home` and pushed `main`.
+- Verified: `gh repo view` reports `visibility: PRIVATE`. `/api/library` root is `G:\Movies` with 3 titles. Search returned 24 archive.org results; fallback returned 5 curated titles; item metadata listed the MP4. Downloaded `The Great Train Robbery (1903)` (58 MB) end-to-end — progress 20% → 69% → 100%, poster/NFO written, library rescanned to 3 titles. Multi-file item correctly returns 400 with the file list; cancel removes the `.part` and ends `cancelled`; retry requeues.
+- Next: commit and push the API work. Cyberpunk: Edgerunners 2 stays blocked — Netflix exclusive, no legal direct download.
 

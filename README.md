@@ -1,6 +1,6 @@
 # netflix-home
 
-A Netflix-style web app for a local movie library. Point it at a folder (default `G:\`, with a local `media` folder as fallback), and every video file in it shows up as a title you can browse, search, and stream.
+A Netflix-style web app for a local movie library. Point it at a folder (default `G:\Movies`, with a local `media` folder as fallback), and every video file in it shows up as a title you can browse, search, and stream. The server can also download public-domain films from archive.org into the library.
 
 ![stack](https://img.shields.io/badge/node-20%2B-brightgreen) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -17,15 +17,14 @@ The server scans the library on startup. Use the refresh button in the header (o
 
 ## Library folder
 
-Default root is `G:\` when that drive is mounted. If it isn't, the app falls back to `media\` inside the project (created automatically), so you can test without the external drive. Videos are picked up recursively from either location:
+Default root is `G:\Movies` when that drive is mounted. If it isn't, the app falls back to `media\` inside the project (created automatically), so you can test without the external drive. Videos are picked up recursively from either location:
 
 ```
-G:\
-└─ Movies\
-   ├─ Blender\
-   │  ├─ Big Buck Bunny (2008).mp4
-   │  └─ Sintel (2010).mkv
-   └─ Tears of Steel (2012).mp4
+G:\Movies\
+└─ Classics\
+   ├─ Night of the Living Dead (1968).mp4
+   ├─ Nosferatu (1922).mp4
+   └─ The Great Train Robbery (1903).mp4
 ```
 
 - Supported containers: MP4, MKV, AVI, MOV, WEBM, M4V, WMV, FLV, MPG, TS, M2TS, OGV.
@@ -42,7 +41,7 @@ $env:LIBRARY_ROOT='E:\Films'
 npm start
 ```
 
-Or edit the fallback logic in `server/index.js`. The root is `G:\` when mounted, otherwise the project's `media\` folder. Port is configurable with `$env:PORT`.
+Or edit the fallback logic in `server/index.js`. The root is `G:\Movies` when mounted, otherwise the project's `media\` folder. Port is configurable with `$env:PORT`.
 
 ## Features
 
@@ -75,6 +74,40 @@ Or edit the fallback logic in `server/index.js`. The root is `G:\` when mounted,
 | `GET /api/stream/:id` | Video stream with HTTP range support |
 | `GET /api/thumb/:id` | Generated thumbnail (JPEG) |
 | `GET /api/art/:id/poster\|backdrop` | Local artwork if present |
+| `GET /api/catalog/search?q=` | Search public-domain films on archive.org |
+| `GET /api/catalog/fallback` | Built-in catalog used when archive.org is unreachable |
+| `GET /api/catalog/item/:identifier` | Video files and metadata for one archive.org item |
+| `POST /api/downloads` | Queue a film (or several files) for download |
+| `GET /api/downloads` | All download jobs with progress |
+| `GET /api/downloads/:id` | One download job |
+| `POST /api/downloads/:id/retry` | Retry a failed/cancelled job (resumes the `.part` file) |
+| `DELETE /api/downloads/:id` | Cancel a queued or running download |
+
+### Download films
+
+The downloader accepts archive.org URLs only, so it stays limited to openly downloadable media. Files land in `<library root>\<collection>\`, then the library rescans automatically.
+
+```powershell
+# find something
+curl "http://localhost:3000/api/catalog/search?q=his%20girl%20friday"
+
+# inspect files (some items have several)
+curl "http://localhost:3000/api/catalog/item/HisGirlFriday"
+
+# queue the MP4 into G:\Movies\Classics
+curl -X POST http://localhost:3000/api/downloads `
+  -H "Content-Type: application/json" `
+  -d '{"identifier":"HisGirlFriday","file":"MoviePowderPresentsHisGirlFriday.mp4","collection":"Classics"}'
+
+# watch progress
+curl "http://localhost:3000/api/downloads"
+
+# cancel or retry
+curl -X DELETE "http://localhost:3000/api/downloads/<job-id>"
+curl -X POST "http://localhost:3000/api/downloads/<job-id>/retry"
+```
+
+If the archive.org search API is down, `GET /api/catalog/search` returns `source: "fallback"` with the curated public-domain list instead of failing. `GET /api/catalog/fallback` always returns that list. Single-film downloads also write a `.nfo` metadata file and a `-poster.jpg` next to the video when artwork is available.
 
 ## Notes
 

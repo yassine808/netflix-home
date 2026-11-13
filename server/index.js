@@ -6,6 +6,10 @@ import {
   initCache, scanLibrary, getLibrary, getItem, resolveItemFile,
   ensureThumb, artPath, isScanning,
 } from './library.js';
+import {
+  initDownloads, searchCatalog, getCatalogItem, fallbackCatalog,
+  addDownload, listDownloads, getDownload, cancelDownload, retryDownload,
+} from './downloads.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -14,7 +18,7 @@ const cacheDir = path.join(projectRoot, '.cache');
 
 function resolveLibraryRoot() {
   if (process.env.LIBRARY_ROOT) return path.resolve(process.env.LIBRARY_ROOT);
-  for (const candidate of ['G:\\', 'G:\\Movies']) {
+  for (const candidate of ['G:\\Movies', 'G:\\']) {
     try {
       if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) return candidate;
     } catch {
@@ -31,9 +35,16 @@ const port = Number(process.env.PORT) || 3000;
 
 initCache(cacheDir);
 getLibrary().root = libraryRoot;
+initDownloads({
+  root: libraryRoot,
+  onDownloadComplete: async () => {
+    await scanLibrary(libraryRoot);
+  },
+});
 
 const app = express();
 app.disable('x-powered-by');
+app.use(express.json({ limit: '128kb' }));
 
 const MIME = {
   '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm',
@@ -134,6 +145,92 @@ app.get('/api/item/:id', (req, res) => {
   if (!item) return res.status(404).json({ error: 'not found' });
   const { posterPath, backdropPath, ...safe } = item;
   res.json({ ...safe, hasPoster: Boolean(posterPath), hasBackdrop: Boolean(backdropPath) });
+});
+
+/* ---------- public-domain catalog ---------- */
+
+app.get('/api/catalog/search', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const page = Math.max(1, Number(req.query.page) || 1);
+  if (!q) return res.status(400).json({ error: 'q is required' });
+
+  try {
+    const results = await searchCatalog(q, page);
+    res.json({ source: 'archive.org', query: q, page, count: results.length, results });
+  } catch (err) {
+    const results = fallbackCatalog();
+    res.json({
+      source: 'fallback',
+      query: q,
+      page,
+      count: results.length,
+      fallback: true,
+      error: err?.message || String(err),
+      results,
+    });
+  }
+});
+
+app.get('/api/catalog/fallback', (req, res) => {
+  const results = fallbackCatalog();
+  res.json({ source: 'fallback', count: results.length, results });
+});
+
+app.get('/api/catalog/item/:identifier', async (req, res) => {
+  try {
+    const item = await getCatalogItem(req.params.identifier);
+    res.json(item);
+  } catch (err) {
+    res.status(err?.status || 502).json({
+      error: err?.message || String(err),
+      ...(err?.files ? { files: err.files } : {}),
+    });
+  }
+});
+
+/* ---------- downloads ---------- */
+
+app.get('/api/downloads', (req, res) => {
+  const jobs = listDownloads();
+  res.json({ root: libraryRoot, count: jobs.length, jobs });
+});
+
+app.get('/api/downloads/:id', (req, res) => {
+  const job = getDownload(req.params.id);
+  if (!job) return res.status(404).json({ error: 'download not found' });
+  res.json(job);
+});
+
+app.post('/api/downloads', async (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return res.status(400).json({ error: 'JSON body required' });
+  }
+  if (!body.url && !body.identifier) {
+    return res.status(400).json({ error: 'pass "url" or "identifier"' });
+  }
+
+  try {
+    const jobs = await addDownload(body);
+    res.status(201).json({ count: jobs.length, jobs });
+  } catch (err) {
+    res.status(err?.status || 500).json({
+      error: err?.message || String(err),
+      ...(err?.files ? { files: err.files } : {}),
+    });
+  }
+});
+
+app.post('/api/downloads/:id/retry', (req, res) => {
+  const job = retryDownload(req.params.id);
+  if (!job) return res.status(404).json({ error: 'download not found' });
+  res.json(job);
+});
+
+app.delete('/api/downloads/:id', (req, res) => {
+  const job = cancelDownload(req.params.id);
+  if (!job) return res.status(404).json({ error: 'download not found' });
+  res.json(job);
 });
 
 app.use(express.static(publicDir, { extensions: ['html'] }));
