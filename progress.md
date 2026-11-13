@@ -8,7 +8,7 @@
 - [x] Build custom video player with resume and progress saving
 - [x] Download sample movies (to project `media\` fallback — G: absent) and verify end-to-end
 - [x] Visual QA in the browser and fixes
-- [ ] Commit
+- [x] Commit
 
 ## Log
 
