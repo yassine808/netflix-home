@@ -5,10 +5,14 @@ import {
   searchCatalog, getFallbackCatalog, getCatalogItem,
   searchOnline, getOnlineTitle, searchCastle, getCastleTitle, startCastleDownload,
   startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload, reorderDownloads,
+  getSettings, setOfflineMode,
   readJson, writeJson,
 } from './common.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'downloading', 'cancelling']);
+const SEARCH_HISTORY_KEY = 'netflix-home:search-history';
+const PREVIEW_MUTED_KEY = 'netflix-home:preview-muted';
+const SEARCH_HISTORY_LIMIT = 8;
 
 const state = {
   library: null,
@@ -19,6 +23,9 @@ const state = {
   pollTimer: null,
   previewTimer: null,
   previewStart: 0,
+  previewMuted: readJson(PREVIEW_MUTED_KEY, false) === true,
+  offline: false,
+  searchHistory: readJson(SEARCH_HISTORY_KEY, []),
   toastTimer: null,
   lastFocus: null,
   bootAt: Date.now(),
@@ -84,6 +91,7 @@ const els = {
   searchInput: $('searchInput'),
   searchClose: $('searchClose'),
   searchHint: $('searchHint'),
+  searchHistory: $('searchHistory'),
   searchResults: $('searchResults'),
   searchLocalSection: $('searchLocalSection'),
   searchLocalCount: $('searchLocalCount'),
@@ -101,6 +109,8 @@ const els = {
   searchOnlineEmpty: $('searchOnlineEmpty'),
   searchOnlineError: $('searchOnlineError'),
   searchBtn: $('searchBtn'),
+  offlineBtn: $('offlineBtn'),
+  offlineLabel: $('offlineLabel'),
   refreshBtn: $('refreshBtn'),
   modal: $('modal'),
   modalImg: $('modalImg'),
@@ -179,6 +189,7 @@ const els = {
   dlActive: $('dlActive'),
   dlQueued: $('dlQueued'),
   dlDone: $('dlDone'),
+  dlFailed: $('dlFailed'),
   notif: $('notif'),
   bellBtn: $('bellBtn'),
   notifMenu: $('notifMenu'),
@@ -193,6 +204,12 @@ const els = {
 
 async function boot() {
   bindStaticEvents();
+  getSettings()
+    .then((settings) => {
+      state.offline = Boolean(settings.offline);
+      applyOfflineUi();
+    })
+    .catch(() => { /* older server: leave the switch online */ });
   await loadLibrary({ first: true });
   schedulePoll();
   refreshDownloads({ initial: true });
@@ -330,7 +347,9 @@ function setupPreview(item) {
 
 function playPreview(item) {
   const video = els.heroVideo;
-  video.muted = true;
+  video.volume = 0.65;
+  video.muted = state.previewMuted;
+  syncHeroMute();
   video.src = `/api/stream/${item.id}`;
   video.classList.remove('playing');
   const start = state.previewStart;
@@ -339,7 +358,28 @@ function playPreview(item) {
   }, { once: true });
   video.addEventListener('playing', () => video.classList.add('playing'), { once: true });
   video.addEventListener('error', () => video.classList.remove('playing'));
-  video.play().catch(() => {});
+  const started = video.play();
+  if (started && typeof started.catch === 'function') {
+    started.catch((err) => {
+      // Browsers block audible autoplay until the page has been clicked once.
+      // Keep the preview going muted and flag the button instead of failing.
+      if (err?.name !== 'NotAllowedError' || video.muted) return;
+      video.muted = true;
+      syncHeroMute(true);
+      video.play().catch(() => {});
+    });
+  }
+}
+
+function syncHeroMute(blocked = false) {
+  const muted = els.heroVideo.muted;
+  els.heroMute.classList.toggle('is-muted', muted);
+  els.heroMute.classList.toggle('blocked', blocked && muted);
+  const label = muted
+    ? (blocked ? 'Sound blocked — click to hear the preview' : 'Unmute preview')
+    : 'Mute preview';
+  els.heroMute.setAttribute('aria-label', label);
+  els.heroMute.title = label;
 }
 
 videoLoop();
@@ -620,6 +660,7 @@ const STATUS_LABELS = {
   downloading: 'Downloading',
   cancelling: 'Cancelling…',
   cancelled: 'Cancelled',
+  paused: 'Paused — offline',
   failed: 'Failed',
   completed: 'Completed',
 };
@@ -627,6 +668,17 @@ const STATUS_LABELS = {
 function showDiscover(query = '') {
   setView('discover');
   const q = String(query || '').trim();
+  if (state.offline) {
+    state.catalog = [];
+    state.catalogQuery = '';
+    state.catalogSource = '';
+    setCatalogBusy(false);
+    els.catalogGrid.replaceChildren();
+    els.catalogEmpty.hidden = true;
+    els.discoverInput.value = q;
+    showCatalogNote('Offline mode is on — New & Popular needs internet. Switch it off in the header to search archive.org.');
+    return;
+  }
   if (q) {
     els.discoverInput.value = q;
     runCatalogSearch(q);
@@ -676,6 +728,10 @@ async function loadDiscoverPicks() {
 
 async function runCatalogSearch(query) {
   const q = String(query || '').trim();
+  if (state.offline) {
+    showCatalogNote('Offline mode is on — archive.org search is disabled.');
+    return;
+  }
   if (!q) return loadDiscoverPicks();
   const token = ++catalogRequest;
   state.catalogQuery = q;
@@ -976,8 +1032,10 @@ function orderedQueue(jobs) {
 function renderDownloads() {
   const active = state.downloads.filter((j) => j.status === 'downloading' || j.status === 'cancelling');
   const queued = orderedQueue(state.downloads.filter((j) => j.status === 'queued'));
-  const finished = state.downloads.filter((j) => !ACTIVE_STATUSES.has(j.status)).slice(0, 8);
-  const all = [...active, ...queued, ...finished];
+  const paused = state.downloads.filter((j) => j.status === 'paused');
+  const finished = state.downloads.filter((j) => j.status === 'completed').slice(0, 8);
+  const failed = state.downloads.filter((j) => j.status === 'failed');
+  const all = [...active, ...paused, ...queued, ...finished, ...failed];
   const ids = new Set(all.map((j) => j.id));
 
   dlRows.forEach((row, id) => { if (!ids.has(id)) { row.remove(); dlRows.delete(id); } });
@@ -998,9 +1056,10 @@ function renderDownloads() {
       if (isQueue) row.querySelector('.dl-pos').textContent = String(i + 1);
     });
   };
-  fill(els.dlActive, active);
+  fill(els.dlActive, [...active, ...paused]);
   fill(els.dlQueued, queued, true);
   fill(els.dlDone, finished);
+  fill(els.dlFailed, failed);
   els.downloadsEmpty.hidden = all.length > 0;
 }
 
@@ -1081,14 +1140,15 @@ function updateDownloadRow(row, job) {
   if (job.error) r.meta.append(createEl('span', 'download-error', job.error));
 
   r.actions.replaceChildren();
-  if (job.status === 'queued' || job.status === 'downloading') {
+  if (job.status === 'queued' || job.status === 'downloading' || job.status === 'paused') {
     const btn = createEl('button', 'download-action', 'Cancel');
     btn.addEventListener('click', () => downloadAction(job.id, 'cancel', btn));
     r.actions.append(btn);
-  } else if (job.status === 'failed' || job.status === 'cancelled') {
-    const btn = createEl('button', 'download-action primary', 'Retry');
-    btn.addEventListener('click', () => downloadAction(job.id, 'retry', btn));
-    r.actions.append(btn);
+  }
+  if (job.status === 'failed' || job.status === 'cancelled') {
+    const retry = createEl('button', 'download-action primary', 'Retry');
+    retry.addEventListener('click', () => downloadAction(job.id, 'retry', retry));
+    r.actions.append(retry);
   } else if (job.status === 'completed') {
     r.actions.append(createEl('span', 'download-done', '✓'));
   }
@@ -1214,7 +1274,7 @@ function syncBodyLock() {
 
 function updateSearchArchive(query) {
   const q = String(query || '').trim();
-  els.searchArchiveBtn.hidden = !q;
+  els.searchArchiveBtn.hidden = !q || state.offline;
   els.searchArchiveBtn.dataset.q = q;
   if (q) els.searchArchiveLabel.textContent = `Search archive.org for “${q}”`;
 }
@@ -1269,6 +1329,83 @@ function resetCastleSearch() {
   els.searchCastleCount.textContent = '';
 }
 
+function renderSearchHistory() {
+  const box = els.searchHistory;
+  if (!box) return;
+  box.replaceChildren();
+  const list = state.searchHistory;
+  box.hidden = list.length === 0 || Boolean(els.searchInput.value.trim());
+  for (const entry of list) {
+    const chip = createEl('div', 'history-chip');
+    const pick = createEl('button', 'history-query', entry);
+    pick.type = 'button';
+    pick.dataset.q = entry;
+    const remove = createEl('button', 'history-remove', '✕');
+    remove.type = 'button';
+    remove.dataset.remove = entry;
+    remove.setAttribute('aria-label', `Remove “${entry}” from search history`);
+    chip.append(pick, remove);
+    box.append(chip);
+  }
+}
+
+function rememberSearch(raw) {
+  const query = String(raw || '').trim();
+  if (query.length < 2) return;
+  const key = query.toLowerCase();
+  state.searchHistory = [query, ...state.searchHistory.filter((entry) => entry.toLowerCase() !== key)]
+    .slice(0, SEARCH_HISTORY_LIMIT);
+  writeJson(SEARCH_HISTORY_KEY, state.searchHistory);
+  renderSearchHistory();
+}
+
+function removeSearchHistory(entry) {
+  const key = String(entry || '').toLowerCase();
+  state.searchHistory = state.searchHistory.filter((item) => item.toLowerCase() !== key);
+  writeJson(SEARCH_HISTORY_KEY, state.searchHistory);
+  renderSearchHistory();
+}
+
+function applyOfflineUi() {
+  els.offlineBtn.setAttribute('aria-checked', String(state.offline));
+  els.offlineBtn.classList.toggle('is-offline', state.offline);
+  els.offlineLabel.textContent = state.offline ? 'Offline' : 'Online';
+  const label = state.offline
+    ? 'Offline mode is on — the app makes no internet requests'
+    : 'Offline mode is off — internet enabled';
+  els.offlineBtn.title = label;
+  els.offlineBtn.setAttribute('aria-label', label);
+  document.body.classList.toggle('is-offline', state.offline);
+  if (state.offline) {
+    resetOnlineSearch();
+    resetCastleSearch();
+    updateSearchArchive(els.searchInput.value);
+  }
+}
+
+async function toggleOffline() {
+  els.offlineBtn.disabled = true;
+  try {
+    const settings = await setOfflineMode(!state.offline);
+    state.offline = Boolean(settings.offline);
+    applyOfflineUi();
+    toast(state.offline
+      ? 'Offline mode on — no internet access'
+      : 'Offline mode off — internet access restored');
+    if (state.offline) {
+      if (!els.searchOverlay.hidden) runSearch(els.searchInput.value);
+      if (state.view === 'discover') showDiscover();
+    } else if (state.view === 'discover') {
+      loadDiscoverPicks();
+    }
+    refreshDownloads();
+  } catch (err) {
+    toast(`Could not switch offline mode: ${err.message}`);
+  } finally {
+    els.offlineBtn.disabled = false;
+  }
+}
+
 function openSearch() {
   stopPreview();
   setMobileActive('search');
@@ -1281,15 +1418,19 @@ function openSearch() {
   resetOnlineSearch();
   resetCastleSearch();
   updateSearchArchive('');
-  els.searchHint.textContent = state.items.length
-    ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library, the download catalog, and movies online`
-    : 'Search the download catalog and thousands of movies and series online';
+  renderSearchHistory();
+  els.searchHint.textContent = state.offline
+    ? `Offline mode — searching ${state.items.length} local title${state.items.length === 1 ? '' : 's'} only`
+    : (state.items.length
+      ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library, the download catalog, and movies online`
+      : 'Search the download catalog and thousands of movies and series online');
   setTimeout(() => els.searchInput.focus(), 30);
 }
 
 function closeSearch() {
   els.searchOverlay.hidden = true;
   syncBodyLock();
+  rememberSearch(els.searchInput.value);
   els.searchInput.blur();
   setMobileActive(['home', 'discover', 'movies', 'mylist'].includes(state.view) ? state.view : null);
   if (state.view === 'home' && !isModalOpen() && els.onlineModal.hidden && els.castleModal.hidden) {
@@ -1308,15 +1449,26 @@ const runSearch = debounce((raw) => {
     updateSearchArchive('');
     resetOnlineSearch();
     resetCastleSearch();
-    els.searchHint.textContent = state.items.length
-      ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library, the download catalog, and movies online`
-      : 'Search the download catalog and thousands of movies and series online';
+    renderSearchHistory();
+    els.searchHint.textContent = state.offline
+      ? `Offline mode — searching ${state.items.length} local title${state.items.length === 1 ? '' : 's'}`
+      : (state.items.length
+        ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library, the download catalog, and movies online`
+        : 'Search the download catalog and thousands of movies and series online');
     return;
   }
 
+  els.searchHistory.hidden = true;
   els.searchHint.textContent = `Results for “${query}”`;
   renderLocalResults(query, q);
   updateSearchArchive(query);
+
+  if (state.offline) {
+    resetOnlineSearch();
+    resetCastleSearch();
+    els.searchHint.textContent = `Offline mode — local results for “${query}”`;
+    return;
+  }
 
   if (q.length < ONLINE_MIN_CHARS) {
     resetOnlineSearch();
@@ -1360,12 +1512,83 @@ const runSearch = debounce((raw) => {
   fetchOnlineResults(query);
 }, 280);
 
+function normalizeSearchText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/* Bounded Levenshtein distance: stop as soon as it exceeds `max`. */
+function editDistance(a, b, max) {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = new Array(b.length + 1);
+  let cur = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j += 1) prev[j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    cur[0] = i;
+    let best = cur[0];
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (cur[j] < best) best = cur[j];
+    }
+    if (best > max) return max + 1;
+    [prev, cur] = [cur, prev];
+  }
+  return prev[b.length];
+}
+
+function tokenScore(token, word) {
+  if (word === token) return 1;
+  if (word.startsWith(token)) return 0.95;
+  if (word.includes(token)) return 0.9;
+  // Allow typos: one for medium words, two for long ones.
+  const allowed = token.length >= 7 ? 2 : token.length >= 4 ? 1 : 0;
+  if (!allowed) return 0;
+  return editDistance(token, word, allowed) <= allowed ? 0.7 : 0;
+}
+
+/* Fuzzy local search: exact and prefix matches rank first, then titles whose
+ * words are one or two letters off, so "cyberpunck" still finds Cyberpunk. */
+function searchScore(query, item) {
+  const q = normalizeSearchText(query);
+  if (!q) return 0;
+  const title = normalizeSearchText(item.title);
+  const hay = normalizeSearchText([
+    item.title,
+    item.fileName,
+    item.collection,
+    item.year,
+    ...(item.genres || []),
+  ].filter(Boolean).join(' '));
+  if (!hay) return 0;
+
+  if (title === q) return 120;
+  if (title.startsWith(q)) return 110;
+  if (hay.includes(q)) return 100;
+
+  const tokens = q.split(' ').filter(Boolean);
+  const words = hay.split(' ').filter(Boolean);
+  let total = 0;
+  for (const token of tokens) {
+    let best = 0;
+    for (const word of words) best = Math.max(best, tokenScore(token, word));
+    if (!best) return 0; // every query word has to match something
+    total += best;
+  }
+  return 60 + (total / tokens.length) * 30;
+}
+
 function renderLocalResults(query, q) {
-  const results = state.items.filter((item) => {
-    const hay = [item.title, item.fileName, item.year, item.collection, ...(item.genres || [])]
-      .filter(Boolean).join(' ').toLowerCase();
-    return hay.includes(q);
-  });
+  const results = state.items
+    .map((item, index) => ({ item, index, score: searchScore(q, item) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((entry) => entry.item);
   els.searchResults.replaceChildren();
   results.forEach((item) => els.searchResults.append(buildCard(item)));
   els.searchLocalCount.textContent = results.length
@@ -1373,7 +1596,9 @@ function renderLocalResults(query, q) {
     : '';
   els.searchLocalEmpty.hidden = results.length > 0;
   if (!results.length) {
-    els.searchLocalEmpty.textContent = `Nothing in your library matches “${query}”. Downloadable and online results are below.`;
+    els.searchLocalEmpty.textContent = state.offline
+      ? `Nothing in your library matches “${query}”. Try a shorter word or check the spelling.`
+      : `Nothing in your library matches “${query}”. Downloadable and online results are below.`;
   }
 }
 
@@ -2299,20 +2524,48 @@ function bindStaticEvents() {
   });
   els.heroMute.addEventListener('click', () => {
     const video = els.heroVideo;
-    video.muted = !video.muted;
-    if (!video.muted) video.volume = 0.7;
-    els.heroMute.classList.toggle('is-muted', video.muted);
-    els.heroMute.setAttribute('aria-label', video.muted ? 'Unmute preview' : 'Mute preview');
-    els.heroMute.title = els.heroMute.getAttribute('aria-label');
-    if (!video.src) {
-      const item = state.byId.get(state.heroId);
-      if (item) playPreview(item);
+    const nextMuted = !video.muted;
+    video.muted = nextMuted;
+    state.previewMuted = nextMuted;
+    writeJson(PREVIEW_MUTED_KEY, nextMuted);
+    if (!nextMuted) {
+      if (!video.volume) video.volume = 0.65;
+      video.volume = Math.max(video.volume, 0.2);
     }
+    syncHeroMute(false);
+    const item = state.byId.get(state.heroId);
+    if (!video.src && item) playPreview(item);
+    else if (video.paused && item) video.play().catch(() => {});
   });
+
+  els.offlineBtn.addEventListener('click', toggleOffline);
 
   els.searchBtn.addEventListener('click', openSearch);
   els.searchClose.addEventListener('click', closeSearch);
   els.searchInput.addEventListener('input', (e) => runSearch(e.target.value));
+  els.searchInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    rememberSearch(els.searchInput.value);
+    els.searchHistory.hidden = true;
+  });
+  els.searchInput.addEventListener('focus', () => {
+    if (!els.searchInput.value.trim()) renderSearchHistory();
+  });
+  els.searchHistory.addEventListener('click', (e) => {
+    const remove = e.target.closest('.history-remove');
+    if (remove) {
+      e.stopPropagation();
+      removeSearchHistory(remove.dataset.remove);
+      return;
+    }
+    const pick = e.target.closest('.history-query');
+    if (!pick) return;
+    els.searchInput.value = pick.dataset.q;
+    els.searchHistory.hidden = true;
+    runSearch(pick.dataset.q);
+    els.searchInput.focus();
+  });
   els.searchOverlay.addEventListener('click', (e) => {
     if (e.target === els.searchOverlay) closeSearch();
   });

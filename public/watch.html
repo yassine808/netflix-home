@@ -6,14 +6,16 @@
   <meta name="theme-color" content="#000">
   <title>Netflix Home</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23141414'/%3E%3Cpath d='M9 6h5l6 13V6h4v20h-5L13 13v13H9z' fill='%23e50914'/%3E%3C/svg%3E">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/fonts.css">
   <link rel="stylesheet" href="/watch.css">
 </head>
 <body class="player-body">
   <div class="player" id="player">
     <video id="video" playsinline preload="metadata"></video>
+
+    <div class="subtitle-layer" id="subtitleLayer" hidden aria-live="polite">
+      <div class="subtitle-text" id="subtitleText"></div>
+    </div>
 
     <div class="player-loading" id="playerLoading">
       <div class="spinner"></div>
@@ -73,11 +75,32 @@
           </div>
           <div class="controls-right">
             <span class="quality" id="qualityTag"></span>
+            <button class="ctrl cc-btn" id="ccBtn" aria-label="Subtitles" aria-expanded="false" aria-controls="ccPanel">
+              <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2" y="5" width="20" height="14" rx="2.5"/><text x="12" y="14.8" text-anchor="middle" font-size="6.6" font-family="Arial" font-weight="bold" fill="currentColor" stroke="none">CC</text></svg>
+            </button>
             <button class="ctrl" id="fsBtn" aria-label="Fullscreen">
               <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
             </button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <div class="cc-panel" id="ccPanel" hidden role="dialog" aria-label="Subtitle settings">
+      <div class="cc-head">
+        <h2>Subtitles</h2>
+        <button class="cc-close" id="ccClose" aria-label="Close subtitle settings">✕</button>
+      </div>
+      <div class="cc-list" id="ccList"></div>
+      <div class="cc-timing">
+        <span class="cc-timing-title">Subtitle timing</span>
+        <div class="cc-timing-row">
+          <button type="button" class="cc-step" id="ccMinus" aria-label="Show subtitles earlier">−</button>
+          <output class="cc-offset" id="ccOffset">0.0s</output>
+          <button type="button" class="cc-step" id="ccPlus" aria-label="Show subtitles later">+</button>
+          <button type="button" class="cc-reset" id="ccReset">Reset</button>
+        </div>
+        <p class="cc-timing-hint">Positive shows subtitles later, negative earlier. Step: 0.5s.</p>
       </div>
     </div>
   </div>

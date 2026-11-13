@@ -22,6 +22,12 @@ const fsBtn = $('fsBtn');
 const qualityTag = $('qualityTag');
 const resumeToast = $('resumeToast');
 const topKicker = $('topKicker');
+const ccBtn = $('ccBtn');
+const ccPanel = $('ccPanel');
+const ccList = $('ccList');
+const ccOffsetEl = $('ccOffset');
+const subtitleLayer = $('subtitleLayer');
+const subtitleText = $('subtitleText');
 
 let item = null;
 let duration = 0;
@@ -31,8 +37,18 @@ let dragging = false;
 let pendingResume = 0;
 let lastVolume = 1;
 
+/* subtitle state */
+const SUB_OFFSET_STEP = 0.5;
+const SUB_OFFSET_LIMIT = 10;
+let subtitleTracks = [];
+let subtitleCues = [];
+let subtitleLang = '';
+let subtitleOffset = 0;
+let subtitleRequest = 0;
+
 const params = new URLSearchParams(location.search);
 const id = params.get('id');
+const SUB_PREFS_KEY = `netflix-home:subtitles:${id}`;
 
 init();
 
@@ -67,6 +83,7 @@ async function init() {
   bindEvents();
   syncVolume();
   updateTimeline();
+  initSubtitles();
   setMediaSession();
 }
 
@@ -107,6 +124,7 @@ function bindEvents() {
   });
   video.addEventListener('timeupdate', () => {
     updateTimeline();
+    renderSubtitle();
     if (Date.now() - lastSaved > 3000) saveNow();
   });
   video.addEventListener('progress', updateBuffer);
@@ -132,6 +150,16 @@ function bindEvents() {
   $('fwd10').addEventListener('click', () => skip(10));
   muteBtn.addEventListener('click', toggleMute);
   fsBtn.addEventListener('click', toggleFullscreen);
+  ccBtn.addEventListener('click', () => toggleCcPanel());
+  $('ccClose').addEventListener('click', () => toggleCcPanel(false));
+  $('ccMinus').addEventListener('click', () => nudgeOffset(-SUB_OFFSET_STEP));
+  $('ccPlus').addEventListener('click', () => nudgeOffset(SUB_OFFSET_STEP));
+  $('ccReset').addEventListener('click', () => {
+    subtitleOffset = 0;
+    updateOffsetLabel();
+    saveSubtitlePrefs();
+    renderSubtitle();
+  });
 
   volume.addEventListener('input', () => {
     video.volume = Number(volume.value);
@@ -211,6 +239,182 @@ function syncVolume() {
   muteBtn.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
   volume.value = String(muted ? 0 : video.volume);
   volume.style.background = `linear-gradient(to right, #e50914 ${(muted ? 0 : video.volume) * 100}%, rgba(255,255,255,.5) ${(muted ? 0 : video.volume) * 100}%)`;
+}
+
+/* ---------- subtitles ---------- */
+
+function loadSubtitlePrefs() {
+  const saved = readJson(SUB_PREFS_KEY, null);
+  if (!saved || typeof saved !== 'object') return;
+  if (typeof saved.lang === 'string') subtitleLang = saved.lang;
+  if (Number.isFinite(saved.offset)) {
+    subtitleOffset = Math.max(-SUB_OFFSET_LIMIT, Math.min(SUB_OFFSET_LIMIT, saved.offset));
+  }
+}
+
+function saveSubtitlePrefs() {
+  writeJson(SUB_PREFS_KEY, { lang: subtitleLang, offset: subtitleOffset });
+}
+
+async function initSubtitles() {
+  loadSubtitlePrefs();
+  updateOffsetLabel();
+  try {
+    const res = await fetch(`/api/subtitles/${encodeURIComponent(id)}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    subtitleTracks = Array.isArray(data.tracks) ? data.tracks.filter((t) => t && t.lang) : [];
+  } catch {
+    subtitleTracks = [];
+  }
+
+  renderSubtitleList();
+  syncCcButton();
+
+  if (!subtitleTracks.length) {
+    ccBtn.disabled = true;
+    ccBtn.title = 'No subtitle files next to this video';
+    ccBtn.setAttribute('aria-label', 'No subtitles available');
+    return;
+  }
+
+  ccBtn.title = 'Subtitles';
+  const wanted = subtitleTracks.some((track) => track.lang === subtitleLang) ? subtitleLang : '';
+  if (!wanted) subtitleLang = '';
+  if (wanted) selectSubtitle(wanted);
+}
+
+function syncCcButton() {
+  ccBtn.classList.toggle('cc-on', Boolean(subtitleLang));
+  ccBtn.setAttribute('aria-label', subtitleLang
+    ? `Subtitles on (${subtitleLang.toUpperCase()}) — change language`
+    : 'Subtitles off — choose a language');
+}
+
+function renderSubtitleList() {
+  ccList.replaceChildren();
+  const options = [{ lang: '', label: 'Off' }, ...subtitleTracks];
+  for (const option of options) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `cc-option${subtitleLang === option.lang ? ' active' : ''}`;
+    btn.textContent = option.label || option.lang.toUpperCase();
+    btn.dataset.lang = option.lang;
+    btn.addEventListener('click', () => selectSubtitle(option.lang));
+    ccList.append(btn);
+  }
+}
+
+async function selectSubtitle(lang) {
+  const token = ++subtitleRequest;
+  subtitleLang = lang;
+  subtitleCues = [];
+  subtitleLayer.hidden = true;
+  renderSubtitleList();
+  syncCcButton();
+  saveSubtitlePrefs();
+  if (!lang) return;
+
+  try {
+    const res = await fetch(`/api/subtitle/${encodeURIComponent(id)}/${encodeURIComponent(lang)}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    if (token !== subtitleRequest) return;
+    subtitleCues = parseVtt(text);
+    if (!subtitleCues.length) throw new Error('empty subtitle file');
+    renderSubtitle();
+  } catch {
+    if (token !== subtitleRequest) return;
+    subtitleLang = '';
+    subtitleCues = [];
+    renderSubtitleList();
+    syncCcButton();
+    saveSubtitlePrefs();
+    subtitleLayer.hidden = true;
+    toastInPlayer('Could not load that subtitle file.');
+  }
+}
+
+/* WebVTT is simple enough to read directly: a timestamp line, then the cue. */
+function parseVtt(text) {
+  const cues = [];
+  const body = String(text).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  for (const block of body.split(/\n{2,}/)) {
+    const lines = block.split('\n').filter((line) => line.trim());
+    if (!lines.length) continue;
+    const timeIndex = lines.findIndex((line) => line.includes('-->'));
+    if (timeIndex < 0) continue;
+    const [from, to] = lines[timeIndex].split('-->');
+    const start = parseVttTime(from.trim().split(/\s+/)[0]);
+    const end = parseVttTime((to || '').trim().split(/\s+/)[0]);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+    const content = lines.slice(timeIndex + 1).join('\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&lrm;|&rlm;/g, '')
+      .trim();
+    if (!content) continue;
+    cues.push({ start, end, text: content });
+  }
+  return cues.sort((a, b) => a.start - b.start);
+}
+
+function parseVttTime(value) {
+  const m = /^(?:(\d+):)?(\d{1,2}):(\d{1,2})[.,](\d{1,3})$/.exec(String(value || ''));
+  if (!m) return NaN;
+  const [, h, min, sec, ms] = m;
+  return (Number(h || 0) * 3600) + (Number(min) * 60) + Number(sec) + Number(ms.padEnd(3, '0')) / 1000;
+}
+
+function renderSubtitle() {
+  if (!subtitleLang || !subtitleCues.length) {
+    subtitleLayer.hidden = true;
+    return;
+  }
+  const t = (video.currentTime || 0) - subtitleOffset;
+  let cue = null;
+  for (const entry of subtitleCues) {
+    if (t < entry.start) break;
+    if (t <= entry.end) { cue = entry; break; }
+  }
+  if (!cue) {
+    subtitleLayer.hidden = true;
+    return;
+  }
+  subtitleText.textContent = cue.text;
+  subtitleLayer.hidden = false;
+}
+
+function updateOffsetLabel() {
+  ccOffsetEl.textContent = `${subtitleOffset > 0 ? '+' : ''}${subtitleOffset.toFixed(1)}s`;
+}
+
+/* Positive offset means the cue text appears later than its timestamp. */
+function nudgeOffset(delta) {
+  subtitleOffset = Math.round(Math.max(-SUB_OFFSET_LIMIT, Math.min(SUB_OFFSET_LIMIT, subtitleOffset + delta)) * 10) / 10;
+  updateOffsetLabel();
+  saveSubtitlePrefs();
+  renderSubtitle();
+}
+
+function toggleCcPanel(force) {
+  const open = typeof force === 'boolean' ? force : ccPanel.hidden;
+  ccPanel.hidden = !open;
+  ccBtn.setAttribute('aria-expanded', String(open));
+  clearTimeout(hideTimer);
+  if (open) {
+    showUi();
+    renderSubtitleList();
+    ccPanel.querySelector('.cc-option.active')?.focus();
+  } else {
+    armHideUi();
+    ccBtn.focus();
+  }
+}
+
+function toastInPlayer(message) {
+  resumeToast.textContent = message;
+  resumeToast.hidden = false;
+  setTimeout(() => { resumeToast.hidden = true; }, 4000);
 }
 
 function toggleFullscreen() {
@@ -309,13 +513,13 @@ function showUi() {
 }
 
 function hideUiNow() {
-  if (video.paused || dragging) return;
+  if (video.paused || dragging || !ccPanel.hidden) return;
   player.classList.add('hide-ui', 'hide-cursor');
 }
 
 function armHideUi() {
   clearTimeout(hideTimer);
-  if (video.paused || dragging) return;
+  if (video.paused || dragging || !ccPanel.hidden) return;
   hideTimer = setTimeout(hideUiNow, 2800);
 }
 
@@ -327,6 +531,11 @@ function saveNow() {
 
 function onKeyDown(e) {
   if (e.target instanceof HTMLInputElement && e.target !== volume) return;
+  if (e.key === 'Escape' && !ccPanel.hidden) {
+    e.preventDefault();
+    toggleCcPanel(false);
+    return;
+  }
   switch (e.key) {
     case ' ':
     case 'k':
@@ -358,6 +567,9 @@ function onKeyDown(e) {
       break;
     case 'f':
       toggleFullscreen();
+      break;
+    case 'c':
+      toggleCcPanel();
       break;
     default:
       break;

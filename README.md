@@ -68,18 +68,27 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 
 ## Features
 
-- Netflix-style billboard with a muted in-page preview of the featured title
+- Netflix-style billboard with an in-page preview that plays with sound (browsers that block audible autoplay get a muted preview and a flagged mute button)
 - Rows: Continue Watching, Recently Added, Top 10, collections, My List
 - Hover cards with play shortcut, detail modal with technical metadata
 - Search across your library and the online movie/series catalog, split into local results first and online results second
+- Local search tolerates typos ("cyberpunck" finds Cyberpunk) and keeps the last searches as removable chips
+- Offline switch in the header: the server stops all internet traffic and pauses downloads until it is off again
 - Online title pages with overview, IMDb rating, genres, seasons and episode lists, plus legal watch links
 - New & Popular page: search archive.org, pick a film or multi-file item, and download it into the library
 - Downloads drawer with live progress, speed, cancel/retry, and automatic library refresh
 - Free-download search for public-domain films when the online catalog has no local copy
 - Custom player: resume, seek preview, buffered bar, volume, 10s skips, fullscreen, keyboard shortcuts
+- Player subtitles from the `.vtt` sidecars, with language switching and a per-title timing offset
 - Progress and My List saved in the browser
 - Range-request streaming, so seeking works without copying the file
 - Lazy thumbnail generation and persistent metadata cache
+
+## Offline mode
+
+The **Online/Offline** switch in the header is enforced by the server, not the browser. Turning it on writes `offline: true` to `.cache/settings.json`, answers 503 on every route that would reach the internet (`/api/online/*`, `/api/castle/*`, `/api/catalog/search`, `/api/catalog/item/*`, and new download requests), and pauses active downloads. Paused jobs keep their `.part` file and resume when the switch goes back to Online. Fonts are served from `public/fonts`, so the page makes no external requests at all while offline.
+
+Cancelling a download removes the job and deletes its `.part` file, so cancelled items never show up under Finished.
 
 ## Online catalog
 
@@ -121,6 +130,7 @@ Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Bet
 | ↑ / ↓ | Volume |
 | M | Mute |
 | F | Fullscreen |
+| C | Subtitle language and timing panel |
 
 ## API
 
@@ -129,6 +139,10 @@ Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Bet
 | `GET /api/library` | Library items and collections |
 | `POST /api/rescan` | Rescan the library folder |
 | `GET /api/item/:id` | One item's metadata |
+| `GET /api/subtitles/:id` | Subtitle tracks found next to the video (`.en.vtt`, `.fr.vtt`, …) |
+| `GET /api/subtitle/:id/:lang` | One WebVTT subtitle file |
+| `GET /api/settings` | App settings, including the offline flag |
+| `POST /api/settings/offline` | Turn offline mode on or off (`{"offline": true}`); pauses or resumes downloads |
 | `GET /api/stream/:id` | Video stream with HTTP range support |
 | `GET /api/thumb/:id` | Generated thumbnail (JPEG) |
 | `GET /api/art/:id/poster\|backdrop` | Local artwork if present |
@@ -145,7 +159,7 @@ Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Bet
 | `GET /api/downloads` | All download jobs with progress |
 | `GET /api/downloads/:id` | One download job |
 | `POST /api/downloads/:id/retry` | Retry a failed/cancelled job (resumes the `.part` file) |
-| `DELETE /api/downloads/:id` | Cancel a queued or running download |
+| `DELETE /api/downloads/:id` | Cancel and remove a download; deletes its `.part` file |
 
 ### Download films
 

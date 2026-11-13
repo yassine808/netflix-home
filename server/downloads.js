@@ -575,25 +575,75 @@ export function getDownload(id) {
   return job ? publicJob(job) : null;
 }
 
-export function cancelDownload(id) {
+export async function cancelDownload(id) {
   const job = jobs.get(String(id));
   if (!job) return null;
-  if (job.status === 'queued') {
+  const part = `${job.dest}.part`;
+
+  // A cancelled job is gone for good: drop it from the list right away and
+  // delete the partial file so nothing is left behind.
+  if (job.status === 'queued' || job.status === 'paused') {
     const index = queue.indexOf(job);
     if (index >= 0) queue.splice(index, 1);
+    jobs.delete(job.id);
+    await fsp.rm(part, { force: true }).catch(() => {});
+    return { id: job.id, status: 'cancelled', removed: true };
+  }
+
+  if (job.status === 'downloading') {
     job.status = 'cancelled';
     job.completedAt = Date.now();
-  } else if (job.status === 'downloading' && job.controller) {
-    job.status = 'cancelling';
-    job.controller.abort();
+    jobs.delete(job.id);
+    try { job.controller?.abort(); } catch { /* already gone */ }
+    if (job.ffmpeg) killTree(job.ffmpeg);
+    // The writer may still hold the file open on Windows; the abort handler
+    // retries the delete once the stream closes.
+    await fsp.rm(part, { force: true }).catch(() => {});
+    return { id: job.id, status: 'cancelled', removed: true };
   }
+
   return publicJob(job);
+}
+
+/**
+ * Offline mode: stop every transfer without losing progress. Partial files
+ * stay on disk and the jobs wait in "paused" until internet comes back.
+ */
+export function pauseDownloads() {
+  for (const job of jobs.values()) {
+    if (job.status === 'queued') {
+      const index = queue.indexOf(job);
+      if (index >= 0) queue.splice(index, 1);
+      job.status = 'paused';
+      job.speed = 0;
+    } else if (job.status === 'downloading') {
+      job.status = 'paused';
+      job.speed = 0;
+      try { job.controller?.abort(); } catch { /* already gone */ }
+      if (job.ffmpeg) killTree(job.ffmpeg);
+    }
+  }
+  return listDownloads();
+}
+
+export function resumeDownloads() {
+  for (const job of [...jobs.values()]) {
+    if (job.status !== 'paused') continue;
+    job.status = 'queued';
+    job.error = null;
+    job.speed = 0;
+    queue.push(job);
+  }
+  pump();
+  return listDownloads();
 }
 
 export function retryDownload(id) {
   const job = jobs.get(String(id));
   if (!job) return null;
-  if (job.status !== 'failed' && job.status !== 'cancelled') return publicJob(job);
+  if (job.status !== 'failed' && job.status !== 'cancelled' && job.status !== 'paused') {
+    return publicJob(job);
+  }
   job.status = 'queued';
   job.error = null;
   job.bytes = 0;
@@ -760,10 +810,15 @@ async function runHlsJob(job) {
     controller.signal.removeEventListener('abort', onAbort);
 
     if (controller.signal.aborted) {
+      if (job.status === 'paused') {
+        job.speed = 0;
+        return;
+      }
       job.status = 'cancelled';
       job.completedAt = Date.now();
       job.error = null;
       await fsp.rm(part, { force: true }).catch(() => {});
+      jobs.delete(job.id);
       return;
     }
 
@@ -854,10 +909,15 @@ async function runJob(job) {
     await onComplete(job).catch(() => {});
   } catch (err) {
     if (controller.signal.aborted) {
+      if (job.status === 'paused') {
+        job.speed = 0;
+        return;
+      }
       job.status = 'cancelled';
       job.completedAt = Date.now();
       job.error = null;
       await fsp.rm(part, { force: true }).catch(() => {});
+      jobs.delete(job.id);
     } else {
       job.status = 'failed';
       job.completedAt = Date.now();

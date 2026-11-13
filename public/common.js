@@ -138,6 +138,33 @@ export async function getDownloads() {
   return res.json();
 }
 
+export async function getSettings() {
+  const res = await fetch('/api/settings', { cache: 'no-store' });
+  if (!res.ok) throw new Error(`settings ${res.status}`);
+  return res.json();
+}
+
+/* The server stores the flag, so "offline" really stops outgoing requests. */
+export async function setOfflineMode(offline) {
+  const res = await fetch('/api/settings/offline', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ offline: Boolean(offline) }),
+  });
+  if (!res.ok) throw new Error(`offline ${res.status}`);
+  return res.json();
+}
+
+export async function getSubtitles(id) {
+  const res = await fetch(`/api/subtitles/${encodeURIComponent(id)}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`subtitles ${res.status}`);
+  return res.json();
+}
+
+export function subtitleUrl(id, lang) {
+  return `/api/subtitle/${encodeURIComponent(id)}/${encodeURIComponent(lang)}`;
+}
+
 export async function cancelDownload(id) {
   const res = await fetch(`/api/downloads/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(`cancel ${res.status}`);

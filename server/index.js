@@ -10,9 +10,11 @@ import {
   initDownloads, searchCatalog, getCatalogItem, fallbackCatalog,
   addDownload, addSeriesDownload, addHlsDownload,
   listDownloads, getDownload, cancelDownload, retryDownload,
+  pauseDownloads, resumeDownloads,
 } from './downloads.js';
 import { searchOnline, getOnlineTitle } from './online.js';
 import { searchCastle, getCastleTitle, getCastleStream, isCastleId } from './castle.js';
+import { initSettings, getSettings, isOffline, setOffline } from './settings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -41,6 +43,7 @@ const preferredPort = Number(process.env.PORT) || 3000;
 const PORT_FILE = path.join(cacheDir, 'port');
 
 initCache(cacheDir);
+initSettings(cacheDir);
 getLibrary().root = libraryRoot;
 initDownloads({
   root: libraryRoot,
@@ -52,6 +55,35 @@ initDownloads({
 const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '128kb' }));
+
+/* Offline mode: the flag lives on the server, so the browser cannot route
+ * around it. Every route that reaches the internet answers 503. */
+app.use('/api', (req, res, next) => {
+  if (!isOffline()) return next();
+  const p = req.path;
+  const method = req.method;
+  const blocked = p.startsWith('/online/')
+    || p.startsWith('/castle/')
+    || p === '/catalog/search'
+    || p.startsWith('/catalog/item/')
+    || (method === 'POST' && (p === '/downloads'
+      || p === '/downloads/series'
+      || /^\/downloads\/[^/]+\/retry$/.test(p)));
+  if (!blocked) return next();
+  res.status(503).json({ error: 'offline mode is on — internet access is disabled', offline: true });
+});
+
+app.get('/api/settings', (req, res) => res.json(getSettings()));
+
+app.post('/api/settings/offline', (req, res) => {
+  if (typeof req.body?.offline !== 'boolean') {
+    return res.status(400).json({ error: 'pass {"offline": true|false}' });
+  }
+  const settings = setOffline(req.body.offline);
+  if (settings.offline) pauseDownloads();
+  else resumeDownloads();
+  res.json(settings);
+});
 
 const MIME = {
   '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm',
@@ -152,6 +184,60 @@ app.get('/api/item/:id', (req, res) => {
   if (!item) return res.status(404).json({ error: 'not found' });
   const { posterPath, backdropPath, ...safe } = item;
   res.json({ ...safe, hasPoster: Boolean(posterPath), hasBackdrop: Boolean(backdropPath) });
+});
+
+/* ---------- subtitles (sidecar .vtt files next to the video) ---------- */
+
+const SUBTITLE_LABELS = {
+  en: 'English', fr: 'Français', ar: 'العربية', it: 'Italiano', es: 'Español',
+  de: 'Deutsch', pt: 'Português', nl: 'Nederlands', pl: 'Polski', ru: 'Русский',
+  tr: 'Türkçe', ja: '日本語', ko: '한국어', zh: '中文', hi: 'हिन्दी',
+};
+const SUBTITLE_ORDER = ['en', 'fr', 'ar', 'it'];
+
+function subtitleTracks(full) {
+  let names;
+  try {
+    names = fs.readdirSync(path.dirname(full));
+  } catch {
+    return [];
+  }
+  const stem = path.basename(full).replace(/\.[^.]+$/, '').toLowerCase();
+  const tracks = [];
+  const seen = new Set();
+  for (const name of names) {
+    if (!/\.vtt$/i.test(name)) continue;
+    const base = name.replace(/\.vtt$/i, '');
+    if (!base.toLowerCase().startsWith(stem)) continue;
+    const suffix = base.slice(stem.length);
+    const match = /\.([a-z]{2,3})$/i.exec(suffix);
+    const lang = match ? match[1].toLowerCase() : '';
+    if (!lang || seen.has(lang)) continue;
+    seen.add(lang);
+    tracks.push({ lang, label: SUBTITLE_LABELS[lang] || lang.toUpperCase(), file: name });
+  }
+  const rank = (lang) => {
+    const index = SUBTITLE_ORDER.indexOf(lang);
+    return index >= 0 ? index : SUBTITLE_ORDER.length;
+  };
+  return tracks.sort((a, b) => rank(a.lang) - rank(b.lang) || a.lang.localeCompare(b.lang));
+}
+
+app.get('/api/subtitles/:id', (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).json({ error: 'not found' });
+  res.json({ tracks: subtitleTracks(found.full) });
+});
+
+app.get('/api/subtitle/:id/:lang', (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).json({ error: 'not found' });
+  const lang = String(req.params.lang || '').toLowerCase();
+  const track = subtitleTracks(found.full).find((entry) => entry.lang === lang);
+  if (!track) return res.status(404).json({ error: 'subtitle not found' });
+  res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(path.join(path.dirname(found.full), track.file));
 });
 
 /* ---------- public-domain catalog ---------- */
@@ -402,8 +488,8 @@ app.post('/api/downloads/:id/retry', (req, res) => {
   res.json(job);
 });
 
-app.delete('/api/downloads/:id', (req, res) => {
-  const job = cancelDownload(req.params.id);
+app.delete('/api/downloads/:id', async (req, res) => {
+  const job = await cancelDownload(req.params.id);
   if (!job) return res.status(404).json({ error: 'download not found' });
   res.json(job);
 });

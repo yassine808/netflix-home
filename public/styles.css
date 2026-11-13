@@ -58,6 +58,51 @@ code { font-family: Consolas, "Courier New", monospace; }
 .nav-left, .nav-right { display: flex; align-items: center; gap: 22px; }
 .nav-right { gap: 14px; }
 
+/* Offline mode switch — the server enforces it, this is just the control. */
+.net-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 12px 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #e5e5e5;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+.net-switch:hover { background: rgba(255, 255, 255, 0.12); }
+.net-switch:disabled { opacity: 0.55; cursor: progress; }
+.net-switch-track {
+  width: 30px;
+  height: 17px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  transition: background 0.25s var(--ease);
+}
+.net-switch-knob {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  transform: translateX(0);
+  transition: transform 0.25s var(--spring);
+}
+.net-switch.is-offline { border-color: rgba(255, 176, 32, 0.55); color: #ffd08a; }
+.net-switch.is-offline .net-switch-track { background: #d98e00; }
+.net-switch.is-offline .net-switch-knob { transform: translateX(13px); }
+.net-switch-label { min-width: 44px; text-align: left; }
+@media (max-width: 520px) {
+  .net-switch { padding: 5px 8px 5px 7px; gap: 6px; }
+  .net-switch-label { display: none; }
+}
+
 .logo {
   color: var(--red);
   font-size: 30px;
@@ -316,6 +361,16 @@ code { font-family: Consolas, "Courier New", monospace; }
   transition: background 0.2s;
 }
 .mute-btn:hover { background: rgba(255, 255, 255, 0.15); }
+/* Autoplay was blocked: the preview keeps playing silently, so flag the button. */
+.mute-btn.blocked {
+  border-color: #ffb020;
+  color: #ffd08a;
+  animation: mute-nudge 2.4s ease-in-out 0.4s 3;
+}
+@keyframes mute-nudge {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 176, 32, 0); }
+  50% { box-shadow: 0 0 0 7px rgba(255, 176, 32, 0.18); }
+}
 .hero-rating {
   min-width: 96px;
   padding: 10px 18px 10px 22px;
@@ -774,6 +829,40 @@ code { font-family: Consolas, "Courier New", monospace; }
 .search-close:hover { color: #fff; }
 .search-body { padding: 34px 5% 70px; overflow-y: auto; }
 .search-hint { color: var(--muted); font-size: 15px; margin: 0 0 30px; }
+
+.search-history { display: flex; flex-wrap: wrap; gap: 10px; margin: -6px 0 26px; }
+.search-history[hidden] { display: none; }
+.history-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  overflow: hidden;
+  transition: background 0.2s;
+}
+.history-chip:hover { background: rgba(255, 255, 255, 0.15); }
+.history-query {
+  border: 0;
+  background: none;
+  color: #f0f0f0;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 8px 6px 8px 15px;
+  cursor: pointer;
+}
+.history-remove {
+  border: 0;
+  background: none;
+  color: #9a9a9a;
+  font-size: 11px;
+  line-height: 1;
+  padding: 9px 12px 9px 4px;
+  cursor: pointer;
+  transition: color 0.2s, transform 0.2s var(--spring);
+}
+.history-remove:hover { color: #fff; transform: scale(1.25); }
 .search-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 
 .search-section + .search-section {
