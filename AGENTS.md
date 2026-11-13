@@ -10,7 +10,7 @@ A local, Netflix-style streaming app. Node/Express backend scans a movie folder 
 npm install          # deps: express, ffmpeg-static, ffprobe-static
 npm start            # http://localhost:3000, scans G:\Movies
 npm run dev          # node --watch
-start.vbs            # hidden server + browser + minimized taskbar button (launcher.ps1)
+netflix-home.exe     # hidden server + browser + tray icon (source: launcher.cs)
 ```
 
 There is no test suite and no build step. Verify by starting the server and hitting the API:
@@ -27,7 +27,7 @@ Invoke-RestMethod http://localhost:3000/api/library
 - `public/watch.html` + `watch.js` + `watch.css` — custom player
 - `public/common.js` — shared formatting, storage, and API helpers
 - `.cache/` — generated metadata and thumbnails (gitignored)
-- `start.vbs` + `launcher.ps1` — desktop launcher: hidden server, opens the browser, minimized taskbar button
+- `netflix-home.exe` + `launcher.cs` — desktop launcher: hidden server, opens the browser, tray icon
 - `media/` — fallback library used when `G:\Movies` is not mounted; test videos can live here (gitignored)
 - `G:\Movies` — preferred library location; root is configurable via `LIBRARY_ROOT`
 

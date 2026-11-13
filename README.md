@@ -17,13 +17,23 @@ The server scans the library on startup. Use the refresh button in the header (o
 
 ### Launch from the desktop (no console)
 
-Double-click **`start.vbs`** (or a shortcut to it). It starts the server hidden, opens the app in your default browser, and leaves a minimized **netflix-home** button in the taskbar:
+Double-click **`netflix-home.exe`** (or a shortcut to it). It starts the server hidden, opens the app in your default browser, and parks a Netflix-style icon in the notification area (system tray):
 
-- click the taskbar button → the page opens in the default browser again and the button drops back to minimized
-- close that button (right-click → Close window) → the server it started is stopped
+- click the tray icon → the page opens in the default browser
+- right-click it → **Open netflix-home** / **Quit (stop server)**
+- quitting stops the server it started
 - if port 3000 is already served, the launcher attaches to it instead of starting a second server
+- launching it twice only reopens the page
 
-Diagnostics go to `launcher.log` (gitignored). The script is `launcher.ps1`; `start.vbs` just runs it without flashing a console.
+Windows 11 hides new tray icons by default. If the icon is not next to the clock, drag it out of the **^** overflow, or enable it in **Settings → Personalization → Taskbar → Other system tray icons**. Diagnostics go to `launcher.log` (gitignored).
+
+The launcher is a small WinForms app; the source is `launcher.cs` and it is rebuilt with:
+
+```powershell
+& "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe `
+  /win32icon:public\favicon.ico /out:netflix-home.exe `
+  /r:System.Windows.Forms.dll /r:System.Drawing.dll launcher.cs
+```
 
 ## Library folder
 
