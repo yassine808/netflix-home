@@ -10,6 +10,7 @@ import {
   initDownloads, searchCatalog, getCatalogItem, fallbackCatalog,
   addDownload, addSeriesDownload, listDownloads, getDownload, cancelDownload, retryDownload,
 } from './downloads.js';
+import { searchOnline, getOnlineTitle } from './online.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -185,6 +186,32 @@ app.get('/api/catalog/item/:identifier', async (req, res) => {
       error: err?.message || String(err),
       ...(err?.files ? { files: err.files } : {}),
     });
+  }
+});
+
+/* ---------- online catalog (metadata only) ---------- */
+
+app.get('/api/online/search', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.status(400).json({ error: 'q is required' });
+  if (q.length > 80) return res.status(400).json({ error: 'q is too long' });
+
+  try {
+    const data = await searchOnline(q);
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json(data);
+  } catch (err) {
+    res.status(err?.status || 502).json({ error: err?.message || String(err) });
+  }
+});
+
+app.get('/api/online/title/:type/:id', async (req, res) => {
+  try {
+    const data = await getOnlineTitle(req.params.type, req.params.id);
+    res.set('Cache-Control', 'public, max-age=1800');
+    res.json(data);
+  } catch (err) {
+    res.status(err?.status || 502).json({ error: err?.message || String(err) });
   }
 });
 

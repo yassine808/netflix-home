@@ -28,6 +28,30 @@ export async function getFallbackCatalog() {
   return res.json();
 }
 
+export async function searchOnline(query, { signal } = {}) {
+  const params = new URLSearchParams({ q: query });
+  const res = await fetch(`/api/online/search?${params}`, { cache: 'no-store', signal });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    throw new Error(payload?.error || `online search ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function getOnlineTitle(type, id, { signal } = {}) {
+  const res = await fetch(
+    `/api/online/title/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
+    { cache: 'no-store', signal },
+  );
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    throw new Error(payload?.error || `online title ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function getCatalogItem(identifier) {
   const res = await fetch(`/api/catalog/item/${encodeURIComponent(identifier)}`, { cache: 'no-store' });
   if (!res.ok) {

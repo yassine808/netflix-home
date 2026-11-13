@@ -3,6 +3,7 @@ import {
   qualityLabel, thumbUrl, toggleMyList, isInMyList, getMyList, progressFor,
   continueWatching, debounce, createEl,
   searchCatalog, getFallbackCatalog, getCatalogItem,
+  searchOnline, getOnlineTitle,
   startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload,
 } from './common.js';
 
@@ -30,6 +31,13 @@ const state = {
   downloads: [],
   downloadsSynced: false,
   downloadPoll: null,
+  onlineResults: [],
+  onlineLoading: false,
+  onlineError: '',
+  onlineToken: 0,
+  onlineAbort: null,
+  onlineCache: new Map(),
+  onlineTitle: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -64,6 +72,15 @@ const els = {
   searchClose: $('searchClose'),
   searchHint: $('searchHint'),
   searchResults: $('searchResults'),
+  searchLocalSection: $('searchLocalSection'),
+  searchLocalCount: $('searchLocalCount'),
+  searchLocalEmpty: $('searchLocalEmpty'),
+  searchOnlineSection: $('searchOnlineSection'),
+  searchOnlineCount: $('searchOnlineCount'),
+  searchOnlineResults: $('searchOnlineResults'),
+  searchOnlineLoading: $('searchOnlineLoading'),
+  searchOnlineEmpty: $('searchOnlineEmpty'),
+  searchOnlineError: $('searchOnlineError'),
   searchBtn: $('searchBtn'),
   refreshBtn: $('refreshBtn'),
   modal: $('modal'),
@@ -76,6 +93,18 @@ const els = {
   modalPlayLabel: $('modalPlayLabel'),
   modalList: $('modalList'),
   moreGrid: $('moreGrid'),
+  onlineModal: $('onlineModal'),
+  onlineBackdrop: $('onlineBackdrop'),
+  onlineKicker: $('onlineKicker'),
+  onlineTitle: $('onlineTitle'),
+  onlineMeta: $('onlineMeta'),
+  onlinePlot: $('onlinePlot'),
+  onlineWatchLink: $('onlineWatchLink'),
+  onlineImdbLink: $('onlineImdbLink'),
+  onlineFreeBtn: $('onlineFreeBtn'),
+  onlineSeasonBlock: $('onlineSeasonBlock'),
+  onlineSeasonTabs: $('onlineSeasonTabs'),
+  onlineEpisodes: $('onlineEpisodes'),
   toast: $('toast'),
   profile: $('profile'),
   profileBtn: $('profileBtn'),
@@ -959,6 +988,7 @@ function closeDownloads() {
 function syncBodyLock() {
   const open = !els.searchOverlay.hidden
     || isModalOpen()
+    || !els.onlineModal.hidden
     || !els.picker.hidden
     || !els.downloadsPanel.hidden;
   document.body.classList.toggle('modal-open', open);
@@ -990,6 +1020,23 @@ function fillGrid(container, items, emptyEl, emptyText) {
 
 /* ---------- search ---------- */
 
+const ONLINE_MIN_CHARS = 2;
+
+function resetOnlineSearch() {
+  state.onlineToken += 1;
+  state.onlineAbort?.abort();
+  state.onlineAbort = null;
+  state.onlineResults = [];
+  state.onlineLoading = false;
+  state.onlineError = '';
+  els.searchOnlineSection.hidden = true;
+  els.searchOnlineResults.replaceChildren();
+  els.searchOnlineLoading.hidden = true;
+  els.searchOnlineEmpty.hidden = true;
+  els.searchOnlineError.hidden = true;
+  els.searchOnlineCount.textContent = '';
+}
+
 function openSearch() {
   stopPreview();
   setMobileActive('search');
@@ -997,10 +1044,13 @@ function openSearch() {
   syncBodyLock();
   els.searchInput.value = '';
   els.searchResults.replaceChildren();
+  els.searchLocalEmpty.hidden = true;
+  els.searchLocalCount.textContent = '';
+  resetOnlineSearch();
   updateSearchArchive('');
   els.searchHint.textContent = state.items.length
-    ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library`
-    : 'Your library is empty — try archive.org below';
+    ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library and thousands of movies and series online`
+    : 'Search thousands of movies and series online';
   setTimeout(() => els.searchInput.focus(), 30);
 }
 
@@ -1009,31 +1059,290 @@ function closeSearch() {
   syncBodyLock();
   els.searchInput.blur();
   setMobileActive(['home', 'discover', 'movies', 'mylist'].includes(state.view) ? state.view : null);
-  if (state.view === 'home' && !isModalOpen()) setupPreview(state.byId.get(state.heroId));
+  if (state.view === 'home' && !isModalOpen() && els.onlineModal.hidden) {
+    setupPreview(state.byId.get(state.heroId));
+  }
 }
 
-const runSearch = debounce((query) => {
-  const q = query.trim().toLowerCase();
+const runSearch = debounce((raw) => {
+  const query = String(raw || '').trim();
+  const q = query.toLowerCase();
+
   if (!q) {
     els.searchResults.replaceChildren();
+    els.searchLocalEmpty.hidden = true;
+    els.searchLocalCount.textContent = '';
     updateSearchArchive('');
+    resetOnlineSearch();
     els.searchHint.textContent = state.items.length
-      ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library`
-      : 'Your library is empty — try archive.org below';
+      ? `Search ${state.items.length} title${state.items.length === 1 ? '' : 's'} in your library and thousands of movies and series online`
+      : 'Search thousands of movies and series online';
     return;
   }
+
+  els.searchHint.textContent = `Results for “${query}”`;
+  renderLocalResults(query, q);
   updateSearchArchive(query);
+
+  if (q.length < ONLINE_MIN_CHARS) {
+    resetOnlineSearch();
+    return;
+  }
+
+  els.searchOnlineSection.hidden = false;
+  const cached = state.onlineCache.get(q);
+  if (cached) {
+    state.onlineToken += 1;
+    state.onlineAbort?.abort();
+    state.onlineAbort = null;
+    renderOnlineResults(cached, query);
+    return;
+  }
+
+  state.onlineResults = [];
+  els.searchOnlineResults.replaceChildren();
+  els.searchOnlineCount.textContent = '';
+  els.searchOnlineEmpty.hidden = true;
+  els.searchOnlineError.hidden = true;
+  els.searchOnlineLoading.hidden = false;
+  fetchOnlineResults(query);
+}, 280);
+
+function renderLocalResults(query, q) {
   const results = state.items.filter((item) => {
     const hay = [item.title, item.fileName, item.year, item.collection, ...(item.genres || [])]
       .filter(Boolean).join(' ').toLowerCase();
     return hay.includes(q);
   });
-  els.searchHint.textContent = results.length
-    ? `${results.length} result${results.length === 1 ? '' : 's'} for "${query.trim()}"`
-    : `No results for "${query.trim()}" in your library — try archive.org`;
   els.searchResults.replaceChildren();
   results.forEach((item) => els.searchResults.append(buildCard(item)));
-}, 160);
+  els.searchLocalCount.textContent = results.length
+    ? `${results.length} title${results.length === 1 ? '' : 's'}`
+    : '';
+  els.searchLocalEmpty.hidden = results.length > 0;
+  if (!results.length) {
+    els.searchLocalEmpty.textContent = `Nothing in your library matches “${query}”. Online results are below.`;
+  }
+}
+
+async function fetchOnlineResults(query) {
+  const token = ++state.onlineToken;
+  const q = query.toLowerCase();
+  state.onlineAbort?.abort();
+  const controller = new AbortController();
+  state.onlineAbort = controller;
+  state.onlineLoading = true;
+
+  try {
+    const data = await searchOnline(query, { signal: controller.signal });
+    if (token !== state.onlineToken) return;
+    const results = Array.isArray(data.results) ? data.results : [];
+    state.onlineCache.set(q, results);
+    renderOnlineResults(results, query);
+  } catch (err) {
+    if (token !== state.onlineToken || err?.name === 'AbortError') return;
+    state.onlineResults = [];
+    state.onlineError = err?.message || 'unknown error';
+    els.searchOnlineResults.replaceChildren();
+    els.searchOnlineCount.textContent = '';
+    els.searchOnlineEmpty.hidden = true;
+    els.searchOnlineError.textContent = `Could not load online results (${state.onlineError}). Check your connection and try again.`;
+    els.searchOnlineError.hidden = false;
+  } finally {
+    if (token === state.onlineToken) {
+      state.onlineLoading = false;
+      els.searchOnlineLoading.hidden = true;
+    }
+  }
+}
+
+function renderOnlineResults(items, query) {
+  els.searchOnlineResults.replaceChildren();
+  items.forEach((item) => els.searchOnlineResults.append(buildOnlineCard(item)));
+  els.searchOnlineCount.textContent = items.length
+    ? `${items.length} title${items.length === 1 ? '' : 's'}`
+    : '';
+  els.searchOnlineLoading.hidden = true;
+  els.searchOnlineError.hidden = true;
+  els.searchOnlineEmpty.hidden = items.length > 0;
+  if (!items.length) {
+    els.searchOnlineEmpty.textContent = `No movies or series found online for “${query}”.`;
+  }
+}
+
+function buildOnlineCard(item) {
+  const card = createEl('article', 'online-card');
+  card.tabIndex = 0;
+  card.setAttribute('role', 'button');
+  card.setAttribute('aria-label', `View details for ${item.title}`);
+
+  const art = createEl('div', 'online-card-art');
+  const fallback = createEl('div', 'online-card-fallback');
+  fallback.append(createEl('span', '', item.title));
+
+  const img = document.createElement('img');
+  img.loading = 'lazy';
+  img.alt = '';
+  if (item.poster) img.src = item.poster;
+  img.addEventListener('load', () => img.classList.add('loaded'));
+  img.addEventListener('error', () => img.remove());
+
+  const badge = createEl('span', 'online-badge', item.type === 'series' ? 'Series' : 'Film');
+  const overlay = createEl('div', 'online-card-overlay');
+  overlay.append(createEl('strong', '', item.title));
+  overlay.append(createEl('span', '', [item.year, item.type === 'series' ? 'Series' : 'Film'].filter(Boolean).join(' • ')));
+
+  art.append(fallback, img, badge, overlay);
+  card.append(art);
+
+  const open = () => openOnlineModal(item);
+  card.addEventListener('click', open);
+  card.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      open();
+    }
+  });
+  return card;
+}
+
+/* ---------- online title modal ---------- */
+
+let onlineFocusEl = null;
+let onlineDetailToken = 0;
+
+async function openOnlineModal(item) {
+  if (!els.searchOverlay.hidden) closeSearch();
+  stopPreview();
+  onlineFocusEl = document.activeElement;
+  state.onlineTitle = item;
+  const token = ++onlineDetailToken;
+  els.onlineModal.hidden = false;
+  syncBodyLock();
+  els.onlineModal.scrollTop = 0;
+  populateOnlineModal(item);
+  setTimeout(() => els.onlineModal.querySelector('.modal-close')?.focus(), 40);
+
+  const cacheKey = `title:${item.type}:${item.id}`;
+  const cached = state.onlineCache.get(cacheKey);
+  if (cached) {
+    populateOnlineModal(cached);
+    return;
+  }
+
+  try {
+    const detail = await getOnlineTitle(item.type, item.id);
+    if (token !== onlineDetailToken) return;
+    state.onlineCache.set(cacheKey, detail);
+    populateOnlineModal(detail);
+  } catch {
+    if (token !== onlineDetailToken) return;
+    els.onlinePlot.textContent = item.description
+      || 'Full details are unavailable right now. The IMDb link below still works.';
+  }
+}
+
+function populateOnlineModal(item) {
+  state.onlineTitle = item;
+  els.onlineBackdrop.src = item.background || item.poster || '';
+  els.onlineBackdrop.hidden = !(item.background || item.poster);
+  els.onlineTitle.textContent = item.title;
+  els.onlineKicker.textContent = item.type === 'series' ? 'SERIES' : 'FILM';
+
+  const seasonCount = Array.isArray(item.seasons) ? item.seasons.length : 0;
+  const episodeCount = Number(item.episodeCount) || (Array.isArray(item.seasons)
+    ? item.seasons.reduce((sum, s) => sum + (s.episodes?.length || 0), 0)
+    : 0);
+
+  els.onlineMeta.replaceChildren();
+  const bits = [
+    item.year,
+    item.rating ? `★ ${Number(item.rating).toFixed(1)}` : '',
+    item.type === 'series' && seasonCount
+      ? `${seasonCount} season${seasonCount === 1 ? '' : 's'} · ${episodeCount} episode${episodeCount === 1 ? '' : 's'}`
+      : item.runtime,
+    Array.isArray(item.genres) ? item.genres.slice(0, 3).join(' · ') : '',
+  ].filter(Boolean);
+  bits.forEach((bit, index) => {
+    if (index > 0) els.onlineMeta.append(createEl('span', 'dot', '•'));
+    els.onlineMeta.append(createEl('span', index === 0 ? 'year' : '', bit));
+  });
+
+  els.onlinePlot.textContent = item.description
+    || 'No overview available for this title yet.';
+  els.onlineWatchLink.href = `https://www.justwatch.com/us/search?q=${encodeURIComponent(item.title)}`;
+  els.onlineImdbLink.href = `https://www.imdb.com/title/${encodeURIComponent(item.id)}/`;
+  renderOnlineSeasons(item);
+}
+
+function renderOnlineSeasons(item) {
+  const seasons = Array.isArray(item.seasons) ? item.seasons : [];
+  els.onlineSeasonBlock.hidden = seasons.length === 0;
+  els.onlineSeasonTabs.replaceChildren();
+  els.onlineEpisodes.replaceChildren();
+  if (!seasons.length) return;
+
+  const buttons = new Map();
+  const renderEpisodes = (entry) => {
+    els.onlineEpisodes.replaceChildren();
+    for (const episode of entry.episodes) {
+      const row = createEl('article', 'episode-row');
+
+      if (episode.thumbnail) {
+        const thumb = document.createElement('img');
+        thumb.className = 'episode-thumb';
+        thumb.loading = 'lazy';
+        thumb.alt = '';
+        thumb.src = episode.thumbnail;
+        thumb.addEventListener('error', () => thumb.remove());
+        row.append(thumb);
+      }
+
+      const main = createEl('div', 'episode-main');
+      const head = createEl('div', 'episode-head');
+      head.append(createEl('span', 'episode-number', `E${episode.episode}`));
+      head.append(createEl('strong', '', episode.title));
+      main.append(head);
+
+      const date = new Date(episode.released);
+      if (!Number.isNaN(date.getTime())) {
+        main.append(createEl('span', 'episode-date', date.toLocaleDateString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+        })));
+      }
+      if (episode.overview) main.append(createEl('p', 'episode-overview', episode.overview));
+      row.append(main);
+      els.onlineEpisodes.append(row);
+    }
+  };
+
+  seasons.forEach((entry, index) => {
+    const btn = createEl('button', 'season-tab', `Season ${entry.season}`);
+    btn.type = 'button';
+    btn.addEventListener('click', () => {
+      buttons.forEach((value) => value.classList.remove('active'));
+      btn.classList.add('active');
+      renderEpisodes(entry);
+      els.onlineEpisodes.scrollTop = 0;
+    });
+    buttons.set(entry.season, btn);
+    els.onlineSeasonTabs.append(btn);
+    if (index === 0) btn.classList.add('active');
+  });
+  renderEpisodes(seasons[0]);
+}
+
+function closeOnlineModal() {
+  if (els.onlineModal.hidden) return;
+  els.onlineModal.hidden = true;
+  state.onlineTitle = null;
+  onlineDetailToken += 1;
+  syncBodyLock();
+  onlineFocusEl?.focus?.();
+  if (state.view === 'home' && !isModalOpen()) {
+    setupPreview(state.byId.get(state.heroId));
+  }
+}
 
 /* ---------- modal ---------- */
 
@@ -1227,6 +1536,7 @@ function bindStaticEvents() {
     if (e.target === els.searchOverlay) closeSearch();
   });
   els.searchResults.addEventListener('click', () => closeSearch());
+  els.searchOnlineResults.addEventListener('click', () => closeSearch());
   els.searchArchiveBtn.addEventListener('click', () => {
     const q = els.searchArchiveBtn.dataset.q || els.searchInput.value.trim();
     closeSearch();
@@ -1263,16 +1573,24 @@ function bindStaticEvents() {
   });
 
   els.modal.querySelectorAll('[data-close-modal]').forEach((el) => el.addEventListener('click', closeModal));
+  els.onlineModal.querySelectorAll('[data-close-online]').forEach((el) => el.addEventListener('click', closeOnlineModal));
+  els.onlineFreeBtn.addEventListener('click', () => {
+    const title = state.onlineTitle?.title;
+    closeOnlineModal();
+    showDiscover(title || '');
+  });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (!els.picker.hidden) closePicker();
       else if (!els.downloadsPanel.hidden) closeDownloads();
+      else if (!els.onlineModal.hidden) closeOnlineModal();
       else if (!els.searchOverlay.hidden) closeSearch();
       else if (isModalOpen()) closeModal();
       else closeProfile();
     }
     if (e.key === 'Tab') {
       if (isModalOpen()) trapFocus(e, els.modal);
+      else if (!els.onlineModal.hidden) trapFocus(e, els.onlineModal);
       else if (!els.picker.hidden) trapFocus(e, els.picker);
     }
   });

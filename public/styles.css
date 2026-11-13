@@ -776,6 +776,149 @@ code { font-family: Consolas, "Courier New", monospace; }
 .search-hint { color: var(--muted); font-size: 15px; margin: 0 0 30px; }
 .search-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 
+.search-section + .search-section {
+  margin-top: 46px;
+  padding-top: 36px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+}
+.search-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.search-section-head h2 { margin: 0; font-size: clamp(19px, 1.8vw, 24px); font-weight: 700; letter-spacing: -0.01em; }
+.search-count { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.search-source { margin: -10px 0 18px; color: var(--muted-2); font-size: 12px; }
+.search-empty { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.search-error { margin: 0; color: #ff9a9a; font-size: 14px; line-height: 1.6; }
+
+.online-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 28px 10px;
+}
+.online-card { cursor: pointer; outline: none; }
+.online-card-art {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #242424;
+  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
+}
+.online-card:hover .online-card-art,
+.online-card:focus-visible .online-card-art { transform: scale(1.045); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.62); }
+.online-card:focus-visible .online-card-art { outline: 2px solid var(--red); outline-offset: 2px; }
+.online-card-art img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.35s;
+}
+.online-card-art img.loaded { opacity: 1; }
+.online-card-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  color: #8f8f8f;
+  font-size: 14px;
+  font-weight: 600;
+}
+.online-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 3px 7px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.online-card-overlay {
+  position: absolute;
+  inset: auto 0 0;
+  padding: 40px 10px 10px;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.92), transparent);
+}
+.online-card-overlay strong { display: block; font-size: 13px; line-height: 1.35; }
+.online-card-overlay span { display: block; margin-top: 2px; color: #b9b9b9; font-size: 11px; }
+.online-loading { display: flex; align-items: center; gap: 14px; padding: 20px 0 10px; color: var(--muted); font-size: 14px; }
+.online-loading .spinner { width: 22px; height: 22px; border-width: 2px; }
+
+/* ---------- online title modal ---------- */
+
+.modal-panel.online-panel { width: min(940px, 94vw); }
+.online-hero { position: relative; min-height: 410px; height: 50vh; background: #0f0f0f; }
+.online-hero > img { width: 100%; height: 100%; object-fit: cover; object-position: center 28%; }
+.online-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.72), transparent 55%);
+  pointer-events: none;
+}
+.online-kicker {
+  display: inline-block;
+  margin-bottom: 10px;
+  color: #d7d7d7;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+}
+.online-body { padding: 6px 46px 38px; }
+.online-body .modal-plot { max-width: 780px; }
+.online-body .btn-ghost { border: 1px solid rgba(255, 255, 255, 0.35); background: rgba(255, 255, 255, 0.08); color: #fff; }
+.online-body .btn-ghost:hover { background: rgba(255, 255, 255, 0.18); }
+.online-season-block { margin-top: 30px; padding-top: 26px; border-top: 1px solid var(--line); }
+.online-season-block h3 { margin: 0 0 14px; font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase; color: #8a8a8a; }
+.season-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.season-tab {
+  padding: 8px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 4px;
+  color: #cfcfcf;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.18s, color 0.18s, border-color 0.18s;
+}
+.season-tab:hover { border-color: #fff; color: #fff; }
+.season-tab.active { background: #fff; border-color: #fff; color: #000; }
+.episode-list { max-height: 430px; overflow-y: auto; padding-right: 6px; }
+.episode-row {
+  display: flex;
+  gap: 16px;
+  padding: 14px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.episode-row:last-child { border-bottom: 0; }
+.episode-thumb {
+  flex: 0 0 130px;
+  width: 130px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 3px;
+  background: #232323;
+}
+.episode-main { min-width: 0; flex: 1; }
+.episode-head { display: flex; align-items: baseline; gap: 10px; }
+.episode-number { flex: 0 0 auto; color: var(--muted-2); font-size: 12px; font-weight: 700; letter-spacing: 0.06em; }
+.episode-head strong { font-size: 14px; line-height: 1.4; }
+.episode-date { display: block; margin-top: 3px; color: var(--muted-2); font-size: 12px; }
+.episode-overview { margin: 7px 0 0; color: #b9b9b9; font-size: 13px; line-height: 1.6; }
+.online-note { margin: 28px 0 0; color: var(--muted-2); font-size: 12px; line-height: 1.6; }
+
 .search-archive {
   display: flex;
   align-items: center;
@@ -1151,6 +1294,12 @@ code { font-family: Consolas, "Courier New", monospace; }
   .modal-hero-content h1 { max-width: 100%; }
   .modal-more .grid { grid-template-columns: repeat(2, 1fr); }
   .search-top { padding: 20px 4.5%; }
+  .online-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 20px 8px; }
+  .online-hero { min-height: 320px; height: 40vh; }
+  .online-body { padding: 6px 20px 30px; }
+  .episode-thumb { flex-basis: 96px; width: 96px; }
+  .episode-head { flex-wrap: wrap; gap: 4px 8px; }
+  .episode-overview { display: none; }
   .catalog-grid { grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); gap: 18px 8px; }
   .catalog-download { opacity: 1; transform: none; padding: 7px; }
   .catalog-download span { display: none; }
