@@ -1294,17 +1294,20 @@ function wakeIdle() {
 }
 
 function bindIdle() {
-  $('idleResume').addEventListener('click', () => {
+  /* Resume and the backdrop do the same thing: close the screen and play. */
+  const resume = () => {
     hideIdle();
-    togglePlay();
-  });
+    if (video.paused) togglePlay();
+    else { showUi(); armHideUi(); }
+  };
+  $('idleResume').addEventListener('click', resume);
   $('idleHome').addEventListener('click', (e) => {
     e.preventDefault();
     leaveToHome();
   });
-  /* tapping the backdrop closes the screen; the buttons keep their own action */
+  /* Anywhere but the two buttons resumes, the same as pressing Resume. */
   idleEl.addEventListener('pointerdown', (e) => {
-    if (!e.target.closest('.idle-resume, .idle-home')) wakeIdle();
+    if (!e.target.closest('.idle-resume, .idle-home')) resume();
   });
   /* Hovering must not dismiss the screen: a passing cursor would otherwise
    * wake the player, and only the Resume button should start playback again. */
