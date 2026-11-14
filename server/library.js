@@ -426,7 +426,15 @@ export async function scanLibrary(root) {
     }
     const changed = dirty.length > 0 || removed.length > 0 || dirRows.length > 0;
     if (db) {
+      let hasState = false;
       try {
+        hasState = Boolean(db.prepare('SELECT 1 AS ok FROM scan_state WHERE root = ?').get(root));
+      } catch {
+        /* table missing; the insert below recreates the row */
+      }
+      // A no-op scan writes nothing at all: no WAL churn, no timestamp drift.
+      if (changed || !hasState) {
+        try {
         transaction(() => {
           const remove = db.prepare('DELETE FROM items WHERE rel_path = ?');
           for (const rel of removed) remove.run(rel);
@@ -470,8 +478,9 @@ export async function scanLibrary(root) {
               last_ms = excluded.last_ms`)
             .run(root, Math.round(Date.now() / 1000), nextItems.length, now, Date.now() - started);
         });
-      } catch (err) {
-        console.warn('catalog write failed:', err?.message || String(err));
+        } catch (err) {
+          console.warn('catalog write failed:', err?.message || String(err));
+        }
       }
     }
 

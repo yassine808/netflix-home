@@ -104,14 +104,25 @@ initDownloads({
  * runs when something actually appeared. */
 let refreshTimer = null;
 let watchTimer = null;
+let watchMutedUntil = 0;
+let watchDirty = false;
 
 async function refreshLibrary(reason) {
+  // Writing catalog.db (WAL) is itself a change under the watched root, so the
+  // watcher is muted for the duration of a refresh and shortly after it.
+  watchMutedUntil = Date.now() + 60000;
   let lib;
   try {
     lib = await scanLibrary(libraryRoot);
   } catch (err) {
     console.warn('scan failed:', err?.message || String(err));
     return null;
+  } finally {
+    watchMutedUntil = Date.now() + 2000;
+    if (watchDirty) {
+      watchDirty = false;
+      queueRefresh(600);
+    }
   }
   const scan = lib.scan || {};
   if (scan.changed) {
@@ -139,6 +150,10 @@ function watchLibrary() {
       // writes itself lives under .cache and must not trigger a scan.
       const abs = path.isAbsolute(rel) ? rel : path.join(libraryRoot, rel);
       if (path.resolve(abs).toLowerCase().startsWith(cacheRoot)) return;
+      if (Date.now() < watchMutedUntil) {
+        watchDirty = true;
+        return;
+      }
       if (watchTimer) clearTimeout(watchTimer);
       watchTimer = setTimeout(() => {
         watchTimer = null;
