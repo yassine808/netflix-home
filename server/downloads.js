@@ -262,6 +262,29 @@ function qualityFromHeight(height) {
 }
 
 /**
+ * What a click would actually download, without downloading it: the ranked
+ * release list, the English gate and the winning candidate. The download sheet
+ * shows the same numbers, so its quality label cannot drift from the job.
+ * Returns null when Torrentio has nothing usable (Castle is the fallback).
+ */
+export async function planTorrentRelease({ imdbId, season = 0, episode = 0, originalLanguage = '' } = {}) {
+  if (!/^tt\d{4,10}$/.test(String(imdbId || '').trim())) return null;
+
+  const streams = await findReleases({ imdbId: String(imdbId).trim(), isSeries: Number(season) > 0, season, episode });
+  if (!streams.length) return null;
+  const ranked = rankReleases(streams, { originalLanguage: text(originalLanguage) });
+  if (!ranked.length) return null;
+
+  /* Prefer releases that ship English; untagged ones stay as fallbacks, in the
+   * ranked order. When every tagged release is a different language (Thai-only,
+   * Polish lektor), hand the episode to Castle instead of downloading a guess. */
+  if (!ranked.some(hasEnglish) && ranked.some(declaresLanguages)) return null;
+  const pool = ranked.filter((release) => hasEnglish(release) || !declaresLanguages(release));
+  if (!pool.length) return null;
+  return { release: pool[0], candidates: pool.slice(0, MAX_CANDIDATES) };
+}
+
+/**
  * Queue a torrent download: Torrentio lists the releases, the healthiest H.264
  * 1080p one is fetched with aria2c, then remuxed to a browser-friendly MP4 with
  * the original audio + English and every embedded subtitle as a .vtt sidecar.
@@ -282,19 +305,14 @@ export async function addTorrentDownload(body = {}) {
   const seriesTitle = text(body.seriesTitle) || text(body.title) || 'video';
   const title = isSeries ? `${seriesTitle} S${pad2(season)}E${pad2(episode)}` : seriesTitle;
 
-  const streams = await findReleases({ imdbId, isSeries, season, episode });
-  if (!streams.length) return null;
-  const ranked = rankReleases(streams, { originalLanguage: text(body.originalLanguage) });
-  if (!ranked.length) return null;
-
-  /* Prefer releases that ship English; untagged ones stay as fallbacks, in the
-   * ranked order. When every tagged release is a different language (Thai-only,
-   * Polish lektor), hand the episode to Castle instead of downloading a guess. */
-  if (!ranked.some(hasEnglish) && ranked.some(declaresLanguages)) return null;
-  const pool = ranked.filter((release) => hasEnglish(release) || !declaresLanguages(release));
-  const candidates = pool.slice(0, MAX_CANDIDATES);
-  if (!candidates.length) return null;
-  if (!candidates.length) return null;
+  const plan = await planTorrentRelease({
+    imdbId,
+    season,
+    episode,
+    originalLanguage: text(body.originalLanguage),
+  });
+  if (!plan) return null;
+  const candidates = plan.candidates;
 
   const collection = sanitizeSegment(body.collection || 'Downloads', 'Downloads');
   const folder = body.folder ? sanitizeSegment(body.folder, '') : '';
@@ -307,11 +325,16 @@ export async function addTorrentDownload(body = {}) {
   const fileName = sanitizeFileName(torrentFileName({ seriesTitle, season, episode, year: body.year }, top.quality));
   const known = findExisting(fileName);
   if (known) {
-    const already = [];
-    already.skipped = [{ fileName, id: known.id, title: known.displayTitle || known.title }];
-    return already;
+    return {
+      count: 0,
+      jobs: [],
+      skipped: [{ fileName, id: known.id, title: known.displayTitle || known.title }],
+      source: 'torrentio',
+      quality: top.quality,
+      seeders: top.seeders,
+      release: top.name,
+    };
   }
-
   // The file name carries the final height, which is only known after probing;
   // reserve the download-library path lazily in the job.
   const job = {

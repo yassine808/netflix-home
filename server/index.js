@@ -16,6 +16,7 @@ import {
   initDownloads,
   addHlsDownload,
   addTorrentDownload,
+  planTorrentRelease,
   listDownloads, cancelDownload, retryDownload,
   pauseDownloads, resumeDownloads,
 } from './downloads.js';
@@ -1201,6 +1202,96 @@ app.get('/api/releases', async (req, res) => {
   }
 });
 
+/* The download sheet asks what a click would fetch, so it can show the real
+ * Torrentio quality and size instead of Castle's free 720p file. One Torrentio
+ * request per episode, four at a time; answers are cached briefly because the
+ * ranking rarely moves between two openings of the same sheet. */
+const RELEASE_PLAN_TTL = 10 * 60 * 1000;
+const releasePlans = new Map();
+
+function cachedPlan(key) {
+  const hit = releasePlans.get(key);
+  if (hit && Date.now() - hit.at < RELEASE_PLAN_TTL) return hit.value;
+  releasePlans.delete(key);
+  return null;
+}
+
+async function eachLimit(items, limit, worker) {
+  const out = new Array(items.length);
+  let next = 0;
+  const run = async () => {
+    while (next < items.length) {
+      const index = next++;
+      out[index] = await worker(items[index]).catch(() => null);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+  return out;
+}
+
+app.get('/api/castle/plan', async (req, res) => {
+  const movieId = String(req.query.movieId || '');
+  const episodeId = String(req.query.episodeId || '');
+  const title = String(req.query.title || '').trim();
+  const season = Math.max(0, Number(req.query.season) || 0);
+  const episodes = String(req.query.episodes || '')
+    .split(',')
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value >= 0)
+    .slice(0, 30);
+  if (!title || !episodes.length) {
+    return res.status(400).json({ error: 'title and episodes are required' });
+  }
+
+  try {
+    const imdbId = await resolveImdbId({
+      title,
+      seriesTitle: title,
+      isSeries: season > 0,
+      id: `castle:${movieId}`,
+      seriesKey: `castle:${movieId}`,
+    });
+    if (!imdbId) return res.json({ source: 'castle', imdbId: '', original: '', episodes: [] });
+
+    // Ranking nudges the release that carries the original audio; Castle knows it.
+    let original = String(req.query.original || '');
+    if (!original && episodeId) {
+      const tracks = await getCastleEpisodeTracks({ movieId, episodeId }).catch(() => null);
+      original = tracks?.original || '';
+    }
+
+    const rows = await eachLimit(episodes, 4, async (episode) => {
+      const key = `${imdbId}:${season}:${episode}:${original}`;
+      let plan = cachedPlan(key);
+      if (!plan) {
+        plan = await planTorrentRelease({ imdbId, season, episode, originalLanguage: original });
+        releasePlans.set(key, { at: Date.now(), value: plan });
+      }
+      if (!plan) return { episode, quality: '' };
+      const { release } = plan;
+      return {
+        episode,
+        quality: release.quality,
+        codec: release.codec,
+        sizeBytes: release.sizeBytes,
+        seeders: release.seeders,
+        release: release.name,
+        fileName: release.fileName,
+      };
+    });
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      source: rows.some((row) => row?.quality) ? 'torrentio' : 'castle',
+      imdbId,
+      original,
+      episodes: rows.filter(Boolean),
+    });
+  } catch (err) {
+    res.status(502).json({ error: err?.message || String(err) });
+  }
+});
+
 app.post('/api/castle/download', async (req, res) => {
   const body = req.body;
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -1310,6 +1401,16 @@ app.post('/api/castle/download', async (req, res) => {
       subtitles,
       audioTracks,
     });
+    if (jobs.skipped?.length) {
+      return res.status(200).json({
+        count: 0,
+        jobs: [],
+        skipped: jobs.skipped,
+        source: 'castle',
+        quality,
+        originalAudio: audio?.original || '',
+      });
+    }
     res.status(201).json({
       count: jobs.length,
       jobs,
@@ -1364,8 +1465,8 @@ app.post('/api/quit', (req, res) => {
   }, 200);
 });
 
-/* Assets are cached for a year, so their URLs carry a stamp that changes
- * whenever one of the files does. HTML itself is revalidated on every load. */
+/* Assets revalidate on every load (`no-cache`), and their URLs still carry this
+ * stamp so a content change also changes the URL. */
 const ASSET_VERSION = (() => {
   const hash = crypto.createHash('sha1');
   for (const name of ['app.js', 'common.js', 'watch.js', 'styles.css', 'watch.css', 'fonts.css']) {
@@ -1396,8 +1497,11 @@ app.use(express.static(publicDir, {
   extensions: ['html'],
   setHeaders(res, filePath) {
     if (/\.html$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+    /* The UI ships without content hashes, so a year-long immutable cache kept
+     * an old app.js/styles.css in the browser after every deploy. Revalidate
+     * instead: express answers 304 in a millisecond when nothing changed. */
     else if (/\.(?:js|css|woff2?|ttf|otf|ico)$/i.test(filePath)) {
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('Cache-Control', 'no-cache');
     } else if (/\.mp4$/i.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=86400');
   },
 }));

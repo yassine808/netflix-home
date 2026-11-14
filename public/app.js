@@ -68,6 +68,8 @@ const state = {
   castleBusy: false,
   castleDetailToken: 0,
   castleSeasonToken: 0,
+  castlePlanCache: new Map(),
+  castlePlanToken: 0,
   castleTrailerToken: 0,
   castleTrailerTimer: null,
   castleTrailerPlayTimer: null,
@@ -180,6 +182,7 @@ const els = {
   castleResume: $('castleResume'),
   castleDownloadBlock: $('castleDownloadBlock'),
   castleSize: $('castleSize'),
+  castleSource: $('castleSource'),
   castleSeasonTabs: $('castleSeasonTabs'),
   castleEpisodes: $('castleEpisodes'),
   castleStatus: $('castleStatus'),
@@ -2507,9 +2510,36 @@ async function openCastleModal(item) {
   }
 }
 
-/* The quality picker is gone: every download from this sheet is 720p. The
- * size line still totals the 720p files the catalog lists. */
+/* The sheet shows what a click actually fetches. Torrentio is the download
+ * source, so the sheet asks the server which release would win for each episode
+ * and paints that quality and size; Castle's free 720p numbers stay as the
+ * fallback when Torrentio has nothing with English audio. */
+const CASTLE_PLAN_TTL = 5 * 60 * 1000;
+let castlePlanInFlight = '';
+
+function castlePlanKey(detail, season) {
+  return `${detail?.id || ''}:${Number(season) || 0}`;
+}
+
+function castlePlanFor(detail, episode) {
+  const season = detail?.activeSeason ?? state.castleSeason ?? 0;
+  const entry = state.castlePlanCache.get(castlePlanKey(detail, season));
+  if (!entry) return null;
+  return entry.episodes.get(Number(episode)) || null;
+}
+
 function renderCastleSizes(detail, episodes) {
+  const plans = episodes.map((episode) => castlePlanFor(detail, episode.episode));
+  const planned = plannedSummary(plans);
+
+  if (planned) {
+    const label = detail.type === 'series' && episodes.length
+      ? `${episodes.length} episode${episodes.length === 1 ? '' : 's'} · ${planned.quality}`
+      : planned.quality;
+    els.castleSize.textContent = [label, `≈ ${formatSize(planned.total)}`].filter(Boolean).join(' · ');
+    return CASTLE_RESOLUTION;
+  }
+
   let total = 0;
   episodes.forEach((episode) => {
     const match = (episode.resolutions || []).find((entry) => entry.resolution === CASTLE_RESOLUTION);
@@ -2520,6 +2550,89 @@ function renderCastleSizes(detail, episodes) {
     : qualityName(CASTLE_RESOLUTION);
   els.castleSize.textContent = [label, total ? `≈ ${formatSize(total)}` : ''].filter(Boolean).join(' · ');
   return CASTLE_RESOLUTION;
+}
+
+/* Only a complete set of per-episode plans is shown: mixing Torrentio sizes
+ * with Castle's 720p sizes would total two different things. */
+function plannedSummary(plans) {
+  if (!plans.length || plans.some((plan) => !plan?.quality)) return null;
+  const total = plans.reduce((sum, plan) => sum + (Number(plan.sizeBytes) || 0), 0);
+  if (!total) return null;
+  const counts = new Map();
+  plans.forEach((plan) => counts.set(plan.quality, (counts.get(plan.quality) || 0) + 1));
+  const quality = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  const codec = plans.find((plan) => plan.codec)?.codec;
+  return { total, quality: codec === 'hevc' ? `${quality} HEVC` : codec ? `${quality} H.264` : quality };
+}
+
+/* Paint a plan the server already answered: header total, per-episode quality
+ * and size, and one line naming the source (with subtitles). */
+function applyCastlePlan(detail, episodes) {
+  const season = detail.activeSeason ?? state.castleSeason ?? 0;
+  const entry = state.castlePlanCache.get(castlePlanKey(detail, season));
+  if (!entry) return;
+  renderCastleSizes(detail, episodes);
+  els.castleSource.textContent = entry.source === 'torrentio'
+    ? 'Video + subtitles from Torrentio'
+    : `Castle fallback · ${qualityName(CASTLE_RESOLUTION)}`;
+
+  const localMap = state.castleLocal?.local || null;
+  els.castleEpisodes.querySelectorAll('.castle-episode').forEach((row) => {
+    const number = Number(row.dataset.episode);
+    const local = localMap ? localMap.get(`${season}x${number}`) : null;
+    if (local) return;
+    const plan = entry.episodes.get(number);
+    const meta = row.querySelector('.episode-date');
+    if (!meta || !plan?.quality) return;
+    const episode = episodes.find((item) => Number(item.episode) === number);
+    meta.textContent = [
+      formatDuration(episode?.duration),
+      plan.quality,
+      plan.sizeBytes ? formatSize(plan.sizeBytes) : '',
+    ].filter(Boolean).join(' · ');
+  });
+}
+
+function loadCastlePlan(detail, episodes) {
+  if (!/^\d{6,20}$/.test(String(detail?.id || ''))) return;
+  const numbers = episodes.map((episode) => Number(episode.episode)).filter((value) => Number.isFinite(value));
+  if (!numbers.length) return;
+
+  const season = detail.activeSeason ?? state.castleSeason ?? 0;
+  const key = castlePlanKey(detail, season);
+  const cached = state.castlePlanCache.get(key);
+  if (cached && Date.now() - cached.at < CASTLE_PLAN_TTL) return;
+  if (castlePlanInFlight === key) return;
+  castlePlanInFlight = key;
+
+  const token = ++state.castlePlanToken;
+  els.castleSource.textContent = 'Checking Torrentio releases…';
+
+  const params = new URLSearchParams({
+    movieId: String(detail.id),
+    episodeId: String(episodes[0]?.episodeId || ''),
+    title: detail.title,
+    season: String(season),
+    episodes: numbers.join(','),
+  });
+
+  fetch(`/api/castle/plan?${params}`, { cache: 'no-store' })
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data) => {
+      if (!data || token !== state.castlePlanToken) return;
+      state.castlePlanCache.set(key, {
+        at: Date.now(),
+        source: data.source,
+        episodes: new Map((data.episodes || []).map((row) => [Number(row.episode), row])),
+      });
+      applyCastlePlan(detail, episodes);
+    })
+    .catch(() => {
+      if (token === state.castlePlanToken) els.castleSource.textContent = '';
+    })
+    .finally(() => {
+      if (castlePlanInFlight === key) castlePlanInFlight = '';
+    });
 }
 
 const EP_DOWNLOAD_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg>';
@@ -2729,6 +2842,7 @@ function appendCastleAction(row, detail, episode, local, quality) {
     btn.addEventListener('click', openDownloads);
   } else if (job && job.status === 'failed') {
     paint(EP_DOWNLOAD_ICON, 'Retry');
+    btn.title = job.error || 'The last attempt failed';
     btn.disabled = !quality;
     btn.addEventListener('click', () => queueCastleEpisode(episode, btn));
   } else {
@@ -2749,6 +2863,7 @@ function renderCastleDownloads(detail) {
   els.castleSeasonTabs.replaceChildren();
   els.castleStatus.textContent = '';
   els.castleStatus.hidden = false;
+  els.castleSource.textContent = 'Checking Torrentio releases…';
   updateCastleListButton(detail);
 
   const localMap = state.castleLocal?.local || null;
@@ -2839,6 +2954,7 @@ function renderCastleDownloads(detail) {
     const quality = (episode.resolutions || []).find((entry) => entry.resolution === selected)
       || (episode.quality && episode.quality.resolution === selected ? episode.quality : null);
     const job = local ? null : castleJobFor(detail, detail.activeSeason ?? state.castleSeason, episode.episode);
+    const plan = local ? null : castlePlanFor(detail, episode.episode);
     const sub = local
       ? [
         local.episodeLabel || `S${String(local.season).padStart(2, '0')}E${String(local.episode).padStart(2, '0')}`,
@@ -2847,11 +2963,16 @@ function renderCastleDownloads(detail) {
       ].filter(Boolean).join(' · ')
       : [
         formatDuration(episode.duration),
-        quality ? qualityName(quality.resolution) : 'Not available',
-        quality?.size ? formatSize(quality.size) : '',
+        plan?.quality || (quality ? qualityName(quality.resolution) : 'Not available'),
+        plan?.sizeBytes ? formatSize(plan.sizeBytes) : quality?.size ? formatSize(quality.size) : '',
         job && job.status === 'downloading' ? 'Downloading' : '',
       ].filter(Boolean).join(' · ');
     main.append(createEl('span', 'episode-date', sub));
+
+    /* A failed job keeps its reason on the row: "Retry" alone hides why. */
+    if (job && job.status === 'failed' && job.error) {
+      main.append(createEl('span', 'episode-error', job.error));
+    }
 
     if (local) {
       const progress = progressFor(local.id);
@@ -2869,6 +2990,11 @@ function renderCastleDownloads(detail) {
     appendCastleAction(row, detail, episode, local, quality);
     els.castleEpisodes.append(row);
   });
+
+  const planSeason = detail.activeSeason ?? state.castleSeason ?? 0;
+  const planCached = state.castlePlanCache.get(castlePlanKey(detail, planSeason));
+  if (planCached && Date.now() - planCached.at < CASTLE_PLAN_TTL) applyCastlePlan(detail, episodes);
+  else loadCastlePlan(detail, episodes);
 }
 
 async function selectCastleSeason(season) {
@@ -2948,17 +3074,26 @@ async function queueCastleEpisode(episode, btn) {
       size: quality?.size || 0,
       poster: detail.poster,
     });
-    const quality = result?.quality || qualityName(CASTLE_RESOLUTION);
+    if (Array.isArray(result?.skipped) && result.skipped.length) {
+      btn.classList.add('queued');
+      btn.querySelector('span').textContent = 'In library';
+      toast(`${label} is already in your library`);
+      return;
+    }
+    const queuedQuality = result?.quality || qualityName(CASTLE_RESOLUTION);
     btn.classList.add('queued');
     btn.querySelector('span').textContent = 'Queued';
-    toast(`${label} queued — ${quality}`);
-    notify('start', label, `Queued — ${quality}${result?.source === 'torrentio' ? ' · Torrentio' : ''}`);
+    toast(`${label} queued — ${queuedQuality}`);
+    notify('start', label, `Queued — ${queuedQuality}${result?.source === 'torrentio' ? ' · Torrentio' : ''}`);
     openDownloads();
     refreshDownloads();
   } catch (err) {
     btn.disabled = false;
     btn.querySelector('span').textContent = 'Retry';
-    els.castleStatus.textContent = `Could not queue ${label}: ${err.message}`;
+    btn.title = err.message;
+    const message = `Could not queue ${label}: ${err.message}`;
+    els.castleStatus.textContent = message;
+    toast(message);
   }
 }
 
@@ -3047,6 +3182,11 @@ async function queueCastleSeason() {
         size: quality.size,
         poster: detail.poster,
       });
+      // The file was already on disk: the server queued nothing.
+      if (Array.isArray(result?.skipped) && result.skipped.length) {
+        skipped += 1;
+        continue;
+      }
       queued += 1;
       if (result?.source === 'torrentio') torrentio += 1;
       if (result?.quality) lastQuality = result.quality;

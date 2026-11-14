@@ -2038,6 +2038,10 @@ body.leaving .downloads { opacity: 0; transition: opacity 0.18s ease; }
 .castle-controls .season-bar { margin: 0; display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .castle-controls .season-tabs { margin: 0; }
 .castle-controls .castle-size { margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; }
+/* Second line under the size: where the video and subtitles come from. */
+.castle-controls .castle-source { flex: 1 0 100%; order: 9; margin-top: -6px; font-size: 11.5px; color: var(--muted-2); text-align: right; }
+.castle-controls .castle-source:empty { display: none; }
+.castle-modal .episode-error { display: block; margin-top: 4px; color: #e87c03; font-size: 12px; line-height: 1.4; }
 .castle-controls .castle-all-btn { height: 34px; padding: 0 16px; font-size: 12.5px; }
 /* Keep "Delete all" and "Download all" side by side when the bar wraps. */
 .castle-control-actions {
