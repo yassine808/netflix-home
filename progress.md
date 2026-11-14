@@ -252,3 +252,9 @@
 - Done: `DROP TABLE kv` on `G:\NETFLIX\.cache\catalog.db` (13 tables now; WAL checkpointed). `server/settings.js` stores an optional TMDB key (v3 hex or v4 JWT), read from `settings.json` or `TMDB_API_KEY`; `GET /api/settings` only exposes `tmdbConfigured`. `POST /api/settings/tmdb` validates the key against `/3/configuration` before saving, `DELETE` clears it. `server/trailers.js` resolves IMDb id -> TMDB `/find` -> `/movie|tv/{id}/videos`, prefers official Trailer over Teaser, and still falls back to Cinemeta when no key is set or TMDB misses.
 - Verified: syntax clean; temp server shows `tmdbConfigured:false`, empty key and a fake key both rejected with 400, and the Cinemeta fallback downloaded the Cyberpunk Edgerunners trailer (yt `JtqIas3bYhg`, 7.8 MB) into a fresh temp cache. TMDB path waits for a real key.
 - Next: set the key, rebuild, deploy.
+
+### 2026-11-14 - keyless trailers: Cinemeta plus YouTube search
+- Goal: drop the TMDB key requirement and use a free source that works without signup.
+- Done: reverted the TMDB integration (settings key, `POST/DELETE /api/settings/tmdb`, `/find` + `/videos` resolver). `server/trailers.js` keeps Cinemeta (keyless, full official trailer) and falls back to `ytsearch5:"<title> <year> official trailer"` with `--ignore-errors` and a 20-900 s duration filter when Cinemeta has no entry. A search result is stored with an empty `youtube_id`; the file path is what matters.
+- Verified: iTunes Search API was tried first but returns `resultCount: 0` for every movie query from this machine, so it is not usable. yt-dlp search returns the right trailer for Cyberpunk Edgerunners (`JtqIas3bYhg`, 137 s). End-to-end on a temp library with a fake title that Cinemeta cannot resolve: row `status=ready`, 4.96 MB downloaded via search, no errors.
+- Next: rebuild, deploy, confirm the real library still resolves through Cinemeta.
