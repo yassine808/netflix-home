@@ -1,5 +1,6 @@
 import {
   formatClock, formatDuration, progressFor, saveProgress, thumbUrl, heroImageUrl, readJson, writeJson, getSeries,
+  skel,
 } from './common.js';
 
 const $ = (id) => document.getElementById(id);
@@ -60,6 +61,8 @@ let lastTimeLabel = '';
 let seekQueued = false;
 let lastSeekAt = 0;
 let seriesSeasons = [];
+let episodesLoading = false;
+let subtitlesLoading = false;
 
 const UI_HIDE_DELAY = 3000;
 const PREVIEW_HALF_MIN = 84;
@@ -133,6 +136,8 @@ async function init() {
   videoTitle.textContent = item.seriesTitle
     || (item.isSeries ? full.replace(/\s*[·•-]\s*S\d+E\d+\s*$/i, '') : (item.title || full));
   epTag.textContent = item.isSeries ? `S${item.season}:E${item.episode}` : '';
+  videoTitle.classList.remove('sk-text');
+  epTag.classList.remove('sk-text');
   document.body.style.background = '#000';
   video.poster = thumbUrl(item);
   video.src = `/api/stream/${encodeURIComponent(item.id)}`;
@@ -150,6 +155,7 @@ async function init() {
 
 function bindEvents() {
   video.addEventListener('loadedmetadata', () => {
+    timeEl.classList.remove('sk-text');
     duration = Number.isFinite(video.duration) ? video.duration : item.durationSec || 0;
     if (pendingResume > 0) {
       const startAt = resumeStart();
@@ -389,6 +395,10 @@ function leaveToHome() {
  * immediately; one that is only in the download catalog opens the series sheet
  * on that season so its Download button is in front of the user. */
 async function loadNextEpisode() {
+  if (item?.isSeries) {
+    nextWrap.hidden = false;
+    nextWrap.classList.add('is-loading'); // greyed placeholder until the answer arrives
+  }
   try {
     const res = await fetch(`/api/next/${encodeURIComponent(id)}`, { cache: 'no-store' });
     if (!res.ok) return;
@@ -407,6 +417,9 @@ async function loadNextEpisode() {
       : `Open ${tag} to download`);
   } catch {
     /* button stays hidden when the lookup fails */
+  } finally {
+    nextWrap.classList.remove('is-loading');
+    if (!nextEpisode) nextWrap.hidden = true;
   }
 }
 
@@ -414,14 +427,23 @@ async function loadNextEpisode() {
 
 async function loadEpisodes() {
   if (!item?.isSeries || !item.seriesKey) return;
+  // The button is there at once; the panel shows placeholders until the list arrives.
+  episodesLoading = true;
+  epBtn.hidden = false;
+  epPanel.classList.add('is-loading');
   try {
     const data = await getSeries(item.seriesKey);
     seriesSeasons = (data.seasons || []).filter((s) => s.episodes?.length);
   } catch {
     seriesSeasons = [];
   }
-  if (!seriesSeasons.length) return;
-  epBtn.hidden = false;
+  episodesLoading = false;
+  epPanel.classList.remove('is-loading');
+  if (!seriesSeasons.length) {
+    epBtn.hidden = true;
+    toggleEpPanel(false, true);
+    return;
+  }
   epSeason.replaceChildren(...seriesSeasons.map((s) => {
     const opt = document.createElement('option');
     opt.value = String(s.season);
@@ -430,9 +452,27 @@ async function loadEpisodes() {
   }));
   epSeason.value = String(item.season);
   if (!epSeason.value) epSeason.selectedIndex = 0;
+  if (!epPanel.hidden) renderEpisodes(Number(epSeason.value));
+}
+
+function renderEpisodesSkeleton(count = 5) {
+  epList.replaceChildren(...Array.from({ length: count }, () => {
+    const row = document.createElement('div');
+    row.className = 'ep-item ep-sk';
+    row.setAttribute('aria-hidden', 'true');
+    const lines = document.createElement('div');
+    lines.className = 'ep-sk-lines';
+    lines.append(skel('', '60%', '13px'), skel('', '34%', '10px'));
+    row.append(skel('ep-sk-num', '14px', '14px'), skel('ep-sk-thumb'), lines);
+    return row;
+  }));
 }
 
 function renderEpisodes(season) {
+  if (episodesLoading) {
+    renderEpisodesSkeleton();
+    return;
+  }
   const entry = seriesSeasons.find((s) => s.season === season) || seriesSeasons[0];
   epList.replaceChildren();
   if (!entry) return;
@@ -589,6 +629,8 @@ function saveSubtitleStyle() {
 async function initSubtitles() {
   loadSubtitlePrefs();
   updateOffsetLabel();
+  subtitlesLoading = true;
+  renderSubtitleList();
   try {
     const res = await fetch(`/api/subtitles/${encodeURIComponent(id)}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -598,6 +640,8 @@ async function initSubtitles() {
     subtitleTracks = [];
   }
 
+  subtitlesLoading = false;
+  ccBtn.classList.remove('is-loading');
   renderSubtitleList();
   syncCcButton();
 
@@ -623,6 +667,13 @@ function syncCcButton() {
 
 function renderSubtitleList() {
   ccList.replaceChildren();
+  if (subtitlesLoading) {
+    for (let i = 0; i < 3; i += 1) {
+      const row = skel('cc-sk', i === 0 ? '40%' : `${60 - i * 12}%`, '16px');
+      ccList.append(row);
+    }
+    return;
+  }
   const options = [{ lang: '', label: 'Off' }, ...subtitleTracks];
   for (const option of options) {
     const btn = document.createElement('button');
@@ -1085,6 +1136,7 @@ function onKeyDown(e) {
 }
 
 function showError(message) {
+  for (const el of [videoTitle, epTag, timeEl]) el.classList.remove('sk-text');
   errorBox.hidden = false;
   $('errorText').textContent = message;
   loading.hidden = true;

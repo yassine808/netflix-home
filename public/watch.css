@@ -753,3 +753,75 @@ body.leaving .player {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------- loading skeletons ---------- */
+
+@keyframes sk-bg {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+@keyframes sk-sweep { 100% { transform: translateX(100%); } }
+@keyframes sk-pulse { 50% { opacity: 0.18; } }
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.14), transparent);
+  animation: sk-sweep 1.25s ease-in-out infinite;
+}
+
+/* text that is not known yet: title, episode tag, remaining time */
+.sk-text {
+  color: transparent !important;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12) linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.16) 50%, transparent 70%) 0 0 / 250% 100%;
+  animation: sk-bg 1.3s linear infinite;
+  user-select: none;
+}
+.player-tag .sk-text { overflow: hidden; }
+
+/* buttons waiting for data keep their place, dimmed */
+.ctrl.is-loading,
+.next-wrap.is-loading {
+  opacity: 0.4;
+  pointer-events: none;
+  animation: sk-pulse 1.2s ease-in-out infinite;
+}
+
+/* episodes panel */
+.ep-panel.is-loading .ep-season-wrap {
+  height: 38px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1) linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.16) 50%, transparent 70%) 0 0 / 250% 100%;
+  animation: sk-bg 1.3s linear infinite;
+}
+.ep-panel.is-loading .ep-season { visibility: hidden; }
+.ep-sk { pointer-events: none; }
+.ep-sk:hover { background: none; }
+.ep-sk-num { flex: 0 0 22px; border-radius: 4px; margin: 0 4px 0 0; }
+.ep-sk-thumb { flex: 0 0 124px; aspect-ratio: 16 / 9; border-radius: 6px; }
+.ep-sk-lines { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.ep-thumb:has(img[src]:not(.img-ready))::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.12) 50%, transparent 70%) 0 0 / 250% 100%;
+  animation: sk-bg 1.3s linear infinite;
+}
+
+/* subtitle list */
+.cc-sk { margin: 11px; border-radius: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after, .sk-text, .ctrl.is-loading, .next-wrap.is-loading,
+  .ep-panel.is-loading .ep-season-wrap, .ep-thumb:has(img[src]:not(.img-ready))::before { animation: none; }
+}

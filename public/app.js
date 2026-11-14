@@ -8,6 +8,7 @@ import {
   deleteLibraryItem, startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   getSettings, setOfflineMode,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
+  setImg, skel, skelLines, skelMeta, skelCards, skelPoster, skelCatalogCard, skelEpisodes, skelFileRow, skelDownload,
 } from './common.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'downloading', 'cancelling']);
@@ -44,6 +45,7 @@ const state = {
   pickerFiles: [],
   downloads: [],
   downloadsSynced: false,
+  downloadsLoaded: false,
   downloadPoll: null,
   notifs: [],
   onlineResults: [],
@@ -91,6 +93,7 @@ const els = {
   heroRating: $('heroRating'),
   rows: $('rows'),
   loading: $('loading'),
+  dlSkeleton: $('dlSkeleton'),
   emptyHero: $('emptyHero'),
   emptyPath: $('emptyPath'),
   emptyStatus: $('emptyStatus'),
@@ -279,8 +282,29 @@ function initBoot() {
   });
 }
 
+/* Placeholders for panels that are filled by the network: the search result
+ * grids and the downloads drawer. Everything else builds its skeleton on demand. */
+function initSkeletons() {
+  const loaders = [
+    [els.searchCastleLoading, 'Checking the download catalog'],
+    [els.searchOnlineLoading, 'Searching movies and series'],
+  ];
+  for (const [el, label] of loaders) {
+    el.classList.add('sk-loading');
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-label', label);
+    const grid = createEl('div', 'online-grid');
+    grid.append(...Array.from({ length: 6 }, skelPoster));
+    el.replaceChildren(grid);
+  }
+  els.downloadsCount.replaceChildren(skel('sk-line', '120px', '11px'));
+  els.dlSkeleton.replaceChildren(...Array.from({ length: 3 }, skelDownload));
+  els.downloadsEmpty.hidden = true;
+}
+
 async function boot() {
   initBoot();
+  initSkeletons();
   bindStaticEvents();
   getSettings()
     .then((settings) => {
@@ -324,8 +348,8 @@ async function loadLibrary({ first = false } = {}) {
     console.error(err);
     if (first) {
       els.loading.hidden = false;
+      els.loading.classList.add('is-error');
       els.emptyHero.hidden = true;
-      els.loading.querySelector('p').textContent = 'Could not reach the server. Is netflix-home running?';
     }
   }
 }
@@ -344,6 +368,7 @@ function readSheetDeepLink() {
 }
 
 function updateLoadingState() {
+  els.loading.classList.remove('is-error');
   const noItems = state.items.length === 0;
   const scanning = Boolean(state.library?.scanning);
   els.loading.hidden = !noItems || !scanning;
@@ -681,9 +706,10 @@ function heroArt(item) {
   const img = els.heroImg;
   img.onerror = () => {
     img.onerror = null;
-    img.src = heroImageUrl(item);
+    img.classList.remove('img-ready');
+    setImg(img, heroImageUrl(item));
   };
-  img.src = thumbUrl(item);
+  setImg(img, thumbUrl(item));
 }
 
 function setupPreview(item) {
@@ -1095,8 +1121,17 @@ function showHome() {
   setView('home');
 }
 
+/* Library not read yet: card-shaped placeholders instead of an empty page. */
+function gridLoading(title) {
+  els.gridTitle.textContent = title;
+  els.gridSub.replaceChildren(skel('grid-sub-sk'));
+  els.grid.replaceChildren(...skelCards(12));
+  els.gridEmpty.hidden = true;
+}
+
 function showMovies() {
   setView('movies');
+  if (!state.library) return gridLoading('Movies');
   const groups = groupLibrary();
   els.gridTitle.textContent = 'Movies';
   els.gridSub.textContent = `${groups.length} title${groups.length === 1 ? '' : 's'} in ${state.library?.root || 'your library'}`;
@@ -1113,6 +1148,7 @@ function remoteListCards() {
 
 function showMyList() {
   setView('mylist');
+  if (!state.library) return gridLoading('My List');
   const groups = groupLibrary();
   const items = [...groupItems(groups, getMyList()), ...remoteListCards()];
   els.gridTitle.textContent = 'My List';
@@ -1167,11 +1203,14 @@ function showDiscover(query = '') {
 
 function setCatalogBusy(busy) {
   state.catalogLoading = busy;
-  els.catalogLoading.hidden = !busy;
-  els.catalogGrid.hidden = busy;
+  els.catalogLoading.hidden = true; // the spinner is replaced by skeleton cards
+  els.catalogGrid.hidden = false;
+  els.catalogGrid.setAttribute('aria-busy', String(busy));
   if (busy) {
+    els.catalogGrid.replaceChildren(...Array.from({ length: 12 }, skelCatalogCard));
     els.catalogEmpty.hidden = true;
-    els.discoverNote.hidden = true;
+    els.discoverNote.hidden = false;
+    els.discoverNote.replaceChildren(skel('sk-line'));
   }
 }
 
@@ -1301,15 +1340,16 @@ async function openPicker(result) {
   state.pickerFiles = [];
   els.picker.hidden = false;
   syncBodyLock();
-  els.pickerImg.src = result.thumb || '';
+  setImg(els.pickerImg, result.thumb || '');
   els.pickerImg.alt = result.title || '';
   els.pickerImg.hidden = !result.thumb;
   els.pickerTitle.textContent = result.title || result.identifier;
   els.pickerMeta.textContent = [result.year, result.creator].filter(Boolean).join(' • ') || 'archive.org';
-  els.pickerDesc.textContent = 'Loading details from archive.org…';
-  els.pickerFiles.replaceChildren();
+  els.pickerDesc.replaceChildren(skelLines(3));
+  els.pickerFiles.replaceChildren(...Array.from({ length: 3 }, skelFileRow));
   els.pickerStatus.textContent = '';
   els.pickerDownload.disabled = true;
+  els.pickerDownload.classList.add('is-skeleton');
   els.pickerDownloadLabel.textContent = 'Download';
   els.pickerSeries.hidden = true;
   els.pickerSeries.disabled = false;
@@ -1322,6 +1362,8 @@ async function openPicker(result) {
     renderPickerFiles(item);
   } catch (err) {
     if (state.pickerItem !== result) return;
+    els.pickerDownload.classList.remove('is-skeleton');
+    els.pickerFiles.replaceChildren();
     els.pickerDesc.textContent = `Could not load this title: ${err.message}`;
     els.pickerStatus.textContent = 'Close this window and try again in a moment.';
   }
@@ -1335,6 +1377,7 @@ function renderPickerFiles(item) {
   };
   const files = [...(item.files || [])].sort((a, b) => extRank(a.name) - extRank(b.name) || b.size - a.size);
   state.pickerFiles = files;
+  els.pickerDownload.classList.remove('is-skeleton');
   els.pickerDesc.textContent = item.description
     || 'A public-domain title from archive.org. Pick a file to download into your library.';
   els.pickerFiles.replaceChildren();
@@ -1441,6 +1484,7 @@ async function refreshDownloads({ initial = false } = {}) {
     const previous = new Map(state.downloads.map((job) => [job.id, job.status]));
     const jobs = data.jobs || [];
     state.downloads = jobs;
+    state.downloadsLoaded = true;
     if (data.root) els.downloadsRoot.textContent = `Saving to ${data.root}`;
     renderDownloads();
     updateDownloadsBadge();
@@ -1473,6 +1517,11 @@ async function refreshDownloads({ initial = false } = {}) {
     }
   } catch {
     /* keep the last known list when the server is unreachable */
+    if (!state.downloadsLoaded) {
+      state.downloadsLoaded = true; // stop the skeleton; the poll keeps retrying
+      renderDownloads();
+      updateDownloadsBadge();
+    }
   }
 }
 
@@ -1545,7 +1594,8 @@ function renderDownloads() {
   fill(els.dlQueued, queued, true);
   fill(els.dlDone, finished);
   fill(els.dlFailed, failed);
-  els.downloadsEmpty.hidden = all.length > 0;
+  els.dlSkeleton.hidden = state.downloadsLoaded;
+  els.downloadsEmpty.hidden = all.length > 0 || !state.downloadsLoaded;
 }
 
 function tweenNumber(el, to) {
@@ -2243,7 +2293,7 @@ async function openOnlineModal(item) {
   els.onlineModal.hidden = false;
   syncBodyLock();
   els.onlineModal.scrollTop = 0;
-  populateOnlineModal(item);
+  populateOnlineModal(item, { loading: !state.onlineCache.has(`title:${item.type}:${item.id}`) });
   setTimeout(() => els.onlineModal.querySelector('.modal-close')?.focus(), 40);
 
   const cacheKey = `title:${item.type}:${item.id}`;
@@ -2260,14 +2310,15 @@ async function openOnlineModal(item) {
     populateOnlineModal(detail);
   } catch {
     if (token !== onlineDetailToken) return;
+    populateOnlineModal(item); // drops the skeletons, keeps what we already know
     els.onlinePlot.textContent = item.description
       || 'Full details are unavailable right now. The IMDb link below still works.';
   }
 }
 
-function populateOnlineModal(item) {
+function populateOnlineModal(item, { loading = false } = {}) {
   state.onlineTitle = item;
-  els.onlineBackdrop.src = item.background || item.poster || '';
+  setImg(els.onlineBackdrop, item.background || item.poster || '');
   els.onlineBackdrop.hidden = !(item.background || item.poster);
   els.onlineTitle.textContent = item.title;
   els.onlineKicker.textContent = item.type === 'series' ? 'SERIES' : 'FILM';
@@ -2290,12 +2341,20 @@ function populateOnlineModal(item) {
     if (index > 0) els.onlineMeta.append(createEl('span', 'dot', '•'));
     els.onlineMeta.append(createEl('span', index === 0 ? 'year' : '', bit));
   });
+  if (loading && !bits.length) els.onlineMeta.append(skelMeta());
 
-  els.onlinePlot.textContent = item.description
-    || 'No overview available for this title yet.';
+  if (!item.description && loading) els.onlinePlot.replaceChildren(skelLines(3));
+  else els.onlinePlot.textContent = item.description || 'No overview available for this title yet.';
   els.onlineWatchLink.href = `https://www.justwatch.com/us/search?q=${encodeURIComponent(item.title)}`;
   els.onlineImdbLink.href = `https://www.imdb.com/title/${encodeURIComponent(item.id)}/`;
   renderOnlineSeasons(item);
+  if (loading && item.type === 'series' && !(item.seasons || []).length) renderOnlineSeasonSkeleton();
+}
+
+function renderOnlineSeasonSkeleton() {
+  els.onlineSeasonBlock.hidden = false;
+  els.onlineSeasonTabs.replaceChildren(skel('sk-pill'), skel('sk-pill'), skel('sk-pill'));
+  els.onlineEpisodes.replaceChildren(...skelEpisodes(3, { button: false }));
 }
 
 function renderOnlineSeasons(item) {
@@ -2436,16 +2495,8 @@ function toggleCastleList() {
 }
 
 /* Shimmer placeholders while a catalogue sheet loads its seasons/episodes. */
-function renderCastleSkeleton(count = 5) {
-  els.castleStatus.textContent = '';
-  els.castleStatus.hidden = false;
-  els.castleSeasonTabs.hidden = false;
-  els.castleSeasonTabs.replaceChildren();
-  for (let i = 0; i < 2; i += 1) {
-    els.castleSeasonTabs.append(createEl('div', 'season-tab skeleton skeleton-pill'));
-  }
-  els.castleEpisodes.replaceChildren();
-  for (let i = 0; i < count; i += 1) {
+function castleSkeletonRows(count) {
+  return Array.from({ length: count }, () => {
     const row = createEl('div', 'castle-skel-row');
     row.append(createEl('div', 'skeleton castle-skel-thumb'));
     const lines = createEl('div', 'castle-skel-lines');
@@ -2453,8 +2504,32 @@ function renderCastleSkeleton(count = 5) {
     lines.append(createEl('div', 'skeleton castle-skel-sub'));
     row.append(lines);
     row.append(createEl('div', 'skeleton castle-skel-btn'));
-    els.castleEpisodes.append(row);
+    return row;
+  });
+}
+
+/* Quality chips, size line, "Download all" and the episode rows all become
+ * placeholders; renderCastleDownloads swaps in the real ones. */
+function renderCastleSkeleton(count = 5, { series = true } = {}) {
+  els.castleStatus.textContent = '';
+  els.castleStatus.hidden = false;
+  els.castleSeasonTabs.hidden = false;
+  els.castleSeasonTabs.replaceChildren();
+  for (let i = 0; i < 2; i += 1) {
+    els.castleSeasonTabs.append(createEl('div', 'season-tab skeleton skeleton-pill'));
   }
+  els.castleQuality.replaceChildren(skel('sk-pill'), skel('sk-pill'), skel('sk-pill'));
+  els.castleSize.replaceChildren(skel('sk-line', '150px', '12px'));
+  els.castleSeasonDownload.hidden = !series;
+  els.castleSeasonDownload.disabled = true;
+  els.castleSeasonDownload.textContent = 'Download all';
+  els.castleSeasonDownload.classList.add('is-skeleton');
+  els.castleEpisodes.replaceChildren(...castleSkeletonRows(count));
+}
+
+function clearCastleSkeleton() {
+  els.castleSeasonDownload.classList.remove('is-skeleton');
+  els.castleSize.replaceChildren();
 }
 
 /* Keep the open sheet in step with the download queue: queued turns into a
@@ -2479,12 +2554,13 @@ function syncCastleSheet() {
   renderCastleDownloads(state.castleTitle);
 }
 
-function populateCastleModal(item) {
-  els.castleBackdrop.src = item.background || item.poster || '';
+function populateCastleModal(item, { loading = false } = {}) {
+  setImg(els.castleBackdrop, item.background || item.poster || '');
   els.castleBackdrop.hidden = !(item.background || item.poster);
   els.castleTitle.textContent = item.title;
   els.castleKicker.textContent = 'DOWNLOAD';
-  els.castlePlot.textContent = item.description || 'No overview available for this title yet.';
+  if (!item.description && loading) els.castlePlot.replaceChildren(skelLines(3));
+  else els.castlePlot.textContent = item.description || 'No overview available for this title yet.';
   els.castleModal.scrollTop = 0;
 
   const bits = [
@@ -2501,6 +2577,7 @@ function populateCastleModal(item) {
     if (index > 0) els.castleMeta.append(createEl('span', 'dot', '•'));
     els.castleMeta.append(createEl('span', index === 0 ? 'year' : '', bit));
   });
+  if (loading && !bits.length) els.castleMeta.append(skelMeta());
   updateCastleListButton(item);
 }
 
@@ -2517,14 +2594,10 @@ async function openCastleModal(item) {
   const token = ++state.castleDetailToken;
   els.castleModal.hidden = false;
   syncBodyLock();
-  populateCastleModal(item);
-  els.castleDownloadBlock.hidden = true;
-  els.castleSeasonDownload.hidden = true;
+  populateCastleModal(item, { loading: true });
+  els.castleDownloadBlock.hidden = false;
   els.castleResume.hidden = true;
-  els.castleEpisodes.replaceChildren();
-  els.castleQuality.replaceChildren();
-  els.castleSeasonTabs.replaceChildren();
-  renderCastleSkeleton();
+  renderCastleSkeleton(5, { series: item.type === 'series' });
   setTimeout(() => els.castleModal.querySelector('.modal-close')?.focus(), 40);
 
   try {
@@ -2550,6 +2623,12 @@ async function openCastleModal(item) {
     }
   } catch (err) {
     if (token !== state.castleDetailToken) return;
+    clearCastleSkeleton();
+    populateCastleModal(item);
+    els.castleEpisodes.replaceChildren();
+    els.castleQuality.replaceChildren();
+    els.castleSeasonTabs.replaceChildren();
+    els.castleSeasonDownload.hidden = true;
     els.castleStatus.textContent = `Could not load download options (${err.message}).`;
     els.castleStatus.hidden = false;
   }
@@ -2775,6 +2854,7 @@ function appendCastleAction(row, detail, episode, local, quality) {
 }
 
 function renderCastleDownloads(detail) {
+  clearCastleSkeleton();
   const episodes = castleEpisodesOf(detail);
   els.castleDownloadBlock.hidden = false;
   els.castleEpisodes.replaceChildren();
@@ -2920,7 +3000,7 @@ async function selectCastleSeason(season) {
   }
 
   els.castleStatus.textContent = `Loading season ${season}…`;
-  els.castleEpisodes.replaceChildren();
+  els.castleEpisodes.replaceChildren(...castleSkeletonRows(4));
   if (!/^\d{6,20}$/.test(String(detail.id || ''))) {
     // Library preview is on screen before the catalog answered: switch tabs
     // from local data and let the catalog merge pick the season up.
@@ -3210,7 +3290,7 @@ function resumeTarget(group) {
 
 function populateSeriesHero(group, detail) {
   const image = detail?.background || detail?.poster || '';
-  els.castleBackdrop.src = image || heroImageUrl({ id: group.id });
+  setImg(els.castleBackdrop, image || heroImageUrl({ id: group.id }));
   els.castleBackdrop.hidden = false;
   els.castleTitle.textContent = group.title;
   els.castleKicker.textContent = 'IN YOUR LIBRARY';
@@ -3314,6 +3394,7 @@ async function openSeriesSheet(group, focusId) {
   } catch (err) {
     if (token !== state.castleDetailToken) return;
     // No catalog entry (offline, unknown show): the library panel still works.
+    clearCastleSkeleton();
     els.castleModal.hidden = true;
     syncBodyLock();
     state.castleLocal = null;
@@ -3339,7 +3420,7 @@ function openLibraryModal(id) {
   els.modal.hidden = false;
   syncBodyLock();
   els.modal.scrollTop = 0;
-  els.modalImg.src = thumbUrl(group);
+  setImg(els.modalImg, thumbUrl(group));
   els.modalImg.alt = group.title;
   els.modalTitle.textContent = group.title;
 
@@ -3430,6 +3511,9 @@ function renderSeriesBlock(group) {
     });
     els.seriesSeasons.append(btn);
   }
+  const findingMore = Boolean(group.seriesKey && state.seriesCatalogLoading.has(group.seriesKey));
+  if (findingMore) els.seriesSeasons.append(skel('sk-pill'));
+  els.seriesFind.classList.toggle('is-skeleton', findingMore);
   els.seriesFind.disabled = state.offline;
   els.seriesFind.textContent = state.offline ? 'Go online to find more' : 'Find more episodes';
   renderSeriesEpisodes(episodes, group);
@@ -3463,7 +3547,8 @@ function renderSeriesEpisodes(episodes, group) {
   }
   rows.sort((a, b) => a.number - b.number);
 
-  if (!rows.length) {
+  const findingMore = Boolean(group?.seriesKey && state.seriesCatalogLoading.has(group.seriesKey));
+  if (!rows.length && !findingMore) {
     els.seriesEpisodes.append(createEl('p', 'series-empty', 'No episodes on disk for this season.'));
     return;
   }
@@ -3472,6 +3557,8 @@ function renderSeriesEpisodes(episodes, group) {
     if (row.local) els.seriesEpisodes.append(seriesEpisodeRow(row.local, group));
     else els.seriesEpisodes.append(catalogEpisodeRow(row.catalog, group));
   }
+  // The download catalog is still answering: more episodes may appear below.
+  if (findingMore) els.seriesEpisodes.append(...skelEpisodes(2));
 }
 
 function seriesEpisodeRow(raw, group) {
@@ -3596,12 +3683,16 @@ async function hydrateSeriesCatalog(group) {
   const key = group.seriesKey;
   if (state.seriesCatalog.has(key) || state.seriesCatalogLoading.has(key)) return;
   state.seriesCatalogLoading.add(key);
+  if (modalItemId === group.id) renderSeriesBlock(group); // draws the loading rows
   try {
     const data = await getSeriesCatalog(key);
     state.seriesCatalog.set(key, data);
+    state.seriesCatalogLoading.delete(key);
     if (modalItemId === group.id && state.seriesCatalog.size) renderSeriesBlock(group);
   } catch {
     /* offline, unknown title, or older server: keep local episodes */
+    state.seriesCatalogLoading.delete(key);
+    if (modalItemId === group.id) renderSeriesBlock(group);
   } finally {
     state.seriesCatalogLoading.delete(key);
   }

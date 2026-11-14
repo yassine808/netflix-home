@@ -2262,3 +2262,177 @@ body.leaving .picker { opacity: 0; transition: opacity 0.18s ease; }
 
 /* overflow:clip keeps the rounded corners but lets the controls bar stick to the scrolling modal */
 .castle-modal .modal-panel { overflow: clip; }
+
+/* =====================================================================
+   Loading skeletons
+   Everything below only draws placeholders; real content replaces them.
+   ===================================================================== */
+
+@keyframes sk-bg {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+
+/* Shimmer behind images that are still loading (see setImg / markReady in common.js). */
+:is(.card, .top10-art, .catalog-art, .online-card-art, .hero-media, .modal-hero, .online-hero):has(> img[src]:not(.img-ready))::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.09) 50%, transparent 70%) 0 0 / 250% 100%;
+  animation: sk-bg 1.3s linear infinite;
+}
+.episode-thumb[src]:not(.img-ready),
+.picker-head img[src]:not(.img-ready) {
+  background: #202020 linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.09) 50%, transparent 70%) 0 0 / 250% 100%;
+  animation: sk-bg 1.3s linear infinite;
+}
+
+/* shapes */
+.sk-lines { display: flex; flex-direction: column; width: 100%; }
+.sk-line { height: 12px; border-radius: 4px; max-width: 100%; }
+.sk-chip { width: 34px; height: 21px; border-radius: 3px; }
+.sk-pill { width: 66px; height: 29px; border-radius: 999px; }
+.sk-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.sk-art { width: 100%; aspect-ratio: 2 / 3; border-radius: 12px; }
+.sk-card { pointer-events: none; }
+.sk-poster, .sk-catalog { display: flex; flex-direction: column; gap: 9px; pointer-events: none; }
+.sk-catalog .sk-art { aspect-ratio: 16 / 10; margin-bottom: 4px; }
+.sk-dot { flex: 0 0 16px; width: 16px; height: 16px; border-radius: 50%; }
+
+.sk-episode {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.sk-episode:last-child { border-bottom: 0; }
+.sk-episode-thumb { flex: 0 0 130px; width: 130px; aspect-ratio: 16 / 9; border-radius: 8px; }
+.sk-episode-lines { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; }
+.sk-episode-btn { flex: 0 0 auto; width: 118px; height: 34px; border-radius: 4px; }
+.sk-file {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.sk-download { display: flex; gap: 14px; padding: 12px; border-radius: 10px; background: rgba(255, 255, 255, 0.03); }
+.sk-download-thumb { flex: 0 0 64px; width: 64px; aspect-ratio: 2 / 3; border-radius: 6px; }
+.dl-skeleton { display: flex; flex-direction: column; gap: 12px; }
+.dl-skeleton .sk-download-thumb { aspect-ratio: 16 / 9; width: 96px; flex-basis: 96px; }
+
+/* Buttons keep their size while loading: the label turns into a shimmer. */
+.is-skeleton {
+  position: relative;
+  overflow: hidden;
+  color: transparent !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  pointer-events: none;
+  user-select: none;
+}
+.is-skeleton svg, .is-skeleton > * { opacity: 0; }
+.is-skeleton::after,
+.btn.is-skeleton::after,
+.btn-play.is-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 1;
+  transform: none;
+  transition: none;
+  border: 0;
+  box-shadow: none;
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.14) 50%, transparent 70%) 0 0 / 250% 100%;
+  animation: sk-bg 1.3s linear infinite;
+}
+/* an existing element whose text is not known yet */
+.sk-text {
+  color: transparent !important;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1) linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.14) 50%, transparent 70%) 0 0 / 250% 100%;
+  animation: sk-bg 1.3s linear infinite;
+  text-shadow: none !important;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* ---------- home: hero + rows while the library loads ---------- */
+
+/* #rows (empty, margin-top: -10vh) sits above this block, so cancel its net offset */
+.loading.home-skeleton { display: block; padding: 0; gap: 0; margin-top: calc(10vh - 30px); color: var(--muted); }
+.sk-hero-title { height: clamp(34px, 5vw, 70px); width: 88%; margin-bottom: 12px; border-radius: 8px; }
+.sk-hero-title.short { width: 56%; margin-bottom: 22px; }
+.sk-hero-label { width: 150px; height: 17px; margin-bottom: 16px; }
+.sk-hero-actions { display: flex; gap: 12px; margin-top: 24px; }
+.sk-hero-btn { height: 64px; width: 190px; border-radius: 10px; }
+.sk-hero-btn.alt { width: 210px; }
+.sk-hero .hero-media { background: #0b0b0b; }
+.sk-hero .hero-edge { align-items: center; }
+.sk-mute { width: 44px; height: 44px; border-radius: 50%; }
+.sk-rating { width: 96px; height: 42px; border-radius: 3px 0 0 3px; }
+.sk-rows { position: relative; z-index: 3; margin-top: -10vh; padding-bottom: 30px; }
+.sk-row-title { width: 190px; height: 20px; margin: 16px 0 26px; border-radius: 5px; }
+.sk-rows .row-head { margin-bottom: -18px; }
+.sk-rows .row-track { overflow: hidden; }
+.sk-rows .row:nth-child(2) .sk-row-title { width: 150px; }
+.sk-rows .row:nth-child(3) .sk-row-title { width: 230px; }
+.home-skeleton .loading-msg {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  z-index: 30;
+  margin: 0;
+  padding: 9px 18px;
+  transform: translateX(-50%);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(20, 20, 20, 0.88);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: #d6d6d6;
+  font-size: 13px;
+}
+.loading-error { display: none; margin: 0; text-align: center; color: var(--muted); }
+.home-skeleton.is-error { min-height: 100vh; display: grid; place-items: center; }
+.home-skeleton.is-error .sk-hero,
+.home-skeleton.is-error .sk-rows,
+.home-skeleton.is-error .loading-msg { display: none; }
+.home-skeleton.is-error .loading-error { display: block; font-size: 17px; }
+
+/* ---------- discover / search / modals ---------- */
+
+.discover-note .sk-line { width: 280px; margin: 4px 0; }
+.grid-sub-sk { display: inline-block; width: 190px; height: 13px; vertical-align: middle; }
+.online-loading.sk-loading { display: block; padding: 0; }
+.online-loading.sk-loading .online-grid { margin-top: 4px; }
+.modal-hero-content .sk-meta { margin-bottom: 18px; }
+.online-body .sk-lines, .modal-main .sk-lines { max-width: 780px; }
+.online-body .sk-lines { margin-bottom: 6px; }
+.online-season-block .season-tabs .sk-pill { width: 92px; height: 34px; border-radius: 4px; }
+.castle-toolbar .sk-pill { width: 62px; height: 26px; }
+.castle-size .sk-line { width: 150px; }
+.castle-all-btn.is-skeleton { min-width: 110px; }
+.series-episodes .sk-episode:last-child { border-bottom: 0; }
+.picker-desc .sk-lines { max-width: 520px; }
+.btn.is-skeleton { min-width: 150px; }
+.btn-round.is-skeleton { min-width: 0; }
+
+@media (max-width: 760px) {
+  .sk-episode-thumb { flex-basis: 96px; width: 96px; }
+  .sk-episode-btn { width: 88px; }
+  .sk-hero-btn, .sk-hero-btn.alt { width: 140px; height: 54px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after, .sk-text, .is-skeleton::after,
+  :is(.card, .top10-art, .catalog-art, .online-card-art, .hero-media, .modal-hero, .online-hero):has(> img[src]:not(.img-ready))::before,
+  .episode-thumb[src]:not(.img-ready), .picker-head img[src]:not(.img-ready) { animation: none; }
+}
+.season-tabs > .sk-pill { width: 96px; height: 34px; border-radius: 4px; }
+.series-find.is-skeleton { min-width: 150px; height: 34px; }

@@ -398,3 +398,130 @@ export function createEl(tag, className, text) {
 export function initials(name) {
   return (name || 'N').trim().charAt(0).toUpperCase();
 }
+
+/* ---------- loading skeletons ---------- */
+
+/* An image counts as "ready" once it loaded or failed. Until then the CSS draws a
+ * shimmer behind it (img[src]:not(.img-ready)). Capture phase, because load and
+ * error events do not bubble. */
+if (typeof document !== 'undefined') {
+  const markReady = (e) => {
+    if (e.target instanceof HTMLImageElement) e.target.classList.add('img-ready');
+  };
+  document.addEventListener('load', markReady, true);
+  document.addEventListener('error', markReady, true);
+}
+
+/* Sets an image source and restarts its shimmer when the picture really changes. */
+export function setImg(img, src) {
+  if (!img) return;
+  const next = src || '';
+  const current = img.getAttribute('src') || '';
+  if (current === next) return;
+  img.classList.remove('img-ready');
+  if (next) img.setAttribute('src', next);
+  else img.removeAttribute('src');
+}
+
+/* One shimmer block. `cls` adds the shape, `w`/`h` override its size. */
+export function skel(cls = '', w, h) {
+  const el = document.createElement('div');
+  el.className = `skeleton${cls ? ` ${cls}` : ''}`;
+  if (w) el.style.width = w;
+  if (h) el.style.height = h;
+  el.setAttribute('aria-hidden', 'true');
+  return el;
+}
+
+/* Stacked text lines; the last one is shorter, like a paragraph. */
+export function skelLines(count = 3, { height = '13px', gap = '10px', last = '62%' } = {}) {
+  const box = document.createElement('div');
+  box.className = 'sk-lines';
+  box.style.gap = gap;
+  box.setAttribute('aria-hidden', 'true');
+  for (let i = 0; i < count; i += 1) {
+    box.append(skel('sk-line', i === count - 1 && count > 1 ? last : '100%', height));
+  }
+  return box;
+}
+
+/* Metadata row: year, runtime, quality chips. */
+export function skelMeta() {
+  const box = document.createElement('div');
+  box.className = 'sk-meta';
+  box.setAttribute('aria-hidden', 'true');
+  box.append(skel('sk-line', '44px', '14px'), skel('sk-line', '64px', '14px'), skel('sk-chip'), skel('sk-line', '110px', '14px'));
+  return box;
+}
+
+/* 16:9 card, same size as .card in rows and grids. */
+export function skelCard() {
+  const card = document.createElement('div');
+  card.className = 'card sk-card skeleton';
+  card.setAttribute('aria-hidden', 'true');
+  return card;
+}
+
+export function skelCards(count = 6) {
+  return Array.from({ length: count }, skelCard);
+}
+
+/* 2:3 poster with two text lines, same shape as .online-card. */
+export function skelPoster() {
+  const card = document.createElement('div');
+  card.className = 'online-card sk-poster';
+  card.setAttribute('aria-hidden', 'true');
+  card.append(skel('sk-art'), skel('sk-line', '78%', '12px'), skel('sk-line', '44%', '10px'));
+  return card;
+}
+
+/* 16:10 catalog card (archive.org) with its title line. */
+export function skelCatalogCard() {
+  const card = document.createElement('div');
+  card.className = 'catalog-card sk-catalog';
+  card.setAttribute('aria-hidden', 'true');
+  card.append(skel('sk-art'), skel('sk-line', '70%', '12px'));
+  return card;
+}
+
+/* Episode row: thumbnail, two lines and an action button. */
+export function skelEpisode({ button = true } = {}) {
+  const row = document.createElement('div');
+  row.className = 'sk-episode';
+  row.setAttribute('aria-hidden', 'true');
+  const lines = document.createElement('div');
+  lines.className = 'sk-episode-lines';
+  lines.append(skel('sk-line', '46%', '13px'), skel('sk-line', '28%', '10px'));
+  row.append(skel('sk-episode-thumb'), lines);
+  if (button) row.append(skel('sk-episode-btn'));
+  return row;
+}
+
+export function skelEpisodes(count = 4, opts) {
+  return Array.from({ length: count }, () => skelEpisode(opts));
+}
+
+/* Row with a bar for the file name and one for its size/format. */
+export function skelFileRow() {
+  const row = document.createElement('div');
+  row.className = 'sk-file';
+  row.setAttribute('aria-hidden', 'true');
+  row.append(skel('sk-dot'));
+  const lines = document.createElement('div');
+  lines.className = 'sk-episode-lines';
+  lines.append(skel('sk-line', '58%', '13px'), skel('sk-line', '30%', '10px'));
+  row.append(lines);
+  return row;
+}
+
+/* Download queue entry: poster, title, progress bar. */
+export function skelDownload() {
+  const row = document.createElement('div');
+  row.className = 'sk-download';
+  row.setAttribute('aria-hidden', 'true');
+  const lines = document.createElement('div');
+  lines.className = 'sk-episode-lines';
+  lines.append(skel('sk-line', '64%', '13px'), skel('sk-line', '38%', '10px'), skel('sk-line', '100%', '5px'));
+  row.append(skel('sk-download-thumb'), lines);
+  return row;
+}

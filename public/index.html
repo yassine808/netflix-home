@@ -125,9 +125,30 @@
 
         <div class="rows" id="rows"></div>
 
-        <div class="loading" id="loading">
-          <div class="spinner"></div>
-          <p>Scanning your library<span class="dots"></span></p>
+        <div class="loading home-skeleton" id="loading" role="status" aria-live="polite">
+          <section class="hero sk-hero" aria-hidden="true">
+            <div class="hero-media"><div class="hero-vignette"></div></div>
+            <div class="hero-content">
+              <div class="skeleton sk-hero-label"></div>
+              <div class="skeleton sk-hero-title"></div>
+              <div class="skeleton sk-hero-title short"></div>
+              <div class="sk-meta"><div class="skeleton sk-line" style="width:44px;height:14px"></div><div class="skeleton sk-line" style="width:64px;height:14px"></div><div class="skeleton sk-chip"></div><div class="skeleton sk-line" style="width:110px;height:14px"></div></div>
+              <div class="sk-lines" style="gap:10px;max-width:560px">
+                <div class="skeleton sk-line" style="width:100%;height:15px"></div>
+                <div class="skeleton sk-line" style="width:96%;height:15px"></div>
+                <div class="skeleton sk-line" style="width:62%;height:15px"></div>
+              </div>
+              <div class="sk-hero-actions"><div class="skeleton sk-hero-btn"></div><div class="skeleton sk-hero-btn alt"></div></div>
+            </div>
+            <div class="hero-edge"><div class="skeleton sk-mute"></div><div class="skeleton sk-rating"></div></div>
+          </section>
+          <div class="sk-rows" aria-hidden="true">
+            <div class="row"><div class="row-head"><div class="skeleton sk-row-title"></div></div><div class="row-wrap"><div class="row-track"><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div></div></div></div>
+            <div class="row"><div class="row-head"><div class="skeleton sk-row-title"></div></div><div class="row-wrap"><div class="row-track"><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div></div></div></div>
+            <div class="row"><div class="row-head"><div class="skeleton sk-row-title"></div></div><div class="row-wrap"><div class="row-track"><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div><div class="card sk-card skeleton"></div></div></div></div>
+          </div>
+          <p class="loading-msg">Scanning your library<span class="dots"></span></p>
+          <p class="loading-error" id="loadingError">Could not reach the server. Is netflix-home running?</p>
         </div>
       </section>
 
@@ -390,6 +411,7 @@
         <button class="downloads-close" data-close-downloads aria-label="Close downloads">✕</button>
       </header>
       <div class="downloads-list" id="downloadsList">
+        <div class="dl-skeleton" id="dlSkeleton" aria-hidden="true"></div>
         <section class="dl-section" id="dlActive" hidden>
           <h3 class="dl-heading">Downloading <span class="dl-count"></span></h3>
           <div class="dl-items"></div>
