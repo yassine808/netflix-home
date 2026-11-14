@@ -127,6 +127,7 @@ async function init() {
   video.src = `/api/stream/${encodeURIComponent(item.id)}`;
   video.load();
   bindEvents();
+  initSeekFx();
   loadNextEpisode();
   syncVolume();
   updateTimeline();
@@ -197,8 +198,8 @@ function bindEvents() {
   video.addEventListener('dblclick', toggleFullscreen);
 
   $('backBtn').addEventListener('click', leaveToHome);
-  $('back10').addEventListener('click', () => skip(-10));
-  $('fwd10').addEventListener('click', () => skip(10));
+  $('back10').addEventListener('click', () => { skip(-10); flashSeek('left'); });
+  $('fwd10').addEventListener('click', () => { skip(10); flashSeek('right'); });
   muteBtn.addEventListener('click', toggleMute);
   fsBtn.addEventListener('click', toggleFullscreen);
   ccBtn.addEventListener('click', () => toggleCcPanel());
@@ -283,6 +284,56 @@ function togglePlay() {
   }
   showUi();
   armHideUi();
+}
+
+/* YouTube-style feedback: a ripple on the tapped half and a running total of
+ * the seconds skipped, which resets half a second after the last click. */
+const seekFx = {
+  left: { el: null, count: null, total: 0, last: 0, timer: 0 },
+  right: { el: null, count: null, total: 0, last: 0, timer: 0 },
+};
+
+function initSeekFx() {
+  seekFx.left.el = $('seekLeft');
+  seekFx.left.count = $('seekLeftCount');
+  seekFx.right.el = $('seekRight');
+  seekFx.right.count = $('seekRightCount');
+  video.addEventListener('loadedmetadata', syncSeekFxBounds);
+  window.addEventListener('resize', syncSeekFxBounds);
+  syncSeekFxBounds();
+}
+
+/* Keep the ripples over the picture, not over the black bars around it. */
+function syncSeekFxBounds() {
+  const layer = $('seekFx');
+  const { videoWidth: vw, videoHeight: vh } = video;
+  if (!layer) return;
+  if (!vw || !vh) {
+    layer.style.inset = '0';
+    return;
+  }
+  const scale = Math.min(window.innerWidth / vw, window.innerHeight / vh);
+  const x = Math.max(0, (window.innerWidth - vw * scale) / 2);
+  const y = Math.max(0, (window.innerHeight - vh * scale) / 2);
+  layer.style.inset = `${y}px ${x}px`;
+}
+
+function flashSeek(sideKey) {
+  const fx = seekFx[sideKey];
+  if (!fx?.el) return;
+  syncSeekFxBounds();
+  const now = performance.now();
+  fx.total = now - fx.last < 700 ? fx.total + 10 : 10;
+  fx.last = now;
+  fx.count.textContent = String(fx.total);
+  fx.el.classList.remove('is-on');
+  void fx.el.offsetWidth; // restart the animation
+  fx.el.classList.add('is-on');
+  clearTimeout(fx.timer);
+  fx.timer = setTimeout(() => {
+    fx.el.classList.remove('is-on');
+    fx.total = 0;
+  }, 640);
 }
 
 function skip(seconds) {
