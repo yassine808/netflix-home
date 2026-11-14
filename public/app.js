@@ -507,6 +507,9 @@ function groupLibrary(items = state.items) {
   }
   for (const group of groups.values()) {
     if (!group.episodes) continue;
+    // Remember every file id before duplicate qualities collapse, so a search
+    // or My List entry pointing at the other copy still finds this card.
+    group.ids = group.episodes.map((episode) => episode.id);
     group.episodes = dedupeEpisodes(group.episodes);
     group.episodeCount = group.episodes.length;
     group.seasons = [...new Set(group.episodes.map((episode) => episode.season))].sort((a, b) => a - b);
@@ -519,6 +522,7 @@ function groupIndex(groups) {
   const index = new Map();
   for (const group of groups) {
     index.set(group.id, group);
+    if (group.ids) for (const id of group.ids) index.set(id, group);
     if (group.episodes) for (const episode of group.episodes) index.set(episode.id, group);
   }
   return index;
