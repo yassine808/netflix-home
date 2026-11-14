@@ -65,16 +65,22 @@ body.leaving .player {
 /* ---------- seek feedback ---------- */
 
 .seek-fx { position: absolute; inset: 0; z-index: 4; display: flex; pointer-events: none; }
-.seek-side { position: relative; flex: 1 1 0; display: grid; place-items: center; }
+.seek-side { position: relative; flex: 1 1 0; display: grid; place-items: center; overflow: hidden; }
 .seek-ripple {
   position: absolute;
-  width: min(72vh, 94%);
+  top: 50%;
+  width: 170%;
   aspect-ratio: 1;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.16);
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.015) 45%, rgba(255, 255, 255, 0.07) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 30px rgba(255, 255, 255, 0.04);
   opacity: 0;
-  transform: scale(0.35);
+  pointer-events: none;
 }
+/* centred on the outer screen edge, so the curved rim sweeps toward the middle */
+.seek-left .seek-ripple { left: 0; transform: translate(-50%, -50%) scale(0.5); }
+.seek-right .seek-ripple { right: 0; transform: translate(50%, -50%) scale(0.5); }
 .seek-label {
   position: relative;
   display: inline-flex;
@@ -86,18 +92,24 @@ body.leaving .player {
   text-shadow: 0 1px 10px rgba(0, 0, 0, 0.55);
   opacity: 0;
 }
-.seek-label svg { width: 64px; height: 32px; }
-.seek-label b { font-size: 26px; line-height: 1; font-variant-numeric: tabular-nums; }
-.seek-unit { font-size: 13px; font-weight: 600; opacity: 0.9; margin-top: -4px; }
-.seek-side.is-on .seek-ripple { animation: seek-ripple 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
-.seek-side.is-on .seek-label { animation: seek-label 0.65s var(--ease) both; }
+.seek-label svg { width: 44px; height: 22px; }
+.seek-label b { font-size: 18px; line-height: 1; font-variant-numeric: tabular-nums; }
+.seek-unit { font-size: 11px; font-weight: 600; opacity: 0.8; margin-top: -4px; }
+.seek-side.is-on .seek-label { animation: seek-label 0.5s var(--ease) both; }
 .seek-side.is-on .c1 { animation: chev 0.6s ease-out both; }
 .seek-side.is-on .c2 { animation: chev 0.6s ease-out 0.1s both; }
 .seek-side.is-on .c3 { animation: chev 0.6s ease-out 0.2s both; }
-@keyframes seek-ripple {
-  0% { opacity: 0; transform: scale(0.35); }
-  25% { opacity: 1; }
-  100% { opacity: 0; transform: scale(1); }
+.seek-left.is-on .seek-ripple { animation: ripple-l 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.seek-right.is-on .seek-ripple { animation: ripple-r 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+@keyframes ripple-l {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
+  25% { opacity: 0.8; }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(0.95); }
+}
+@keyframes ripple-r {
+  0% { opacity: 0; transform: translate(50%, -50%) scale(0.5); }
+  25% { opacity: 0.8; }
+  100% { opacity: 0; transform: translate(50%, -50%) scale(0.95); }
 }
 @keyframes seek-label {
   0% { opacity: 0; transform: scale(0.8); }
@@ -406,51 +418,91 @@ body.leaving .player {
 .next-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 13px; color: #cfcfcf; line-height: 1.4; }
 .next-text b { color: #fff; font-size: 14px; }
 
-/* ---------- episodes panel ---------- */
+/* ---------- episodes panel (frosted glass) ---------- */
 
 .ep-panel {
   position: absolute;
   right: 3%;
-  bottom: 110px;
-  width: min(380px, calc(100vw - 32px));
-  max-height: min(66vh, 560px);
+  bottom: 118px;
+  width: min(430px, calc(100vw - 32px));
+  max-height: min(68vh, 600px);
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px;
+  gap: 12px;
+  padding: 16px 12px 12px 16px;
   z-index: 14;
-  border-radius: 6px;
-  background: rgba(24, 24, 24, 0.98);
-  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.65);
-  animation: cc-in 0.18s var(--ease) both;
+  border-radius: 16px;
+  background: rgba(20, 20, 20, 0.55);
+  -webkit-backdrop-filter: blur(28px) saturate(1.6);
+  backdrop-filter: blur(28px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  animation: cc-in 0.2s var(--ease) both;
 }
+.ep-panel .cc-head { padding-right: 6px; }
+.ep-panel .cc-head h2 { font-size: 17px; }
+.ep-season-wrap { position: relative; margin-right: 6px; }
 .ep-season {
-  height: 36px;
-  padding: 0 10px;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 38px;
+  padding: 0 38px 0 14px;
   border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 4px;
-  background: #2b2b2b;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='m1 1.5 5 5 5-5' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 14px center;
   color: #fff;
   font: inherit;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
 }
-.ep-list { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.ep-season:hover { background-color: rgba(255, 255, 255, 0.14); border-color: rgba(255, 255, 255, 0.4); }
+.ep-season option { background: #1c1c1c; color: #fff; }
+
+.ep-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+.ep-list::-webkit-scrollbar { width: 6px; }
+.ep-list::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.25); border-radius: 3px; }
 .ep-item {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px;
-  border-radius: 4px;
+  padding: 8px 10px 8px 6px;
+  border-radius: 10px;
   text-align: left;
   transition: background 0.15s;
 }
-.ep-item:hover { background: rgba(255, 255, 255, 0.09); }
-.ep-item.current { background: rgba(255, 255, 255, 0.14); }
-.ep-num { flex: 0 0 22px; text-align: center; font-size: 15px; color: #bbb; }
-.ep-item img { flex: 0 0 112px; width: 112px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 3px; background: #111; }
-.ep-info { min-width: 0; display: flex; flex-direction: column; gap: 3px; font-size: 14px; font-weight: 600; }
-.ep-info small { font-size: 12px; font-weight: 500; color: #a3a3a3; }
+.ep-item:hover { background: rgba(255, 255, 255, 0.1); }
+.ep-item.current { background: rgba(255, 255, 255, 0.14); box-shadow: inset 3px 0 0 var(--red); }
+.ep-num { flex: 0 0 22px; text-align: center; font-size: 15px; font-weight: 700; color: rgba(255, 255, 255, 0.6); }
+.ep-item.current .ep-num { color: #fff; }
+.ep-thumb { position: relative; flex: 0 0 124px; aspect-ratio: 16 / 9; border-radius: 6px; overflow: hidden; background: #111; }
+.ep-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ep-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(255, 255, 255, 0.3); }
+.ep-bar i { display: block; height: 100%; background: var(--red); }
+.ep-playing {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.ep-info { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ep-info b { font-size: 14.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ep-info small { font-size: 12px; font-weight: 500; color: rgba(255, 255, 255, 0.65); }
 
 /* ---------- animated mute icon ---------- */
 
@@ -546,7 +598,7 @@ body.leaving .player {
   border-radius: 3px;
   background: rgba(0, 0, 0, var(--sub-bg, 0.66));
   font-family: ui-monospace, Consolas, "Lucida Console", "Courier New", monospace;
-  font-size: calc(clamp(17px, 2.2vw, 30px) * var(--sub-scale, 1));
+  font-size: calc(clamp(17px, 2.2vw, 30px) * var(--sub-scale, 1.3));
   font-weight: 700;
   line-height: 1.32;
   text-align: center;
@@ -687,7 +739,7 @@ body.leaving .player {
   .cc-panel, .ep-panel { right: 12px; bottom: 96px; }
   .next-pop { display: none; }
   .subtitle-layer { bottom: 20%; }
-  .subtitle-text { max-width: 92%; font-size: calc(clamp(15px, 3.6vw, 22px) * var(--sub-scale, 1)); }
+  .subtitle-text { max-width: 92%; font-size: calc(clamp(15px, 3.6vw, 22px) * var(--sub-scale, 1.3)); }
 }
 
 @media (hover: none) {

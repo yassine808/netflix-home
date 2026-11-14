@@ -1,5 +1,5 @@
 import {
-  formatClock, formatDuration, progressFor, saveProgress, thumbUrl, readJson, writeJson, getSeries,
+  formatClock, formatDuration, progressFor, saveProgress, thumbUrl, heroImageUrl, readJson, writeJson, getSeries,
 } from './common.js';
 
 const $ = (id) => document.getElementById(id);
@@ -436,28 +436,54 @@ function renderEpisodes(season) {
   const entry = seriesSeasons.find((s) => s.season === season) || seriesSeasons[0];
   epList.replaceChildren();
   if (!entry) return;
+  const base = videoTitle.textContent.trim().toLowerCase();
   for (const ep of entry.episodes) {
+    const isCurrent = ep.id === item.id;
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = `ep-item${ep.id === item.id ? ' current' : ''}`;
+    btn.className = `ep-item${isCurrent ? ' current' : ''}`;
+
     const num = document.createElement('span');
     num.className = 'ep-num';
     num.textContent = String(ep.episode);
+
+    const thumb = document.createElement('span');
+    thumb.className = 'ep-thumb';
     const img = document.createElement('img');
     img.loading = 'lazy';
     img.alt = '';
-    img.src = thumbUrl(ep);
+    img.src = heroImageUrl(ep);
+    img.addEventListener('error', () => { img.src = thumbUrl(ep); }, { once: true });
+    thumb.append(img);
+    if (isCurrent) {
+      const now = document.createElement('span');
+      now.className = 'ep-playing';
+      now.textContent = 'Playing';
+      thumb.append(now);
+    }
+    const prog = progressFor(ep.id);
+    if (prog && prog.d > 0 && prog.t > 5) {
+      const bar = document.createElement('span');
+      bar.className = 'ep-bar';
+      const fill = document.createElement('i');
+      fill.style.width = `${Math.round(Math.min(1, prog.t / prog.d) * 100)}%`;
+      bar.append(fill);
+      thumb.append(bar);
+    }
+
+    const raw = (ep.title || '').trim();
+    const name = raw && raw.toLowerCase() !== base ? raw : `Episode ${ep.episode}`;
     const info = document.createElement('span');
     info.className = 'ep-info';
-    info.textContent = ep.title || `Episode ${ep.episode}`;
-    if (ep.durationSec) {
-      const small = document.createElement('small');
-      small.textContent = formatDuration(ep.durationSec);
-      info.append(small);
-    }
-    btn.append(num, img, info);
+    const title = document.createElement('b');
+    title.textContent = name;
+    const meta = document.createElement('small');
+    meta.textContent = [`S${ep.season}:E${ep.episode}`, ep.durationSec ? formatDuration(ep.durationSec) : ''].filter(Boolean).join(' · ');
+    info.append(title, meta);
+
+    btn.append(num, thumb, info);
     btn.addEventListener('click', () => {
-      if (ep.id === item.id) { toggleEpPanel(false); return; }
+      if (isCurrent) { toggleEpPanel(false); return; }
       saveNow();
       location.href = `/watch.html?id=${encodeURIComponent(ep.id)}`;
     });
