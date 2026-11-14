@@ -86,10 +86,9 @@ getLibrary().root = libraryRoot;
 initDownloads({
   root: libraryRoot,
   onDownloadComplete: async () => {
-    const lib = await scanLibrary(libraryRoot);
-    warmHeroes(lib.items, libraryRoot);
-    warmTrailers(lib.items);
-    warmArtwork(lib.items);
+    // A finished download is also picked up by the watcher; coalesce so a
+    // whole season finishing at once triggers one scan.
+    queueRefresh(400);
   },
   // A file that is already in the library must not be downloaded twice; this is
   // what kept producing duplicate titles (and " (1)" copies) in the UI.
@@ -99,6 +98,66 @@ initDownloads({
     return getLibrary().items.find((entry) => entry.fileName.toLowerCase() === wanted) || null;
   },
 });
+
+/* One refresh path for boot, the folder watcher and downloads. The scan is
+ * cheap when nothing changed (directory mtimes match), and warm-up work only
+ * runs when something actually appeared. */
+let refreshTimer = null;
+let watchTimer = null;
+
+async function refreshLibrary(reason) {
+  let lib;
+  try {
+    lib = await scanLibrary(libraryRoot);
+  } catch (err) {
+    console.warn('scan failed:', err?.message || String(err));
+    return null;
+  }
+  const scan = lib.scan || {};
+  if (scan.changed) {
+    console.log(`library ${reason}: ${lib.items.length} title(s), ${scan.dirs} folder(s), ${scan.readDirs} read, ${scan.probed} probed in ${scan.ms} ms`);
+    warmHeroes(lib.items, libraryRoot);
+    warmTrailers(lib.items);
+    warmArtwork(lib.items);
+  } else {
+    console.log(`library ${reason}: unchanged, ${scan.dirs} folder(s) checked in ${scan.ms} ms`);
+  }
+  return lib;
+}
+
+/* Windows fires a recursive event for any file under the root. Downloads,
+ * renames and deletions all land here; the scan is debounced so a copy in
+ * progress does not start a hundred scans. */
+function watchLibrary() {
+  try {
+    const watcher = fs.watch(libraryRoot, { recursive: true }, (event, name) => {
+      const rel = String(name || '');
+      if (/\.(part|tmp)$/i.test(rel)) return;
+      if (rel.toLowerCase().startsWith('.cache')) return;
+      if (watchTimer) clearTimeout(watchTimer);
+      watchTimer = setTimeout(() => {
+        watchTimer = null;
+        refreshLibrary('watch');
+      }, 2500);
+      watchTimer.unref?.();
+    });
+    watcher.on('error', () => {
+      try { watcher.close(); } catch { /* already gone */ }
+    });
+  } catch {
+    /* watching is an optimisation; scanning still works without it */
+  }
+}
+
+/* Rescan requests coalesce with the background work instead of racing it. */
+function queueRefresh(delay = 0) {
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    refreshLibrary('manual');
+  }, delay);
+  refreshTimer.unref?.();
+}
 
 const app = express();
 app.disable('x-powered-by');
@@ -155,6 +214,7 @@ app.get('/api/library', (req, res) => {
     root: lib.root,
     updatedAt: lib.updatedAt,
     scannedInMs: lib.scannedInMs,
+    scan: lib.scan || null,
     scanning: isScanning(),
     items: lib.items.map((item) => {
       const { posterPath, backdropPath, ...safe } = item;
@@ -166,11 +226,8 @@ app.get('/api/library', (req, res) => {
 
 app.post('/api/rescan', async (req, res) => {
   try {
-    const lib = await scanLibrary(libraryRoot);
-    warmHeroes(lib.items, libraryRoot);
-    warmTrailers(lib.items);
-    warmArtwork(lib.items);
-    res.json({ ok: true, count: lib.items.length, updatedAt: lib.updatedAt });
+    const lib = await refreshLibrary('rescan');
+    res.json({ ok: true, count: lib.items.length, updatedAt: lib.updatedAt, scan: lib.scan || null });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });
   }
@@ -934,15 +991,12 @@ function listen(port, attempt = 0) {
     fs.writeFileSync(PORT_FILE, String(actual), 'utf8');
     console.log(`netflix-home running at http://localhost:${actual}`);
     console.log(`library root: ${libraryRoot}`);
-    try {
-      const lib = await scanLibrary(libraryRoot);
-      console.log(`library ready: ${lib.items.length} title(s) in ${lib.scannedInMs} ms`);
-      warmHeroes(lib.items, libraryRoot);
-    warmTrailers(lib.items);
-    warmArtwork(lib.items);
-    } catch (err) {
-      console.error('scan failed:', err);
-    }
+    const cached = getLibrary();
+    console.log(`library ready: ${cached.items.length} title(s) from catalog.db`);
+    // Serve the saved index immediately; verify folder mtimes in the background
+    // and let the watcher take it from there.
+    setTimeout(() => refreshLibrary('startup'), 1200).unref?.();
+    watchLibrary();
   });
 
   server.on('error', (err) => {

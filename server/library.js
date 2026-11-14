@@ -150,24 +150,116 @@ function findArtwork(filePath, kind) {
   return null;
 }
 
-async function walk(dir, depth, out) {
-  let entries;
+/* Directory index. A launch reads each folder's listing (one readdir, no file
+ * access) and trusts the saved sizes/mtimes for names that are still there, so
+ * an untouched library costs no stat and no ffprobe per video. Directory mtimes
+ * are only a hint because NTFS updates them lazily. */
+function loadDirIndex() {
+  const map = new Map();
+  const db = getDb();
+  if (!db) return map;
   try {
-    entries = await fsp.readdir(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (depth > 8) continue;
-      if (SKIP_DIRS.has(entry.name.toLowerCase())) continue;
-      if (entry.name.startsWith('.') || entry.name.startsWith('$')) continue;
-      await walk(full, depth + 1, out);
-    } else if (entry.isFile() && VIDEO_EXTS.has(path.extname(entry.name).toLowerCase())) {
-      out.push(full);
+    for (const row of db.prepare('SELECT rel_path, mtime, entries FROM dirs').all()) {
+      try {
+        map.set(row.rel_path, {
+          mtime: Number(row.mtime),
+          raw: String(row.entries),
+          entries: JSON.parse(row.entries),
+        });
+      } catch {
+        /* damaged row: the directory will be read again */
+      }
     }
+  } catch {
+    /* no index yet: full read */
   }
+  return map;
+}
+
+async function walkIndexed(root) {
+  const index = loadDirIndex();
+  const files = [];
+  const dirRows = [];
+  const seen = new Set();
+  let reusedDirs = 0;
+  let changedDirs = 0;
+
+  async function visit(rel, depth) {
+    const full = rel ? path.join(root, rel) : root;
+    let st;
+    try {
+      st = await fsp.stat(full);
+    } catch {
+      return;
+    }
+    if (!st.isDirectory()) return;
+    seen.add(rel);
+    const mtime = Math.round(st.mtimeMs);
+    const hit = index.get(rel);
+    // NTFS writes a directory's mtime lazily, so it cannot be trusted on its
+    // own. The listing always comes from readdir; the index only supplies the
+    // sizes and mtimes of files whose names are still there.
+    const sameMtime = Boolean(hit) && hit.mtime === mtime;
+    const cachedByName = new Map();
+    if (hit) for (const entry of hit.entries) cachedByName.set(entry.n, entry);
+
+    let entries;
+    try {
+      entries = await fsp.readdir(full, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    const rows = [];
+
+    for (const entry of entries) {
+      const name = entry.name;
+      if (entry.isDirectory()) {
+        if (depth > 8) continue;
+        if (SKIP_DIRS.has(name.toLowerCase())) continue;
+        if (name.startsWith('.') || name.startsWith('$')) continue;
+        rows.push({ n: name, d: 1 });
+        await visit(rel ? path.join(rel, name) : name, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !VIDEO_EXTS.has(path.extname(name).toLowerCase())) continue;
+
+      const known = sameMtime ? cachedByName.get(name) : null;
+      if (known && !known.d) {
+        rows.push(known);
+        files.push({
+          rel: rel ? path.join(rel, name) : name,
+          full: path.join(full, name),
+          size: Number(known.s) || 0,
+          mtime: Number(known.m) || 0,
+        });
+        continue;
+      }
+
+      let fst;
+      try {
+        fst = await fsp.stat(path.join(full, name));
+      } catch {
+        continue;
+      }
+      const size = fst.size;
+      const fileMtime = Math.round(fst.mtimeMs);
+      rows.push({ n: name, d: 0, s: size, m: fileMtime });
+      files.push({ rel: rel ? path.join(rel, name) : name, full: path.join(full, name), size, mtime: fileMtime });
+    }
+
+    rows.sort((a, b) => a.n.localeCompare(b.n));
+    const raw = JSON.stringify(rows);
+    if (hit && hit.raw === raw && sameMtime) {
+      reusedDirs++;
+      return;
+    }
+    changedDirs++;
+    dirRows.push({ rel, mtime, entries: raw });
+  }
+
+  await visit('', 0);
+  return { files, dirRows, seen, known: new Set(index.keys()), reusedDirs, changedDirs };
 }
 
 async function probe(filePath) {
@@ -237,8 +329,7 @@ export async function scanLibrary(root) {
   if (scanning) return scanning;
   scanning = (async () => {
     const started = Date.now();
-    const files = [];
-    await walk(root, 0, files);
+    const { files, dirRows, seen, known, reusedDirs, changedDirs } = await walkIndexed(root);
 
     const stored = storedRows();
     const legacy = stored.size ? {} : legacyProbeCache();
@@ -246,17 +337,11 @@ export async function scanLibrary(root) {
     const jobs = [];
     const keep = new Set();
 
-    for (const filePath of files) {
-      const rel = path.relative(root, filePath);
+    for (const file of files) {
+      const rel = file.rel;
       keep.add(rel);
-      let st;
-      try {
-        st = await fsp.stat(filePath);
-      } catch {
-        continue;
-      }
-      const size = st.size;
-      const mtime = Math.round(st.mtimeMs);
+      const size = file.size;
+      const mtime = file.mtime;
       const row = stored.get(rel);
       if (row && Number(row.size) === size && Number(row.mtime) === mtime) {
         try {
@@ -268,7 +353,7 @@ export async function scanLibrary(root) {
       }
       const cached = legacy[rel];
       const probed = cached && cached.size === size && Math.round(cached.mtimeMs) === mtime ? cached : null;
-      const entry = { rel, filePath, size, mtime, probed };
+      const entry = { rel, filePath: file.full, size, mtime, probed };
       entries.push(entry);
       if (!probed) jobs.push(entry);
     }
@@ -335,13 +420,16 @@ export async function scanLibrary(root) {
     nextItems.sort((a, b) => b.mtime - a.mtime || a.title.localeCompare(b.title));
 
     const db = getDb();
+    const removed = [];
+    for (const rel of stored.keys()) {
+      if (!keep.has(rel)) removed.push(rel);
+    }
+    const changed = dirty.length > 0 || removed.length > 0 || dirRows.length > 0;
     if (db) {
       try {
         transaction(() => {
           const remove = db.prepare('DELETE FROM items WHERE rel_path = ?');
-          for (const rel of stored.keys()) {
-            if (!keep.has(rel)) remove.run(rel);
-          }
+          for (const rel of removed) remove.run(rel);
           const upsert = db.prepare(`INSERT INTO items
             (id, rel_path, series_key, collection, size, mtime, payload, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -358,6 +446,29 @@ export async function scanLibrary(root) {
             upsert.run(item.id, item.relPath, item.seriesKey, item.collection,
               item.size, item.mtime, JSON.stringify(item), now);
           }
+
+          if (dirRows.length) {
+            const putDir = db.prepare(`INSERT INTO dirs (rel_path, mtime, entries, scanned_at)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(rel_path) DO UPDATE SET
+                mtime = excluded.mtime,
+                entries = excluded.entries,
+                scanned_at = excluded.scanned_at`);
+            for (const row of dirRows) putDir.run(row.rel, row.mtime, row.entries, now);
+          }
+          const dropDir = db.prepare('DELETE FROM dirs WHERE rel_path = ?');
+          for (const rel of known) {
+            if (!seen.has(rel)) dropDir.run(rel);
+          }
+
+          db.prepare(`INSERT INTO scan_state (root, root_mtime, item_count, last_scan, last_ms)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(root) DO UPDATE SET
+              root_mtime = excluded.root_mtime,
+              item_count = excluded.item_count,
+              last_scan = excluded.last_scan,
+              last_ms = excluded.last_ms`)
+            .run(root, Math.round(Date.now() / 1000), nextItems.length, now, Date.now() - started);
         });
       } catch (err) {
         console.warn('catalog write failed:', err?.message || String(err));
@@ -365,12 +476,24 @@ export async function scanLibrary(root) {
     }
 
     itemsById = new Map(nextItems.map((i) => [i.id, i]));
+    const scanStats = {
+      ms: Date.now() - started,
+      files: files.length,
+      dirs: seen.size,
+      reusedDirs,
+      readDirs: changedDirs,
+      probed: jobs.length,
+      changed,
+    };
     library = {
       root,
       items: nextItems,
       collections: collectionsFor(nextItems),
-      updatedAt: Date.now(),
-      scannedInMs: Date.now() - started,
+      // An unchanged scan keeps the old timestamp, so the library ETag stays
+      // stable and the browser answers from its cache instead of re-downloading.
+      updatedAt: changed || !library.updatedAt ? Date.now() : library.updatedAt,
+      scannedInMs: scanStats.ms,
+      scan: scanStats,
     };
 
     return library;

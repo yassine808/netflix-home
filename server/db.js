@@ -149,6 +149,23 @@ CREATE TABLE IF NOT EXISTS kv (
   value TEXT,
   updated_at INTEGER NOT NULL
 );
+
+/* Directory index: the scanner trusts a directory whose mtime is unchanged
+ * instead of stat-ing every file inside it again on each launch. */
+CREATE TABLE IF NOT EXISTS dirs (
+  rel_path TEXT PRIMARY KEY,
+  mtime INTEGER NOT NULL,
+  entries TEXT NOT NULL,
+  scanned_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scan_state (
+  root TEXT PRIMARY KEY,
+  root_mtime INTEGER NOT NULL,
+  item_count INTEGER NOT NULL,
+  last_scan INTEGER NOT NULL,
+  last_ms INTEGER NOT NULL
+);
 `;
 
 let db = null;
@@ -292,7 +309,7 @@ export function setKv(key, value) {
 /* Counts + file size, for verifying what is actually stored. */
 export function dbStats() {
   if (!db || !dbFile) return { ready: false };
-  const tables = ['items', 'assets', 'subtitles', 'audio_tracks', 'picture', 'hero', 'trailers', 'intro'];
+  const tables = ['items', 'assets', 'subtitles', 'audio_tracks', 'picture', 'hero', 'trailers', 'intro', 'dirs'];
   const counts = {};
   for (const table of tables) {
     try {
