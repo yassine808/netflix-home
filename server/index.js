@@ -688,7 +688,7 @@ app.get('/api/hero/:id/trailer.mp4', (req, res) => {
     warmTrailer(found.item);
     return res.status(404).end();
   }
-  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.setHeader('Cache-Control', 'public, no-cache');
   res.setHeader('Content-Type', 'video/mp4');
   res.sendFile(file);
 });
@@ -703,7 +703,8 @@ app.get('/api/trailer/:id', (req, res) => {
   warmTrailer(found.item);
   const status = trailerStatus(found.item);
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ ...status, url: status.status === 'ready' ? `/api/hero/${encodeURIComponent(found.item.id)}/trailer.mp4` : '' });
+  const version = status.version || 0;
+  res.json({ ...status, url: status.status === 'ready' ? `/api/hero/${encodeURIComponent(found.item.id)}/trailer.mp4?v=${version}` : '' });
 });
 
 app.get('/api/frames/:id', (req, res) => {
@@ -798,6 +799,82 @@ app.get('/api/item/:id', (req, res) => {
   if (!item) return res.status(404).json({ error: 'not found' });
   const { posterPath, backdropPath, ...safe } = item;
   res.json({ ...safe, hasPoster: Boolean(posterPath), hasBackdrop: Boolean(backdropPath) });
+});
+
+/* Delete the video and its subtitle sidecars. The library scan that follows
+ * drops the catalog rows, so the card disappears without a restart. */
+async function deleteLibraryFiles(found) {
+  const base = path.resolve(libraryRoot);
+  const full = path.resolve(found.full);
+  if (full !== base && !full.toLowerCase().startsWith(base.toLowerCase() + path.sep)) {
+    throw Object.assign(new Error('file is outside the library'), { status: 400 });
+  }
+  try {
+    await fs.promises.unlink(full);
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      const open = err.code === 'EBUSY' || err.code === 'EPERM';
+      throw Object.assign(
+        new Error(open ? 'the file is open in the player — close it and try again' : err.message),
+        { status: open ? 409 : 500 },
+      );
+    }
+  }
+  // `<video>.<lang>.vtt` and friends belong to the file that just went away.
+  const dir = path.dirname(full);
+  const prefix = path.basename(full, path.extname(full)) + '.';
+  try {
+    for (const name of await fs.promises.readdir(dir)) {
+      if (!name.startsWith(prefix) || !/\.(vtt|srt|ass|ssa)$/i.test(name)) continue;
+      await fs.promises.unlink(path.join(dir, name)).catch(() => {});
+    }
+  } catch {
+    /* folder vanished with the file */
+  }
+}
+
+app.delete('/api/item/:id', async (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).json({ error: 'not found' });
+  try {
+    await deleteLibraryFiles(found);
+  } catch (err) {
+    return res.status(err.status || 500).json({ error: err.message });
+  }
+  const lib = await refreshLibrary('delete');
+  res.json({ ok: true, id: found.item.id, count: lib?.items?.length ?? getLibrary().items.length });
+});
+
+/* Bulk delete for the series sheet's "Delete all": one scan at the end instead
+ * of one per episode. Failures are reported per file (usually a file that is
+ * still open in the player). */
+app.post('/api/items/delete', async (req, res) => {
+  const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : [])
+    .map(String).filter(Boolean))].slice(0, 500);
+  if (!ids.length) return res.status(400).json({ error: 'no episode ids' });
+  const removed = [];
+  const failed = [];
+  for (const id of ids) {
+    const found = resolveItemFile(id);
+    if (!found) {
+      failed.push({ id, error: 'not found' });
+      continue;
+    }
+    try {
+      await deleteLibraryFiles(found);
+      removed.push(id);
+    } catch (err) {
+      failed.push({ id, error: err.message });
+    }
+  }
+  const lib = removed.length ? await refreshLibrary('delete') : null;
+  const payload = {
+    ok: failed.length === 0,
+    removed: removed.length,
+    failed,
+    count: lib?.items?.length ?? getLibrary().items.length,
+  };
+  res.status(failed.length && !removed.length ? 409 : 200).json(payload);
 });
 
 /* ---------- subtitles (sidecar .vtt files next to the video) ---------- */

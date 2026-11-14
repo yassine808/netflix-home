@@ -159,6 +159,23 @@ export async function deleteLibraryItem(id) {
   return res.json().catch(() => ({}));
 }
 
+/* Bulk delete: one request and one library scan for the whole series. The
+ * server reports per-file failures, so a clip still open in the player does
+ * not hide the episodes that did go away. */
+export async function deleteLibraryItems(ids) {
+  const list = (Array.isArray(ids) ? ids : []).map(String).filter(Boolean);
+  if (!list.length) return { removed: 0, failed: [] };
+  const res = await fetch('/api/items/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: list }),
+  });
+  let payload = null;
+  try { payload = await res.json(); } catch { /* non-JSON error */ }
+  if (!payload) throw new Error(`delete failed (${res.status})`);
+  return payload;
+}
+
 export function subtitleUrl(id, lang) {
   return `/api/subtitle/${encodeURIComponent(id)}/${encodeURIComponent(lang)}`;
 }

@@ -5,7 +5,7 @@ import {
   getSeries, getSeriesCatalog, debounce, createEl,
   browseCastle,
   searchOnline, getOnlineTitle, searchCastle, getCastleTitle, getCastleSeriesEpisodes, startCastleDownload,
-  deleteLibraryItem, getDownloads, cancelDownload, retryDownload, reorderDownloads,
+  deleteLibraryItem, deleteLibraryItems, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   getSettings, setOfflineMode,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
   setImg, skel, skelLines, skelMeta, skelCards, skelPoster, skelEpisodes, skelDownload,
@@ -60,12 +60,15 @@ const state = {
   castleCache: new Map(),
   castleTitle: null,
   castleSeason: 0,
-  castleQuality: 0,
   castleBusy: false,
   castleDetailToken: 0,
   castleSeasonToken: 0,
   castleTrailerToken: 0,
   castleTrailerTimer: null,
+  castleTrailerPlayTimer: null,
+  castleVolumeTimer: 0,
+  castleMuted: false,
+  castleOpenedAt: 0,
   castleLocal: null,
   castleCatalog: null,
   castleSig: '',
@@ -162,15 +165,15 @@ const els = {
   castleTrailer: $('castleTrailer'),
   castleKicker: $('castleKicker'),
   castleLogo: $('castleLogo'),
+  castleMute: $('castleMute'),
   castleTitle: $('castleTitle'),
   castleMeta: $('castleMeta'),
   castlePlot: $('castlePlot'),
   castleSeasonDownload: $('castleSeasonDownload'),
+  castleSeasonDelete: $('castleSeasonDelete'),
   castleList: $('castleList'),
   castleResume: $('castleResume'),
   castleDownloadBlock: $('castleDownloadBlock'),
-  castleQuality: $('castleQuality'),
-  castleTools: document.querySelector('.castle-toolbar'),
   castleSize: $('castleSize'),
   castleSeasonTabs: $('castleSeasonTabs'),
   castleEpisodes: $('castleEpisodes'),
@@ -795,12 +798,15 @@ function playPreview(item) {
     attempt();
   };
 
-  // Prefer the official trailer downloaded from YouTube; the generated clip
-  // and then the real stream are fallbacks while it is still being fetched.
+  // Prefer the cached official trailer (Netflix clip first, Cinemeta/YouTube
+  // fallback); the generated clip and then the real stream are fallbacks while
+  // the file is still being fetched.
+  // `v=2` steps around the copy browsers cached before Netflix became the
+  // first source; the route itself is `no-cache`, so later swaps revalidate.
   state.previewMode = 'trailer';
   video.loop = true;
   video.onerror = useClip;
-  video.src = `/api/hero/${encodeURIComponent(item.id)}/trailer.mp4`;
+  video.src = `/api/hero/${encodeURIComponent(item.id)}/trailer.mp4?v=2`;
   attempt();
 }
 
@@ -2238,6 +2244,8 @@ function closeOnlineModal() {
 /* ---------- castle download modal ---------- */
 
 const CASTLE_QUALITY = { 1: '480p', 2: '720p', 3: '1080p' };
+/* 1080p is premium-only on this source, so the sheet downloads 720p. */
+const CASTLE_RESOLUTION = 2;
 let castleFocusEl = null;
 
 function qualityName(resolution) {
@@ -2327,7 +2335,6 @@ function renderCastleSkeleton(count = 5, { series = true } = {}) {
   for (let i = 0; i < 2; i += 1) {
     els.castleSeasonTabs.append(createEl('div', 'season-tab skeleton skeleton-pill'));
   }
-  els.castleQuality.replaceChildren(skel('sk-pill'), skel('sk-pill'), skel('sk-pill'));
   els.castleSize.replaceChildren(skel('sk-line', '150px', '12px'));
   els.castleSeasonDownload.hidden = !series;
   els.castleSeasonDownload.disabled = true;
@@ -2400,8 +2407,8 @@ async function openCastleModal(item) {
   state.castleTitle = item;
   state.castleLocal = null;
   state.castleSeason = 0;
-  state.castleQuality = 0;
   state.castleBusy = false;
+  resetCastleDeleteAll();
   const token = ++state.castleDetailToken;
   els.castleModal.hidden = false;
   syncBodyLock();
@@ -2437,7 +2444,6 @@ async function openCastleModal(item) {
     clearCastleSkeleton();
     populateCastleModal(item);
     els.castleEpisodes.replaceChildren();
-    els.castleQuality.replaceChildren();
     els.castleSeasonTabs.replaceChildren();
     els.castleSeasonDownload.hidden = true;
     els.castleStatus.textContent = `Could not load download options (${err.message}).`;
@@ -2445,59 +2451,19 @@ async function openCastleModal(item) {
   }
 }
 
-function renderCastleQuality(detail, episodes) {
-  const qualities = new Map();
-  episodes.forEach((episode) => {
-    (episode.resolutions || []).forEach((quality) => {
-      const entry = qualities.get(quality.resolution) || { resolution: quality.resolution, premium: true };
-      entry.premium = entry.premium && Boolean(quality.premium);
-      qualities.set(quality.resolution, entry);
-    });
-  });
-
-  const list = [...qualities.values()].sort((a, b) => a.resolution - b.resolution);
-  els.castleQuality.replaceChildren();
-  els.castleTools.hidden = !list.length;
-  if (!list.length) return { selected: 0, total: 0, duration: 0, qualities };
-
-  let selected = Number(state.castleQuality);
-  if (!qualities.has(selected)) {
-    const free = [...list].reverse().find((entry) => !entry.premium);
-    selected = (free || list[list.length - 1]).resolution;
-  }
-  state.castleQuality = selected;
-
-  list.forEach((quality) => {
-    const btn = createEl('button', 'quality-option', qualityName(quality.resolution));
-    btn.type = 'button';
-    btn.dataset.resolution = String(quality.resolution);
-    btn.classList.toggle('active', quality.resolution === selected);
-    if (quality.premium) {
-      btn.dataset.premium = 'true';
-      btn.title = 'Premium quality — may only be available as a preview';
-    }
-    btn.addEventListener('click', () => {
-      state.castleQuality = quality.resolution;
-      renderCastleDownloads(state.castleTitle);
-    });
-    els.castleQuality.append(btn);
-  });
-
+/* The quality picker is gone: every download from this sheet is 720p. The
+ * size line still totals the 720p files the catalog lists. */
+function renderCastleSizes(detail, episodes) {
   let total = 0;
-  let duration = 0;
   episodes.forEach((episode) => {
-    const match = (episode.resolutions || []).find((entry) => entry.resolution === selected);
-    if (match) total += match.size;
-    duration += Number(episode.duration) || 0;
+    const match = (episode.resolutions || []).find((entry) => entry.resolution === CASTLE_RESOLUTION);
+    if (match) total += Number(match.size) || 0;
   });
-  els.castleSize.textContent = [
-    detail.type === 'series' && episodes.length
-      ? `${episodes.length} episode${episodes.length === 1 ? '' : 's'} at ${qualityName(selected)}`
-      : qualityName(selected),
-    total ? `≈ ${formatSize(total)}` : '',
-  ].filter(Boolean).join(' · ');
-
-  return { selected, total, duration, qualities };
+  const label = detail.type === 'series' && episodes.length
+    ? `${episodes.length} episode${episodes.length === 1 ? '' : 's'} at ${qualityName(CASTLE_RESOLUTION)}`
+    : qualityName(CASTLE_RESOLUTION);
+  els.castleSize.textContent = [label, total ? `≈ ${formatSize(total)}` : ''].filter(Boolean).join(' · ');
+  return CASTLE_RESOLUTION;
 }
 
 const EP_DOWNLOAD_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg>';
@@ -2587,11 +2553,7 @@ function buildDeleteButton(local) {
     try {
       await deleteLibraryItem(local.id);
       await loadLibrary();
-      const group = state.castleLocal?.group;
-      if (group) {
-        const fresh = groupLibrary().find((entry) => entry.id === group.id) || group;
-        state.castleLocal = { ...state.castleLocal, group: fresh, local: localEpisodesFor(fresh) };
-      }
+      refreshCastleLocal();
       toast('Episode deleted');
       renderCastleDownloads(state.castleTitle);
     } catch (err) {
@@ -2602,6 +2564,68 @@ function buildDeleteButton(local) {
     }
   });
   return del;
+}
+
+/* "Delete all" is series-wide: every local episode, whatever the season tab.
+ * The first click arms the button, the second one deletes. */
+let castleDeleteArmTimer = 0;
+
+function castleDeleteCount() {
+  return state.castleLocal?.local?.size || 0;
+}
+
+function resetCastleDeleteAll() {
+  clearTimeout(castleDeleteArmTimer);
+  castleDeleteArmTimer = 0;
+  const btn = els.castleSeasonDelete;
+  if (!btn) return;
+  btn.classList.remove('is-armed');
+  btn.disabled = false;
+  btn.textContent = 'Delete all';
+  btn.title = 'Delete every episode of this title from disk';
+}
+
+function bindCastleDeleteAll() {
+  els.castleSeasonDelete.addEventListener('click', async () => {
+    if (state.castleBusy) return;
+    const ids = [...(state.castleLocal?.local?.values() || [])].map((entry) => entry.id).filter(Boolean);
+    if (!ids.length) return;
+    const btn = els.castleSeasonDelete;
+    if (!btn.classList.contains('is-armed')) {
+      btn.classList.add('is-armed');
+      btn.textContent = `Delete all ${ids.length}?`;
+      btn.title = 'Click again to delete every local episode of this title';
+      clearTimeout(castleDeleteArmTimer);
+      castleDeleteArmTimer = setTimeout(resetCastleDeleteAll, 3500);
+      return;
+    }
+    clearTimeout(castleDeleteArmTimer);
+    castleDeleteArmTimer = 0;
+    state.castleBusy = true;
+    btn.disabled = true;
+    btn.textContent = 'Deleting…';
+    try {
+      const result = await deleteLibraryItems(ids);
+      const removed = Number(result?.removed) || 0;
+      const failed = Array.isArray(result?.failed) ? result.failed : [];
+      await loadLibrary();
+      refreshCastleLocal();
+      if (!failed.length) {
+        toast(removed === 1 ? 'Episode deleted' : `${removed} episodes deleted`);
+        closeCastleModal();
+        return;
+      }
+      toast(`Could not delete ${failed.length} episode${failed.length === 1 ? '' : 's'}: ${failed[0].error}`);
+      if (removed) toast(`${removed} deleted, ${failed.length} still on disk`);
+      state.castleBusy = false;
+      resetCastleDeleteAll();
+      renderCastleDownloads(state.castleTitle);
+    } catch (err) {
+      state.castleBusy = false;
+      resetCastleDeleteAll();
+      toast(`Could not delete: ${err.message}`);
+    }
+  });
 }
 
 function appendCastleAction(row, detail, episode, local, quality) {
@@ -2675,15 +2699,14 @@ function renderCastleDownloads(detail) {
   els.castleStatus.hidden = false;
   updateCastleListButton(detail);
 
-  const localGroup = state.castleLocal?.group || null;
   const localMap = state.castleLocal?.local || null;
   const localFor = (season, episode) => (localMap ? localMap.get(`${season}x${episode}`) || null : null);
 
-  const resume = localGroup ? resumeTarget(localGroup) : null;
-  els.castleResume.hidden = !resume;
-  els.castleResume.innerHTML = `${EP_PLAY_ICON}<span>${resume ? `Resume S${String(resume.episode.season).padStart(2, '0')}E${String(resume.episode.episode).padStart(2, '0')}` : 'Resume'}</span>`;
+  const playTarget = castlePlayTarget();
+  els.castleResume.hidden = !playTarget;
+  els.castleResume.innerHTML = `${EP_PLAY_ICON}<span>${playTarget ? playTarget.label : 'Play'}</span>`;
 
-  const { selected } = renderCastleQuality(detail, episodes);
+  const selected = renderCastleSizes(detail, episodes);
 
   const seasons = Array.isArray(detail.seasons) ? detail.seasons : [];
   const canPickSeason = detail.type === 'series' && seasons.length > 1;
@@ -2708,6 +2731,14 @@ function renderCastleDownloads(detail) {
   els.castleSeasonDownload.disabled = state.castleBusy || allDone;
   els.castleSeasonDownload.classList.toggle('is-done', allDone);
   els.castleSeasonDownload.textContent = allDone ? 'Everything downloaded' : 'Download all';
+
+  const localCount = localMap ? localMap.size : 0;
+  els.castleSeasonDelete.hidden = !localCount;
+  els.castleSeasonDelete.disabled = state.castleBusy;
+  if (!localCount) resetCastleDeleteAll();
+  else if (!els.castleSeasonDelete.classList.contains('is-armed')) {
+    els.castleSeasonDelete.textContent = 'Delete all';
+  }
 
   if (!episodes.length) {
     els.castleStatus.textContent = 'No downloadable episodes are listed for this title.';
@@ -2841,8 +2872,10 @@ async function selectCastleSeason(season) {
 
 async function queueCastleEpisode(episode, btn) {
   const detail = state.castleTitle;
-  const quality = (episode.resolutions || []).find((entry) => entry.resolution === state.castleQuality);
-  if (!detail || !quality) return;
+  const quality = (episode.resolutions || []).find((entry) => entry.resolution === CASTLE_RESOLUTION)
+    || episode.quality
+    || null;
+  if (!detail) return;
 
   const isSeries = detail.type === 'series';
   const label = isSeries
@@ -2857,18 +2890,18 @@ async function queueCastleEpisode(episode, btn) {
     await startCastleDownload({
       movieId: episode.movieId,
       episodeId: episode.episodeId,
-      resolution: state.castleQuality,
+      resolution: CASTLE_RESOLUTION,
       title: detail.title,
       year: detail.year,
       season: isSeries ? state.castleSeason : 0,
       episode: episode.episode,
-      size: quality.size,
+      size: quality?.size || 0,
       poster: detail.poster,
     });
     btn.classList.add('queued');
     btn.querySelector('span').textContent = 'Queued';
-    toast(`${label} queued — ${qualityName(state.castleQuality)}`);
-    notify('start', label, `Queued — ${qualityName(state.castleQuality)}`);
+    toast(`${label} queued — ${qualityName(CASTLE_RESOLUTION)}`);
+    notify('start', label, `Queued — ${qualityName(CASTLE_RESOLUTION)}`);
     openDownloads();
     refreshDownloads();
   } catch (err) {
@@ -2940,9 +2973,9 @@ async function queueCastleSeason() {
       continue;
     }
     els.castleSeasonDownload.textContent = `Queueing ${index + 1}/${episodes.length}…`;
-    // The catalogue lists one default quality per episode; the sheet's chosen
-    // quality wins when it is the same one.
-    const quality = (episode.resolutions || []).find((entry) => entry.resolution === state.castleQuality)
+    // Every download from this sheet is 720p; use the matching catalog entry
+    // for its size estimate when the catalog lists one.
+    const quality = (episode.resolutions || []).find((entry) => entry.resolution === CASTLE_RESOLUTION)
       || episode.quality
       || null;
     if (!quality) {
@@ -2953,7 +2986,7 @@ async function queueCastleSeason() {
       await startCastleDownload({
         movieId: episode.movieId,
         episodeId: episode.episodeId,
-        resolution: quality.resolution,
+        resolution: CASTLE_RESOLUTION,
         title: detail.title,
         year: detail.year,
         season: episode.season,
@@ -3023,6 +3056,7 @@ function closeCastleModal() {
   state.castleDetailToken += 1;
   state.castleSeasonToken += 1;
   state.castleBusy = false;
+  resetCastleDeleteAll();
   syncBodyLock();
   castleFocusEl?.focus?.();
   if (state.view === 'home' && !isModalOpen()) {
@@ -3066,6 +3100,27 @@ function localEpisodesFor(group) {
   return map;
 }
 
+/* After a delete the group's primary id can move to another episode, so look
+ * the group up by its stable series key, not by id. The last local episode
+ * leaves the sheet open but with an empty map, so every row becomes a
+ * download row and "Delete all" disappears. */
+function refreshCastleLocal() {
+  const group = state.castleLocal?.group;
+  if (!group) return;
+  const fresh = groupLibrary().find((entry) => (group.seriesKey
+    ? entry.seriesKey === group.seriesKey
+    : entry.id === group.id));
+  if (fresh) {
+    state.castleLocal = { ...state.castleLocal, group: fresh, local: localEpisodesFor(fresh) };
+  } else {
+    state.castleLocal = {
+      ...state.castleLocal,
+      group: { ...group, episodes: [], ids: [] },
+      local: new Map(),
+    };
+  }
+}
+
 /* The library already knows its own episodes, so draw them before the catalog
  * answers: Play buttons appear immediately instead of a long skeleton. */
 function localSheetDetail(group, season) {
@@ -3104,6 +3159,31 @@ function resumeTarget(group) {
     if (!best || key > best.key) best = { key, id: ep.id, episode: ep, progress };
   }
   return best;
+}
+
+/* Main button of the sheet: resume the episode in progress, otherwise play the
+ * first episode on disk. Catalog-only titles have no local file, so no button. */
+function castlePlayTarget() {
+  const group = state.castleLocal?.group;
+  if (!group) return null;
+  const resume = resumeTarget(group);
+  if (resume) {
+    const ep = resume.episode;
+    return {
+      id: resume.id,
+      label: `Resume S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')}`,
+    };
+  }
+  if (group.episodes?.length) {
+    const ep = primaryEpisode(group);
+    return ep ? { id: ep.id, label: 'Play' } : null;
+  }
+  if (!state.byId.get(group.id)) return null;
+  const progress = progressFor(group.id);
+  return {
+    id: group.id,
+    label: progress && progress.t > 5 && !progress.finished ? 'Resume' : 'Play',
+  };
 }
 
 /* The sheet uses the same picture as the card (the title's backdrop), not the
@@ -3171,12 +3251,74 @@ function setCastleLogo(item) {
 }
 
 /* The sheet trailer is the same cached file as the billboard. The server
- * resolves Netflix first, then Cinemeta, and reports when the MP4 is on disk;
- * until then the card picture stays on screen. */
+ * resolves Netflix first, then Cinemeta, and reports when the MP4 is on disk.
+ * The card picture holds for two seconds, then the video crossfades in with
+ * sound; the mute button fades the volume instead of cutting it. */
+const CASTLE_TRAILER_DELAY = 2000;
+const CASTLE_TRAILER_VOLUME = 0.6;
+const CASTLE_FADE_MS = 500;
+
+function stopCastleVolumeFade() {
+  if (state.castleVolumeTimer) clearTimeout(state.castleVolumeTimer);
+  state.castleVolumeTimer = 0;
+}
+
+function fadeCastleVolume(target, done) {
+  const video = els.castleTrailer;
+  stopCastleVolumeFade();
+  const from = Number.isFinite(video.volume) ? video.volume : 0;
+  const to = Math.max(0, Math.min(1, target));
+  const startedAt = performance.now();
+  // A timer, not requestAnimationFrame: Chrome pauses rAF in a hidden window,
+  // which used to leave the trailer silent at volume 0.
+  const step = () => {
+    const t = Math.min(1, (performance.now() - startedAt) / CASTLE_FADE_MS);
+    const eased = 1 - Math.pow(1 - t, 3);
+    try { video.volume = from + (to - from) * eased; } catch { /* ignore */ }
+    if (t < 1) {
+      state.castleVolumeTimer = setTimeout(step, 16);
+      return;
+    }
+    state.castleVolumeTimer = 0;
+    if (done) done();
+  };
+  state.castleVolumeTimer = setTimeout(step, 16);
+}
+
+function syncCastleMute(blocked = false) {
+  const muted = state.castleMuted;
+  els.castleMute.classList.toggle('is-muted', muted);
+  els.castleMute.classList.toggle('blocked', blocked && muted);
+  const label = muted
+    ? (blocked ? 'Sound blocked — click to hear the trailer' : 'Unmute trailer')
+    : 'Mute trailer';
+  els.castleMute.setAttribute('aria-label', label);
+  els.castleMute.title = label;
+}
+
+function toggleCastleMute() {
+  const video = els.castleTrailer;
+  const nextMuted = !state.castleMuted;
+  state.castleMuted = nextMuted;
+  if (nextMuted) {
+    fadeCastleVolume(0, () => {
+      if (state.castleMuted) video.muted = true;
+    });
+  } else {
+    video.muted = false;
+    try { video.volume = 0; } catch { /* ignore */ }
+    fadeCastleVolume(CASTLE_TRAILER_VOLUME);
+  }
+  syncCastleMute();
+}
+
 function stopCastleTrailer() {
   state.castleTrailerToken += 1;
   clearTimeout(state.castleTrailerTimer);
   state.castleTrailerTimer = null;
+  clearTimeout(state.castleTrailerPlayTimer);
+  state.castleTrailerPlayTimer = null;
+  stopCastleVolumeFade();
   const video = els.castleTrailer;
   video.classList.remove('playing');
   els.castleModal.querySelector('.online-hero')?.classList.remove('is-playing');
@@ -3185,15 +3327,44 @@ function stopCastleTrailer() {
     video.removeAttribute('src');
     video.load();
   } catch { /* ignore */ }
+  try { video.volume = 0; } catch { /* ignore */ }
+  video.muted = true;
+  state.castleMuted = false;
+  syncCastleMute();
 }
 
 function playCastleTrailer(url) {
   const video = els.castleTrailer;
-  if (!url || video.getAttribute('src') === url) return;
-  video.muted = true;
+  if (!url) return;
   video.src = url;
-  const playing = video.play();
-  if (playing && typeof playing.catch === 'function') playing.catch(() => {});
+  video.muted = state.castleMuted;
+  try { video.volume = 0; } catch { /* ignore */ }
+  const attempt = (first) => {
+    const playing = video.play();
+    if (playing && typeof playing.catch === 'function') {
+      playing.catch((err) => {
+        if (err?.name !== 'NotAllowedError' || video.muted || !first) return;
+        // Audible autoplay was blocked: keep the clip, but play it muted and
+        // flag the mute button so the sound is one click away.
+        state.castleMuted = true;
+        video.muted = true;
+        try { video.volume = 0; } catch { /* ignore */ }
+        syncCastleMute(true);
+        video.play().catch(() => {});
+      });
+    }
+  };
+  attempt(true);
+}
+
+function scheduleCastleTrailer(url, token) {
+  if (state.castleTrailerPlayTimer) return;
+  const wait = Math.max(0, (state.castleOpenedAt || 0) + CASTLE_TRAILER_DELAY - Date.now());
+  state.castleTrailerPlayTimer = setTimeout(() => {
+    state.castleTrailerPlayTimer = null;
+    if (token !== state.castleTrailerToken || els.castleModal.hidden) return;
+    playCastleTrailer(url);
+  }, wait);
 }
 
 function askCastleTrailer(item, token, deadline) {
@@ -3203,7 +3374,7 @@ function askCastleTrailer(item, token, deadline) {
     .then((data) => {
       if (token !== state.castleTrailerToken || els.castleModal.hidden) return;
       if (data?.status === 'ready' && data.url) {
-        playCastleTrailer(data.url);
+        scheduleCastleTrailer(data.url, token);
         return;
       }
       if (!data || data.status === 'failed' || data.status === 'none') return;
@@ -3219,6 +3390,7 @@ function askCastleTrailer(item, token, deadline) {
 
 function startCastleTrailer(item) {
   stopCastleTrailer();
+  state.castleOpenedAt = Date.now();
   if (!item?.id) return;
   askCastleTrailer(item, state.castleTrailerToken, Date.now() + 120000);
 }
@@ -3227,11 +3399,13 @@ function bindCastleTrailer() {
   els.castleTrailer.addEventListener('playing', () => {
     els.castleTrailer.classList.add('playing');
     els.castleModal.querySelector('.online-hero')?.classList.add('is-playing');
+    if (!state.castleMuted) fadeCastleVolume(CASTLE_TRAILER_VOLUME);
   });
   els.castleTrailer.addEventListener('error', () => {
     els.castleTrailer.classList.remove('playing');
     els.castleModal.querySelector('.online-hero')?.classList.remove('is-playing');
   });
+  els.castleMute.addEventListener('click', toggleCastleMute);
 }
 
 function highlightSheetTarget() {
@@ -3262,8 +3436,8 @@ async function openSeriesSheet(group, focusId) {
     || (state.byId.get(focusId)?.season)
     || group.episodes[0]?.season
     || 1;
-  state.castleQuality = 0;
   state.castleBusy = false;
+  resetCastleDeleteAll();
   const token = ++state.castleDetailToken;
 
   els.castleModal.hidden = false;
@@ -3272,7 +3446,6 @@ async function openSeriesSheet(group, focusId) {
   startCastleTrailer(group);
   els.castleDownloadBlock.hidden = false;
   els.castleEpisodes.replaceChildren();
-  els.castleQuality.replaceChildren();
   els.castleSeasonTabs.replaceChildren();
   els.castleSeasonDownload.hidden = true;
   els.castleResume.hidden = true;
@@ -4026,9 +4199,10 @@ function bindStaticEvents() {
   els.onlineModal.querySelectorAll('[data-close-online]').forEach((el) => el.addEventListener('click', closeOnlineModal));
   els.castleModal.querySelectorAll('[data-close-castle]').forEach((el) => el.addEventListener('click', closeCastleModal));
   els.castleSeasonDownload.addEventListener('click', queueCastleSeason);
+  bindCastleDeleteAll();
   els.castleList.addEventListener('click', toggleCastleList);
   els.castleResume.addEventListener('click', () => {
-    const target = resumeTarget(state.castleLocal?.group);
+    const target = castlePlayTarget();
     if (target) goWatch(target.id);
   });
   els.onlineCastleBtn.addEventListener('click', () => openCastleForTitle(state.onlineTitle?.title));

@@ -348,7 +348,7 @@ export function trailerStatus(item) {
   const ready = trailerReady(item);
   if (ready) {
     const row = rowFor(trailerKey(item));
-    return { ...ready, status: 'ready', source: row?.source || '' };
+    return { ...ready, status: 'ready', source: row?.source || '', version: row?.fetched_at || 0 };
   }
   const key = trailerKey(item);
   const row = rowFor(key);
