@@ -1,5 +1,5 @@
 import {
-  formatClock, progressFor, saveProgress, qualityLabel, thumbUrl, readJson, writeJson,
+  formatClock, formatDuration, progressFor, saveProgress, thumbUrl, readJson, writeJson, getSeries,
 } from './common.js';
 
 const $ = (id) => document.getElementById(id);
@@ -10,7 +10,6 @@ const loading = $('playerLoading');
 const errorBox = $('playerError');
 const timeEl = $('time');
 const playBtn = $('playBtn');
-const centerPlay = $('centerPlay');
 const timeline = $('timelineWrap');
 const played = $('tlPlayed');
 const buffer = $('tlBuffer');
@@ -19,10 +18,21 @@ const tooltip = $('tlTooltip');
 const volume = $('volume');
 const muteBtn = $('muteBtn');
 const fsBtn = $('fsBtn');
-const qualityTag = $('qualityTag');
-const playerTag = $('playerTag');
+const videoTitle = $('videoTitle');
+const epTag = $('epTag');
+const epName = $('epName');
+const nextWrap = $('nextWrap');
+const nextCard = $('nextCard');
+const nextTag = $('nextTag');
+const nextNote = $('nextNote');
+const nextThumb = $('nextThumb');
+const epBtn = $('epBtn');
+const epPanel = $('epPanel');
+const epList = $('epList');
+const epSeason = $('epSeason');
+const back10Btn = $('back10');
+const fwd10Btn = $('fwd10');
 const resumeToast = $('resumeToast');
-const topKicker = $('topKicker');
 const ccBtn = $('ccBtn');
 const ccPanel = $('ccPanel');
 const ccList = $('ccList');
@@ -36,7 +46,6 @@ const subtitleLayer = $('subtitleLayer');
 const subtitleText = $('subtitleText');
 const preview = $('tlPreview');
 const skipIntroBtn = $('skipIntro');
-const nextBtn = $('nextEp');
 
 let item = null;
 let nextEpisode = null;
@@ -46,6 +55,12 @@ let hideTimer = null;
 let dragging = false;
 let pendingResume = 0;
 let lastVolume = 1;
+let dragRatio = 0;
+let raf = 0;
+let lastTimeLabel = '';
+let seekQueued = false;
+let lastSeekAt = 0;
+let seriesSeasons = [];
 
 const UI_HIDE_DELAY = 3000;
 const PREVIEW_HALF_MIN = 84;
@@ -115,13 +130,11 @@ async function init() {
   }
 
   document.title = `${item.displayTitle || item.title} | Netflix Home`;
-  $('videoTitle').textContent = item.displayTitle || item.title;
-  topKicker.textContent = item.collection && item.collection !== 'Movies' ? item.collection.toUpperCase() : 'NETFLIX HOME';
-  qualityTag.textContent = qualityLabel(item) || '';
-  // Series: season and episode. Movie: just its name.
-  playerTag.textContent = item.isSeries
-    ? `S${String(item.season).padStart(2, '0')}E${String(item.episode).padStart(2, '0')}`
-    : (item.title || '');
+  const full = item.displayTitle || item.title || '';
+  videoTitle.textContent = item.seriesTitle
+    || (item.isSeries ? full.replace(/\s*[·•-]\s*S\d+E\d+\s*$/i, '') : (item.title || full));
+  epTag.textContent = item.isSeries ? `S${item.season}:E${item.episode}` : '';
+  epName.textContent = item.episodeTitle || '';
   document.body.style.background = '#000';
   video.poster = thumbUrl(item);
   video.src = `/api/stream/${encodeURIComponent(item.id)}`;
@@ -129,6 +142,7 @@ async function init() {
   bindEvents();
   initSeekFx();
   loadNextEpisode();
+  loadEpisodes();
   syncVolume();
   updateTimeline();
   initSubtitles();
@@ -159,22 +173,26 @@ function bindEvents() {
     player.classList.remove('paused');
     player.classList.remove('hide-cursor');
     setPlayIcon(true);
+    startLoop();
     armHideUi();
   });
   video.addEventListener('pause', () => {
     player.classList.add('paused');
     setPlayIcon(false);
+    stopLoop();
     showUi();
     saveNow();
   });
   video.addEventListener('ended', () => {
     player.classList.add('paused');
     setPlayIcon(false);
+    stopLoop();
     showUi();
     saveProgress(item.id, duration, duration);
   });
   video.addEventListener('timeupdate', () => {
     updateTimeline();
+    updateBuffer();
     renderSubtitle();
     syncSkipIntro();
     if (Date.now() - lastSaved > 3000) saveNow();
@@ -193,18 +211,25 @@ function bindEvents() {
   });
 
   playBtn.addEventListener('click', togglePlay);
-  centerPlay.addEventListener('click', togglePlay);
   video.addEventListener('click', togglePlay);
   video.addEventListener('dblclick', toggleFullscreen);
 
   $('backBtn').addEventListener('click', leaveToHome);
-  $('back10').addEventListener('click', () => { skip(-10); flashSeek('left'); });
-  $('fwd10').addEventListener('click', () => { skip(10); flashSeek('right'); });
+  back10Btn.addEventListener('click', () => skip(-10));
+  fwd10Btn.addEventListener('click', () => skip(10));
+  epBtn.addEventListener('click', () => toggleEpPanel());
+  $('epClose').addEventListener('click', () => toggleEpPanel(false));
+  epSeason.addEventListener('change', () => renderEpisodes(Number(epSeason.value)));
+  nextCard.addEventListener('click', openNextEpisode);
+  document.addEventListener('pointerdown', (e) => {
+    if (!ccPanel.hidden && !ccPanel.contains(e.target) && !ccBtn.contains(e.target)) toggleCcPanel(false, true);
+    if (!epPanel.hidden && !epPanel.contains(e.target) && !epBtn.contains(e.target)) toggleEpPanel(false, true);
+  });
   muteBtn.addEventListener('click', toggleMute);
   fsBtn.addEventListener('click', toggleFullscreen);
   ccBtn.addEventListener('click', () => toggleCcPanel());
   skipIntroBtn.addEventListener('click', skipIntroNow);
-  nextBtn.addEventListener('click', openNextEpisode);
+  $('nextEp').addEventListener('click', openNextEpisode);
   document.querySelector('.btn-home')?.addEventListener('click', (e) => {
     e.preventDefault();
     leaveToHome();
@@ -261,7 +286,11 @@ function bindEvents() {
   window.addEventListener('pagehide', saveNow);
   window.addEventListener('beforeunload', saveNow);
   document.addEventListener('fullscreenchange', () => {
-    fsBtn.setAttribute('aria-label', document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen');
+    const fs = Boolean(document.fullscreenElement);
+    fsBtn.setAttribute('aria-label', fs ? 'Exit fullscreen' : 'Fullscreen');
+    player.classList.toggle('is-fs', fs);
+    fsBtn.querySelector('.i-fs-in').hidden = fs;
+    fsBtn.querySelector('.i-fs-out').hidden = !fs;
   });
 }
 
@@ -339,8 +368,18 @@ function flashSeek(sideKey) {
 function skip(seconds) {
   if (!duration) return;
   video.currentTime = Math.min(Math.max(0, video.currentTime + seconds), duration - 0.5);
+  flashSeek(seconds < 0 ? 'left' : 'right');
+  spinSkipIcon(seconds < 0 ? back10Btn : fwd10Btn);
+  updateTimeline();
   showUi();
   armHideUi();
+}
+
+/* The arrow ring on the -10 / +10 button spins once per click. */
+function spinSkipIcon(btn) {
+  btn.classList.remove('spin');
+  void btn.offsetWidth; // restart the animation
+  btn.classList.add('spin');
 }
 
 /* Resume a few seconds before the saved point so the viewer regains context. */
@@ -366,17 +405,95 @@ async function loadNextEpisode() {
     const data = await res.json();
     if (!data || data.kind === 'none') return;
     nextEpisode = data;
-    const tag = `S${String(data.season).padStart(2, '0')}E${String(data.episode).padStart(2, '0')}`;
-    nextBtn.hidden = false;
-    nextBtn.title = data.kind === 'local'
-      ? `Next episode · ${tag}`
-      : `${tag} is not downloaded yet`;
-    nextBtn.setAttribute('aria-label', data.kind === 'local'
+    const tag = `S${data.season}:E${data.episode}`;
+    nextWrap.hidden = false;
+    nextTag.textContent = `${data.episode}  ${data.title || data.name || tag}`;
+    nextNote.textContent = data.kind === 'local' ? tag : `${tag} is not downloaded yet`;
+    if (data.kind === 'local' && data.id) {
+      nextThumb.style.backgroundImage = `url("${thumbUrl({ id: data.id })}")`;
+    }
+    $('nextEp').setAttribute('aria-label', data.kind === 'local'
       ? `Play next episode ${tag}`
       : `Open ${tag} to download`);
   } catch {
     /* button stays hidden when the lookup fails */
   }
+}
+
+/* ---------- episodes panel ---------- */
+
+async function loadEpisodes() {
+  if (!item?.isSeries || !item.seriesKey) return;
+  try {
+    const data = await getSeries(item.seriesKey);
+    seriesSeasons = (data.seasons || []).filter((s) => s.episodes?.length);
+  } catch {
+    seriesSeasons = [];
+  }
+  if (!seriesSeasons.length) return;
+  epBtn.hidden = false;
+  const current = seriesSeasons.flatMap((s) => s.episodes).find((e) => e.id === item.id);
+  if (current?.title && !epName.textContent) epName.textContent = current.title;
+  epSeason.replaceChildren(...seriesSeasons.map((s) => {
+    const opt = document.createElement('option');
+    opt.value = String(s.season);
+    opt.textContent = `Season ${s.season}`;
+    return opt;
+  }));
+  epSeason.value = String(item.season);
+  if (!epSeason.value) epSeason.selectedIndex = 0;
+}
+
+function renderEpisodes(season) {
+  const entry = seriesSeasons.find((s) => s.season === season) || seriesSeasons[0];
+  epList.replaceChildren();
+  if (!entry) return;
+  for (const ep of entry.episodes) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `ep-item${ep.id === item.id ? ' current' : ''}`;
+    const num = document.createElement('span');
+    num.className = 'ep-num';
+    num.textContent = String(ep.episode);
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.alt = '';
+    img.src = thumbUrl(ep);
+    const info = document.createElement('span');
+    info.className = 'ep-info';
+    info.textContent = ep.title || `Episode ${ep.episode}`;
+    if (ep.durationSec) {
+      const small = document.createElement('small');
+      small.textContent = formatDuration(ep.durationSec);
+      info.append(small);
+    }
+    btn.append(num, img, info);
+    btn.addEventListener('click', () => {
+      if (ep.id === item.id) { toggleEpPanel(false); return; }
+      saveNow();
+      location.href = `/watch.html?id=${encodeURIComponent(ep.id)}`;
+    });
+    epList.append(btn);
+  }
+  epList.querySelector('.current')?.scrollIntoView({ block: 'center' });
+}
+
+function toggleEpPanel(force, quiet) {
+  const open = typeof force === 'boolean' ? force : epPanel.hidden;
+  if (open) toggleCcPanel(false, true);
+  epPanel.hidden = !open;
+  epBtn.setAttribute('aria-expanded', String(open));
+  clearTimeout(hideTimer);
+  if (open) {
+    showUi();
+    renderEpisodes(Number(epSeason.value));
+  } else if (!quiet) {
+    armHideUi();
+  }
+}
+
+function panelOpen() {
+  return !ccPanel.hidden || !epPanel.hidden;
 }
 
 function openNextEpisode() {
@@ -595,8 +712,9 @@ function nudgeOffset(delta) {
   renderSubtitle();
 }
 
-function toggleCcPanel(force) {
+function toggleCcPanel(force, quiet) {
   const open = typeof force === 'boolean' ? force : ccPanel.hidden;
+  if (open) toggleEpPanel(false, true);
   ccPanel.hidden = !open;
   ccBtn.setAttribute('aria-expanded', String(open));
   clearTimeout(hideTimer);
@@ -604,7 +722,7 @@ function toggleCcPanel(force) {
     showUi();
     renderSubtitleList();
     ccPanel.querySelector('.cc-option.active')?.focus();
-  } else {
+  } else if (!quiet) {
     armHideUi();
     ccBtn.focus();
   }
@@ -627,26 +745,43 @@ function toggleFullscreen() {
   }
 }
 
+/* rAF loop while playing: timeupdate fires ~4x/s, which looks steppy. */
+function loop() {
+  updateTimeline();
+  raf = requestAnimationFrame(loop);
+}
+function startLoop() {
+  if (!raf) raf = requestAnimationFrame(loop);
+}
+function stopLoop() {
+  cancelAnimationFrame(raf);
+  raf = 0;
+  updateTimeline();
+}
+
 function updateTimeline() {
   duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : duration;
-  const t = video.currentTime || 0;
-  const pct = duration ? (t / duration) * 100 : 0;
-  played.style.width = `${pct}%`;
-  thumb.style.left = `${pct}%`;
-  timeEl.textContent = `${formatClock(t)} / ${formatClock(duration)}`;
-  updateBuffer();
+  const t = dragging ? dragRatio * duration : (video.currentTime || 0);
+  const r = duration ? Math.min(1, Math.max(0, t / duration)) : 0;
+  played.style.transform = `scaleX(${r})`;
+  thumb.style.transform = `translateX(${r * 100}%)`;
+  const label = formatClock(Math.max(0, duration - t));
+  if (label !== lastTimeLabel) {
+    lastTimeLabel = label;
+    timeEl.textContent = label;
+  }
 }
 
 function updateBuffer() {
   if (!duration || !video.buffered.length) {
-    buffer.style.width = '0%';
+    buffer.style.transform = 'scaleX(0)';
     return;
   }
   let end = 0;
   for (let i = 0; i < video.buffered.length; i++) {
     if (video.buffered.start(i) <= video.currentTime + 0.5) end = Math.max(end, video.buffered.end(i));
   }
-  buffer.style.width = `${Math.min(100, (end / duration) * 100)}%`;
+  buffer.style.transform = `scaleX(${Math.min(1, end / duration)})`;
 }
 
 function seekRatio(e) {
@@ -658,37 +793,52 @@ function seekRatio(e) {
 function onSeekDown(e) {
   if (!duration) return;
   dragging = true;
+  dragRatio = seekRatio(e);
   timeline.classList.add('dragging');
   timeline.setPointerCapture?.(e.pointerId);
-  seekTo(seekRatio(e));
+  video.currentTime = dragRatio * duration;
+  lastSeekAt = performance.now();
+  updateTimeline();
   updateTooltip(e);
   updatePreview(e);
-  armHideUi();
+  showUi();
+  clearTimeout(hideTimer);
 }
 
 function onSeekMove(e) {
   updateTooltip(e);
   updatePreview(e);
-  if (dragging) seekTo(seekRatio(e));
+  if (!dragging) return;
+  dragRatio = seekRatio(e);
+  updateTimeline(); // the bar follows the pointer instantly
+  queueSeek(); // the video catches up at most once per frame
 }
 
 function onSeekUp(e) {
   if (!dragging) return;
+  video.currentTime = dragRatio * duration;
   dragging = false;
   timeline.classList.remove('dragging');
   timeline.releasePointerCapture?.(e.pointerId);
   hidePreview();
+  updateTimeline();
+  syncSkipIntro();
   saveNow();
   if (!video.paused) armHideUi();
 }
 
-function seekTo(ratio) {
-  if (!duration) return;
-  video.currentTime = ratio * duration;
-  played.style.width = `${ratio * 100}%`;
-  thumb.style.left = `${ratio * 100}%`;
-  timeEl.textContent = `${formatClock(ratio * duration)} / ${formatClock(duration)}`;
-  syncSkipIntro();
+function queueSeek() {
+  if (seekQueued) return;
+  seekQueued = true;
+  requestAnimationFrame(() => {
+    seekQueued = false;
+    if (!dragging) return;
+    const now = performance.now();
+    if (!video.seeking || now - lastSeekAt > 140) {
+      video.currentTime = dragRatio * duration;
+      lastSeekAt = now;
+    }
+  });
 }
 
 function updateTooltip(e) {
@@ -848,14 +998,14 @@ function showUi() {
 }
 
 function hideUiNow() {
-  if (video.paused || dragging || !ccPanel.hidden) return;
+  if (video.paused || dragging || panelOpen()) return;
   hidePreview();
   player.classList.add('hide-ui', 'hide-cursor');
 }
 
 function armHideUi() {
   clearTimeout(hideTimer);
-  if (video.paused || dragging || !ccPanel.hidden) return;
+  if (video.paused || dragging || panelOpen()) return;
   hideTimer = setTimeout(hideUiNow, UI_HIDE_DELAY);
 }
 
@@ -866,7 +1016,12 @@ function saveNow() {
 }
 
 function onKeyDown(e) {
-  if (e.target instanceof HTMLInputElement && e.target !== volume) return;
+  if ((e.target instanceof HTMLInputElement && e.target !== volume) || e.target instanceof HTMLSelectElement) return;
+  if (e.key === 'Escape' && !epPanel.hidden) {
+    e.preventDefault();
+    toggleEpPanel(false);
+    return;
+  }
   if (e.key === 'Escape' && !ccPanel.hidden) {
     e.preventDefault();
     toggleCcPanel(false);

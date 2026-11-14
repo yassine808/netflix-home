@@ -27,7 +27,7 @@
       <div class="seek-side seek-left" id="seekLeft">
         <div class="seek-ripple"></div>
         <span class="seek-label">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 6 5 12l6 6"/><path d="M19 6l-6 6 6 6"/></svg>
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="c2" d="M11 6 5 12l6 6"/><path class="c1" d="M19 6l-6 6 6 6"/></svg>
           <b id="seekLeftCount">10</b>
           <span class="seek-unit">seconds</span>
         </span>
@@ -35,7 +35,7 @@
       <div class="seek-side seek-right" id="seekRight">
         <div class="seek-ripple"></div>
         <span class="seek-label">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m13 6 6 6-6 6"/><path d="m5 6 6 6-6 6"/></svg>
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="c1" d="m13 6 6 6-6 6"/><path class="c2" d="m5 6 6 6-6 6"/></svg>
           <b id="seekRightCount">10</b>
           <span class="seek-unit">seconds</span>
         </span>
@@ -54,65 +54,89 @@
     <div class="player-ui" id="playerUI">
       <div class="top-bar">
         <button class="back-btn" id="backBtn" aria-label="Back to browse">
-          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5m6-7-7 7 7 7"/></svg>
+          <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5m6-7-7 7 7 7"/></svg>
+          <span class="back-label">Back to Browse</span>
         </button>
-        <div class="top-title">
-          <span class="top-kicker" id="topKicker"></span>
-          <h1 id="videoTitle"></h1>
-        </div>
       </div>
-
-      <button class="center-play" id="centerPlay" aria-label="Play">
-        <svg viewBox="0 0 24 24" width="40" height="40" fill="currentColor" aria-hidden="true"><path d="M6 4.5v15l13-7.5z"/></svg>
-      </button>
 
       <div class="resume-toast" id="resumeToast" hidden></div>
 
       <button class="skip-intro" id="skipIntro" type="button" hidden>Skip Intro</button>
 
       <div class="bottom-bar">
-        <div class="timeline-wrap" id="timelineWrap">
-          <div class="tl-preview" id="tlPreview" hidden aria-hidden="true"></div>
-          <div class="tl-tooltip" id="tlTooltip" hidden aria-hidden="true">0:00</div>
-          <div class="tl-track"></div>
-          <div class="tl-buffer" id="tlBuffer"></div>
-          <div class="tl-played" id="tlPlayed"></div>
-          <div class="tl-thumb" id="tlThumb"></div>
+        <div class="timeline-row">
+          <div class="timeline-wrap" id="timelineWrap">
+            <div class="tl-preview" id="tlPreview" hidden aria-hidden="true"></div>
+            <div class="tl-tooltip" id="tlTooltip" hidden aria-hidden="true">0:00</div>
+            <div class="tl-track"></div>
+            <div class="tl-buffer" id="tlBuffer"></div>
+            <div class="tl-played" id="tlPlayed"></div>
+            <div class="tl-head" id="tlThumb"></div>
+          </div>
+          <span class="time" id="time">0:00</span>
         </div>
         <div class="controls">
           <div class="controls-left">
             <button class="ctrl play-btn" id="playBtn" aria-label="Pause">
-              <svg class="i-play" viewBox="0 0 24 24" width="26" height="26" fill="currentColor" hidden aria-hidden="true"><path d="M6 4.5v15l13-7.5z"/></svg>
-              <svg class="i-pause" viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
+              <svg class="i-play" viewBox="0 0 24 24" fill="currentColor" hidden aria-hidden="true"><path d="M6 4.2v15.6a.6.6 0 0 0 .9.5l13-7.8a.6.6 0 0 0 0-1L6.9 3.7a.6.6 0 0 0-.9.5z"/></svg>
+              <svg class="i-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5.5 4h4.2v16H5.5zm8.8 0h4.2v16h-4.2z"/></svg>
             </button>
             <button class="ctrl skip-btn" id="back10" aria-label="Back 10 seconds">
-              <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M12 4.8a7.2 7.2 0 1 0 7.2 7.2"/><path d="M12 2.4 12 7.2 7.2 4.8Z" fill="currentColor" stroke="none"/><text x="12" y="15.2" text-anchor="middle" font-size="8.8" font-family="Arial" font-weight="bold" fill="currentColor" stroke="none">10</text></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><g class="rot"><path d="M12 4.8a7.2 7.2 0 1 0 7.2 7.2"/><path d="M12 2.4 12 7.2 7.2 4.8Z" fill="currentColor" stroke="none"/></g><text x="12" y="15.2" text-anchor="middle" font-size="8.8" font-family="Arial" font-weight="bold" fill="currentColor" stroke="none">10</text></svg>
             </button>
             <button class="ctrl skip-btn" id="fwd10" aria-label="Forward 10 seconds">
-              <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M12 4.8a7.2 7.2 0 1 1-7.2 7.2"/><path d="M12 2.4 12 7.2 16.8 4.8Z" fill="currentColor" stroke="none"/><text x="12" y="15.2" text-anchor="middle" font-size="8.8" font-family="Arial" font-weight="bold" fill="currentColor" stroke="none">10</text></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><g class="rot"><path d="M12 4.8a7.2 7.2 0 1 1-7.2 7.2"/><path d="M12 2.4 12 7.2 16.8 4.8Z" fill="currentColor" stroke="none"/></g><text x="12" y="15.2" text-anchor="middle" font-size="8.8" font-family="Arial" font-weight="bold" fill="currentColor" stroke="none">10</text></svg>
             </button>
             <div class="volume-wrap">
-              <button class="ctrl" id="muteBtn" aria-label="Mute"><svg class="vol-ico" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5z" fill="currentColor" stroke="none"/><path class="wave w1" d="M15.5 9a4 4 0 0 1 0 6"/><path class="wave w2" d="M18 6.5a8 8 0 0 1 0 11"/><path class="xmark" d="m16 9.5 5 5m0-5-5 5"/></svg></button>
+              <button class="ctrl" id="muteBtn" aria-label="Mute"><svg class="vol-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5z" fill="currentColor" stroke="none"/><path class="wave w1" d="M15.5 9a4 4 0 0 1 0 6"/><path class="wave w2" d="M18 6.5a8 8 0 0 1 0 11"/><path class="xmark" d="m16 9.5 5 5m0-5-5 5"/></svg></button>
               <input type="range" class="vol-slider" id="volume" min="0" max="1" step="0.01" value="1" aria-label="Volume">
             </div>
-            <span class="time" id="time">0:00 / 0:00</span>
+            <div class="player-tag" id="playerTag">
+              <b id="videoTitle"></b>
+              <span class="tag-ep" id="epTag"></span>
+              <span class="tag-name" id="epName"></span>
+            </div>
           </div>
-          <div class="player-tag" id="playerTag" aria-live="off"></div>
           <div class="controls-right">
-            <button class="next-btn" id="nextEp" type="button" hidden>
-              <span>Next episode</span>
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M5 4.5v15l10-7.5z"/><path d="M17.5 5h2v14h-2z"/></svg>
+            <div class="next-wrap" id="nextWrap" hidden>
+              <button class="ctrl" id="nextEp" type="button" aria-label="Next episode">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 4.6v14.8a.5.5 0 0 0 .8.4l10.4-7.4a.5.5 0 0 0 0-.8L5.8 4.2a.5.5 0 0 0-.8.4z"/><path d="M18 5h2.6v14H18z"/></svg>
+              </button>
+              <div class="next-pop" role="tooltip">
+                <button class="next-card" id="nextCard" type="button">
+                  <span class="next-head">Next Episode</span>
+                  <span class="next-body">
+                    <span class="next-thumb" id="nextThumb"><svg viewBox="0 0 24 24" width="22" height="22" fill="#fff" aria-hidden="true"><path d="M7 5v14l12-7z"/></svg></span>
+                    <span class="next-text">
+                      <b id="nextTag"></b>
+                      <span id="nextNote"></span>
+                    </span>
+                  </span>
+                </button>
+              </div>
+            </div>
+            <button class="ctrl" id="epBtn" type="button" aria-label="Episodes" aria-expanded="false" aria-controls="epPanel" hidden>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5h13v9H8z"/><path d="M3.5 7.5v9h13"/><path d="M6 20.5h12"/></svg>
             </button>
-            <span class="quality" id="qualityTag"></span>
             <button class="ctrl cc-btn" id="ccBtn" aria-label="Subtitles" aria-expanded="false" aria-controls="ccPanel">
-              <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><text x="12" y="14.8" text-anchor="middle" font-size="6.6" font-family="Arial" font-weight="bold" fill="currentColor" stroke="none">CC</text></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5h18v12.5h-6.5L12 20l-2.5-3H3z"/><path d="M7 9.5h10M7 13h6"/></svg>
             </button>
             <button class="ctrl" id="fsBtn" aria-label="Fullscreen">
-              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+              <svg class="i-fs-in" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+              <svg class="i-fs-out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true" hidden><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>
             </button>
           </div>
         </div>
       </div>
+    </div>
+
+    <div class="ep-panel" id="epPanel" hidden role="dialog" aria-label="Episodes">
+      <div class="cc-head">
+        <h2 id="epHead">Episodes</h2>
+        <button class="cc-close" id="epClose" aria-label="Close episodes">✕</button>
+      </div>
+      <select class="ep-season" id="epSeason" aria-label="Season"></select>
+      <div class="ep-list" id="epList"></div>
     </div>
 
     <div class="cc-panel" id="ccPanel" hidden role="dialog" aria-label="Subtitle settings">
