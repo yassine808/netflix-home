@@ -8,14 +8,15 @@ import { getDb } from './db.js';
 import { run as runProc, playbackActive } from './proc.js';
 
 /**
- * Trailers: Cinemeta (keyless) resolves the official trailer when it has one;
- * otherwise yt-dlp searches YouTube for "<title> <year> official trailer".
- * The cut is downloaded once into <cache>\trailers and indexed in the shared
- * catalog database. The home billboard then plays it instead of the generated
- * clip.
+ * Trailers: KinoCheck (keyless, movies + shows + anime) resolves the official
+ * trailer; older titles it misses fall back to Cinemeta, then to a YouTube
+ * search. The cut is downloaded once into <cache>\trailers and indexed in the
+ * shared catalog database. The home billboard then plays it instead of the
+ * generated clip.
  */
 
 const CINEMETA = 'https://v3-cinemeta.strem.io';
+const KINOCHECK = 'https://api.kinocheck.de';
 const TRAILER_HEIGHT = 720;
 
 /* SQLite is shared with the rest of the catalog; see db.js. */
@@ -89,6 +90,14 @@ async function fetchJson(url, timeout = 12000) {
   return res.json();
 }
 
+/* KinoCheck is keyless and indexes movies, shows and anime by IMDb id. Older
+ * titles often have no trailer there, so Cinemeta stays as the second source. */
+async function resolveViaKinocheck(item, imdbId) {
+  const kind = item.isSeries ? 'shows' : 'movies';
+  const data = await fetchJson(`${KINOCHECK}/${kind}?imdb_id=${encodeURIComponent(imdbId)}&language=en`);
+  return data?.trailer?.youtube_video_id || null;
+}
+
 /* Cinemeta lists official trailers per title; the first one is the main cut.
  * When it has no entry, the caller falls back to a YouTube search. */
 async function resolveTrailer(item) {
@@ -98,6 +107,12 @@ async function resolveTrailer(item) {
   const key = `${type}:${imdbId}`;
   if (resolving.has(key)) return resolving.get(key);
   const task = (async () => {
+    try {
+      const youtubeId = await resolveViaKinocheck(item, imdbId);
+      if (youtubeId) return { imdbId, youtubeId };
+    } catch {
+      /* fall through to Cinemeta */
+    }
     try {
       const data = await fetchJson(`${CINEMETA}/meta/${type}/${encodeURIComponent(imdbId)}.json`);
       const list = Array.isArray(data?.meta?.trailers) ? data.meta.trailers : [];

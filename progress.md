@@ -258,3 +258,9 @@
 - Done: reverted the TMDB integration (settings key, `POST/DELETE /api/settings/tmdb`, `/find` + `/videos` resolver). `server/trailers.js` keeps Cinemeta (keyless, full official trailer) and falls back to `ytsearch5:"<title> <year> official trailer"` with `--ignore-errors` and a 20-900 s duration filter when Cinemeta has no entry. A search result is stored with an empty `youtube_id`; the file path is what matters.
 - Verified: iTunes Search API was tried first but returns `resultCount: 0` for every movie query from this machine, so it is not usable. yt-dlp search returns the right trailer for Cyberpunk Edgerunners (`JtqIas3bYhg`, 137 s). End-to-end on a temp library with a fake title that Cinemeta cannot resolve: row `status=ready`, 4.96 MB downloaded via search, no errors.
 - Next: rebuild, deploy, confirm the real library still resolves through Cinemeta.
+
+### 2026-11-14 - trailers: KinoCheck first, Cinemeta fallback
+- Goal: one keyless API that covers anime and live action, instead of title-specific sources.
+- Done: probed every keyless candidate. AniList and Kitsu are anime/manga only (Peaky Blinders and Breaking Bad return nothing or unrelated anime); JustWatch GraphQL has no trailer fields and Reelgood answers 403; IMDb GraphQL 403; Jikan, imdbapi.dev and YTS time out or return nothing; Vimeo needs a token; Odysee and PeerTube carry episodes, not trailers. KinoCheck (`api.kinocheck.de`) answers without a key, takes an IMDb id and covers movies, shows and anime. `server/trailers.js` now tries KinoCheck first, then Cinemeta, then the YouTube search.
+- Verified: temp library with Peaky Blinders, Breaking Bad and Cyberpunk Edgerunners -> all three rows `ready`: Cyberpunk via KinoCheck (`bwPLTvO1ZrI`, 6.9 MB), Peaky Blinders (`EM12mcTEI88`, 1.3 MB) and Breaking Bad (`VFkjBy2b50Q`, 10.5 MB) via the Cinemeta fallback. No errors in the server log.
+- Next: rebuild, deploy, confirm the live library still resolves.
