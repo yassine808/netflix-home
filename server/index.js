@@ -149,7 +149,13 @@ function watchLibrary() {
       // absolute; comparing the resolved path covers both. Everything the app
       // writes itself lives under .cache and must not trigger a scan.
       const abs = path.isAbsolute(rel) ? rel : path.join(libraryRoot, rel);
-      if (path.resolve(abs).toLowerCase().startsWith(cacheRoot)) return;
+      const resolved = path.resolve(abs);
+      const lower = resolved.toLowerCase();
+      if (lower.startsWith(cacheRoot)) return;
+      // Our own log/writer files sit beside the media; writing them must not
+      // look like a library change (that produced one scan per log line).
+      const base = path.basename(resolved).toLowerCase();
+      if (base.endsWith('.log') || base === 'netflix-home.exe' || base === 'launcher.exe') return;
       if (Date.now() < watchMutedUntil) {
         watchDirty = true;
         return;
