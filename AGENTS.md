@@ -39,6 +39,7 @@ Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 - `server/artwork.js` — Cinemeta poster/backdrop/logo downloaded once into `assets` BLOBs, served with an ETag; `warmArtwork` imports legacy `.cache\art` files
 - `server/subs.js` — subtitle sidecars read once into the `subtitles` table, body served from the DB with an ETag
 - `server/audio.js` — audio-track probe cached in `audio_probe` / `audio_tracks`, on-demand dub remux into `.cache\audio\`
+- `server/proc.js` — every ffmpeg/ffprobe/yt-dlp child: below-normal priority, one heavy media job at a time (`mediaLane`), ffprobe lane, playback-aware warm-up gate
 - `public/index.html` + `app.js` + `styles.css` — home UI, search, series/detail sheets
 - `public/watch.html` + `watch.js` + `watch.css` — custom player
 - `public/common.js` — shared formatting, storage, and API helpers
@@ -54,6 +55,7 @@ Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 - Scans write inside one `transaction()`; the HTTP side reads from memory, so a scan never blocks a request.
 - **A launch never re-probes the library.** `dirs` stores each folder's listing (name/size/mtime); `walkIndexed` re-lists the folder, reuses saved sizes for names that still exist and stats only new ones. Directory mtimes alone are unreliable on NTFS (lazily updated), so the listing is always read and mtimes are only a hint. A scan that changes nothing keeps `updatedAt`, so the `/api/library` ETag stays stable and browsers get `304`. `fs.watch(libraryRoot, {recursive:true})` triggers the same debounced refresh (2.5 s, `.cache` and `*.part` ignored) instead of a launch crawl. Do not add a second scan path: call `refreshLibrary(reason)` in `index.js`.
 - `plan.md` holds the performance roadmap (low-priority ffmpeg, gzip, sized artwork, DOM diffing); keep measurements there and in `progress.md` when a phase lands.
+- **Never call `execFile`/`spawn` for ffmpeg, ffprobe or yt-dlp directly.** Use `run()` / `spawnNice()` from `server/proc.js`: they set below-normal priority and admit work through `mediaLane` (one heavy job) or `probeLane` (three probes). Warm-up loops check `playbackActive()` so a build never fights a stream.
 - `/api/library`, `/api/art/*` and `/api/subtitle/*` send an ETag and answer `304 Not Modified`, and `getLibrary()` in `public/common.js` uses `cache: 'no-cache'` so every navigation revalidates instead of downloading 20 KB again. `GET /api/db/stats` returns file size and row counts for debugging.
 - **Top nav is Home / Local / Favourite / Online.** `Local` lists the library, `Favourite` lists My List entries (local + Castle snapshots), and `Online` draws 30 random catalog titles from `GET /api/castle/browse` (merged genre searches, cached until **Shuffle** sends `?fresh=1`). archive.org is gone: no `/api/catalog/*` routes, no picker sheet.
 - Build user-facing DOM with `textContent` or `createEl`, never interpolate filenames into `innerHTML` (local files can contain arbitrary characters).

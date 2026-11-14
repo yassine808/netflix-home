@@ -15,6 +15,7 @@ import { getItem } from './library.js';
 import { resolveImdbId } from './imdb.js';
 import { isOffline } from './settings.js';
 import { getAsset, putAsset } from './db.js';
+import { playbackActive } from './proc.js';
 
 const CINEMETA = 'https://v3-cinemeta.strem.io';
 const FIELDS = { poster: 'poster', backdrop: 'background', logo: 'logo' };
@@ -172,6 +173,7 @@ export function warmArtwork(items) {
     if (id) ids.add(id);
   }
   for (const id of ids) {
+    if (playbackActive()) return;
     existing(id, 'poster');
     existing(id, 'backdrop');
     existing(id, 'logo');

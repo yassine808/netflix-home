@@ -41,23 +41,19 @@ detects it because `readdir` names and stat results are compared. Acceptable tra
 
 ## Phase 2 — make background work cheap (next)
 
-- [ ] **Low-priority ffmpeg.** Every child (`ffprobe`, picture, hero, trailer, dub remux) gets
-      `os.setPriority(pid, os.constants.priority.PRIORITY_BELOW_NORMAL)` right after spawn, so a
-      hero build never competes with playback or the OS.
-- [ ] **One media worker at a time.** Replace the ad-hoc concurrency in `pictures.js` /
-      `frames.js` / `hero.js` with a single FIFO queue (limit 1 for ffmpeg, 2 for ffprobe).
-- [ ] **Idle scheduling.** Warm-ups start only after the first `/api/library` request and only
-      when the last N seconds had no media traffic (`/api/stream` or `/api/hero/*` sets a
-      `lastPlaybackAt` timestamp).
-- [ ] **Warm only what is missing.** Build hero/picture/trailer only for items whose DB row is
-      absent, not for every item on every `changed` scan (warmers already skip existing rows;
-      make the check one prepared SELECT instead of a stat per file).
-- [ ] **Cancel on playback.** If the user starts a video, pause the queue; resume 30 s after the
-      last stream request.
-- [ ] **Cheap defaults for stills.** Picture sampling 8 → 5 candidates, hero clip 12 s → 8 s,
-      ffmpeg `-threads 1 -preset veryfast`; keep the JPEG width ladder at 640/1280.
-- [ ] **Kill the 60 s poll.** The home page already revalidates on visibility change and on a
-      timer; drop the timer to 5 min and keep the `304` path.
+- [x] **Low-priority ffmpeg.** Every `ffprobe`/`ffmpeg`/`yt-dlp` child goes through
+      `server/proc.js`, which calls `os.setPriority(pid, PRIORITY_BELOW_NORMAL)`.
+      Measured base priority 6 (below normal is 6, normal is 8).
+- [x] **Lanes instead of ad-hoc concurrency.** `mediaLane` (1 heavy ffmpeg at a time) and
+      `probeLane` (3 ffprobe reads) in `proc.js`; every module now uses them.
+- [x] **Pause warm-ups on playback.** `/api/stream` and the hero preview call `notePlayback()`;
+      `warmHeroes`, `warmTrailers` and `warmArtwork` stop when playback was active in the last
+      20 s. On-demand builds still run, so the player never waits for a warm-up.
+- [x] **Warm only what is missing.** Warmers skip items whose DB row is fresh (already the case).
+- [ ] **Idle scheduling.** Start warm-ups only after the first `/api/library` request.
+- [ ] **Cheaper defaults for stills.** Picture sampling 8 → 5 candidates, hero clip 12 s → 8 s,
+      ffmpeg `-threads 1 -preset veryfast`. Only if the visual result holds up.
+- [ ] **Cancel on playback.** Pause the queue mid-build, not just before starting the next item.
 
 Success: idle CPU under 1 % with the app open, a 12 s hero build never makes playback stutter.
 
@@ -87,6 +83,8 @@ Success: home page under 150 KB transferred on a warm cache, under 900 KB on a c
 - [ ] **Virtualize Top 10 / long rows** if a row exceeds ~40 cards.
 - [ ] **No animation on hover for offscreen cards**; the ambient gradient already uses CSS, keep
       it out of JS.
+- [ ] **Drop the 60 s library poll** to 5 min; visibility change and ETag revalidation already
+      cover the cases that matter.
 - [ ] **Player**: sprite timeline built on demand only when the user hovers the scrubber, not on
       load; `preload="metadata"` stays.
 

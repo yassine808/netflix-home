@@ -1,11 +1,11 @@
-import fs from 'node:fs';
+﻿import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
 import ffmpegPath from 'ffmpeg-static';
 import ffprobeStatic from 'ffprobe-static';
 import { getDb, transaction } from './db.js';
+import { run } from './proc.js';
 
 /**
  * Audio-track support.
@@ -38,11 +38,10 @@ export function initAudio(cacheDir) {
 }
 
 function execFileP(cmd, args, timeout = 30000) {
-  return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout, windowsHide: true, maxBuffer: 1024 * 1024 * 8 }, (err, stdout) => {
-      if (err) reject(err);
-      else resolve(stdout);
-    });
+  return run(cmd, args, {
+    timeout,
+    maxBuffer: 1024 * 1024 * 8,
+    lane: cmd === ffprobePath ? 'probe' : 'media',
   });
 }
 

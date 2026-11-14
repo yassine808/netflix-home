@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
 import { resolveImdbId, normalizeTitle } from './imdb.js';
 import { isOffline } from './settings.js';
 import { getDb } from './db.js';
+import { run as runProc, playbackActive } from './proc.js';
 
 /**
  * Trailers: resolve the official YouTube trailer through Cinemeta (keyless),
@@ -111,12 +111,10 @@ async function resolveYoutubeId(item) {
 }
 
 function run(cmd, args, timeout) {
-  return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout, windowsHide: true, maxBuffer: 1024 * 1024 * 16 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(stderr?.trim() || err.message));
-      else resolve(stdout);
+  return runProc(cmd, args, { timeout, maxBuffer: 1024 * 1024 * 16, lane: 'media' })
+    .catch((err) => {
+      throw new Error(String(err.stderr || err.message).trim());
     });
-  });
 }
 
 function trailerKey(item) {
@@ -246,5 +244,8 @@ export function warmTrailers(items) {
   picks
     .sort((a, b) => (b.mtime || 0) - (a.mtime || 0))
     .slice(0, 30)
-    .forEach((item) => { warmTrailer(item); });
+    .forEach((item) => {
+      if (playbackActive()) return;
+      warmTrailer(item);
+    });
 }

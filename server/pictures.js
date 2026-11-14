@@ -13,9 +13,9 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { getDb } from './db.js';
+import { run as runProc } from './proc.js';
 
 const SAMPLES = 8;
 const SAMPLE_FROM = 0.12;
@@ -99,12 +99,14 @@ function fresh(item, key) {
 }
 
 function run(bin, args, timeout = 60000) {
-  return new Promise((resolve, reject) => {
-    execFile(bin, args, { timeout, windowsHide: true, maxBuffer: 1024 * 1024 * 4 }, (err, stdout, stderr) => {
-      if (err && !stdout) reject(new Error(stderr?.trim() || err.message));
-      else resolve({ stdout, stderr });
+  // One ffmpeg at a time, below normal priority; see proc.js.
+  return runProc(bin, args, { timeout, maxBuffer: 1024 * 1024 * 4, lane: 'media' })
+    .then((stdout) => ({ stdout, stderr: '' }))
+    .catch((err) => {
+      const stdout = err.stdout || '';
+      if (stdout) return { stdout, stderr: err.stderr || '' };
+      throw new Error(String(err.stderr || err.message).trim());
     });
-  });
 }
 
 /* Spread candidate moments across the middle of the film, away from the

@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import ffmpegPath from 'ffmpeg-static';
+import { spawnNice } from './proc.js';
 import { ensureEnglishSubtitle, vttFromSubtitle } from './subs.js';
 
 const IA = 'https://archive.org';
@@ -838,7 +839,7 @@ async function runHlsJob(job) {
   let timer = null;
 
   try {
-    child = spawn(ffmpegPath, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    child = spawnNice(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     job.ffmpeg = child;
     child.stderr.on('data', (chunk) => {
       stderr = (stderr + chunk.toString()).slice(-4000);

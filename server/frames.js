@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
 import ffmpegPath from 'ffmpeg-static';
+import { run as runProc } from './proc.js';
 
 const COLS = 10;
 const TILE_W = 160;
@@ -22,12 +22,7 @@ export function initFrames(cacheDir) {
 }
 
 function execFileP(cmd, args, timeout) {
-  return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout, windowsHide: true, maxBuffer: 1024 * 1024 * 8 }, (err, stdout) => {
-      if (err) reject(err);
-      else resolve(stdout);
-    });
-  });
+  return runProc(cmd, args, { timeout, maxBuffer: 1024 * 1024 * 8, lane: 'media' });
 }
 
 function frameCount(durationSec) {

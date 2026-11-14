@@ -176,6 +176,8 @@ export function initDb(cacheDir) {
   dbFile = path.join(cacheDir, 'catalog.db');
   if (!DatabaseSync) return null;
   try {
+    // A first run on a fresh drive has no .cache folder yet.
+    fs.mkdirSync(cacheDir, { recursive: true });
     db = new DatabaseSync(dbFile);
     db.exec(`
       PRAGMA journal_mode = WAL;

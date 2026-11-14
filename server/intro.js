@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 import ffprobeStatic from 'ffprobe-static';
 import { resolveImdbId } from './imdb.js';
 import { isOffline } from './settings.js';
 import { getDb } from './db.js';
+import { run } from './proc.js';
 
 const CHAPTER_INTRO = /\b(intro|opening|opening credits|main title|recap)\b/i;
 const chapterCache = new Map();
@@ -98,22 +98,18 @@ function readSidecar(full) {
 function probeChapters(item, full) {
   const key = `${item.id}:${item.mtime}`;
   if (chapterCache.has(key)) return chapterCache.get(key);
-  const promise = new Promise((resolve) => {
-    execFile(
-      ffprobeStatic.path,
-      ['-v', 'error', '-print_format', 'json', '-show_chapters', full],
-      { timeout: 30000, windowsHide: true, maxBuffer: 1024 * 1024 * 4 },
-      (err, stdout) => {
-        if (err) return resolve([]);
-        try {
-          const data = JSON.parse(stdout);
-          resolve(Array.isArray(data.chapters) ? data.chapters : []);
-        } catch {
-          resolve([]);
-        }
-      },
-    );
-  });
+  const promise = run(
+    ffprobeStatic.path,
+    ['-v', 'error', '-print_format', 'json', '-show_chapters', full],
+    { timeout: 30000, maxBuffer: 1024 * 1024 * 4, lane: 'probe' },
+  ).then((stdout) => {
+    try {
+      const data = JSON.parse(stdout);
+      return Array.isArray(data.chapters) ? data.chapters : [];
+    } catch {
+      return [];
+    }
+  }).catch(() => []);
   chapterCache.set(key, promise);
   return promise;
 }

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initDb, dbStats } from './db.js';
+import { notePlayback } from './proc.js';
 import { initCache, scanLibrary, getLibrary, getItem, resolveItemFile,
   ensureThumb, artPath, isScanning,
 } from './library.js';
@@ -505,6 +506,7 @@ function sendMedia(req, res, full, type) {
 app.get('/api/stream/:id', async (req, res) => {
   const found = resolveItemFile(req.params.id);
   if (!found) return res.status(404).end();
+  notePlayback();
   const { full } = found;
 
   const type = MIME[path.extname(full).toLowerCase()] || 'application/octet-stream';
@@ -586,6 +588,7 @@ app.get('/api/hero/:id/image.jpg', async (req, res) => {
 app.get('/api/hero/:id/preview.mp4', async (req, res) => {
   const found = resolveItemFile(req.params.id);
   if (!found) return res.status(404).end();
+  notePlayback();
   const { item, full } = found;
   const hero = await ensureHero(item, full);
   if (!hero?.video) return res.status(503).json({ error: 'preview is not ready' });
