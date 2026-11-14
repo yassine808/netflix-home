@@ -129,11 +129,16 @@ async function refreshLibrary(reason) {
  * renames and deletions all land here; the scan is debounced so a copy in
  * progress does not start a hundred scans. */
 function watchLibrary() {
+  const cacheRoot = path.resolve(cacheDir).toLowerCase();
   try {
     const watcher = fs.watch(libraryRoot, { recursive: true }, (event, name) => {
       const rel = String(name || '');
       if (/\.(part|tmp)$/i.test(rel)) return;
-      if (rel.toLowerCase().startsWith('.cache')) return;
+      // The event path arrives relative on most Windows builds, but can be
+      // absolute; comparing the resolved path covers both. Everything the app
+      // writes itself lives under .cache and must not trigger a scan.
+      const abs = path.isAbsolute(rel) ? rel : path.join(libraryRoot, rel);
+      if (path.resolve(abs).toLowerCase().startsWith(cacheRoot)) return;
       if (watchTimer) clearTimeout(watchTimer);
       watchTimer = setTimeout(() => {
         watchTimer = null;
