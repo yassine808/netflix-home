@@ -12,14 +12,14 @@ import { initCache, scanLibrary, getLibrary, getItem, resolveItemFile,
 import { initArtwork, officialArt, cachedArt, artWidth, sizedArt, warmArtwork } from './artwork.js';
 import {
   initDownloads,
-  addDownload, addSeriesDownload, addHlsDownload,
-  listDownloads, getDownload, cancelDownload, retryDownload,
+  addHlsDownload,
+  listDownloads, cancelDownload, retryDownload,
   pauseDownloads, resumeDownloads,
 } from './downloads.js';
 import { searchOnline, getOnlineTitle } from './online.js';
 import { searchCastle, browseCastle, getCastleTitle, getCastleSeries, getCastleStream, isCastleId } from './castle.js';
 import { initSettings, getSettings, isOffline, setOffline } from './settings.js';
-import { initFrames, frameMeta, ensureSprite, spriteFile } from './frames.js';
+import { initFrames, frameMeta, ensureSprite } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
 import { initHero, heroStart, heroReady, ensureHero, warmHeroes } from './hero.js';
 import { initTrailers, trailerPathFor, trailerStatus, warmTrailer, warmTrailers } from './trailers.js';
@@ -632,18 +632,6 @@ app.get('/api/audio/:id', async (req, res) => {
   });
 });
 
-app.get('/api/thumb/:id', async (req, res) => {
-  const found = resolveItemFile(req.params.id);
-  if (!found) return res.status(404).end();
-  const { item, full } = found;
-  const requested = Number(req.query.w) || 1280;
-  const width = Math.min(1280, Math.max(160, Math.round(requested / 160) * 160));
-  const out = await ensureThumb(item, full, width);
-  if (!out) return res.status(404).end();
-  res.setHeader('Cache-Control', 'public, max-age=86400');
-  res.sendFile(out);
-});
-
 /* ---------- scrubber preview frames + intro markers (both local) ---------- */
 
 /* Hero cache: still + short preview clip stored in <library>/.cache/library.db.
@@ -1035,45 +1023,6 @@ app.post('/api/castle/download', async (req, res) => {
 app.get('/api/downloads', (req, res) => {
   const jobs = listDownloads();
   res.json({ root: libraryRoot, count: jobs.length, jobs });
-});
-
-app.get('/api/downloads/:id', (req, res) => {
-  const job = getDownload(req.params.id);
-  if (!job) return res.status(404).json({ error: 'download not found' });
-  res.json(job);
-});
-
-app.post('/api/downloads', async (req, res) => {
-  const body = req.body;
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    return res.status(400).json({ error: 'JSON body required' });
-  }
-  if (!body.url && !body.identifier) {
-    return res.status(400).json({ error: 'pass "url" or "identifier"' });
-  }
-
-  try {
-    const jobs = await addDownload(body);
-    res.status(201).json({ count: jobs.length, jobs, skipped: jobs.skipped || [] });
-  } catch (err) {
-    res.status(err?.status || 500).json({
-      error: err?.message || String(err),
-      ...(err?.files ? { files: err.files } : {}),
-    });
-  }
-});
-
-app.post('/api/downloads/series', async (req, res) => {
-  const body = req.body;
-  if (!body || typeof body !== 'object' || Array.isArray(body) || !body.identifier) {
-    return res.status(400).json({ error: 'pass "identifier" (and optional "files")' });
-  }
-  try {
-    const jobs = await addSeriesDownload(body);
-    res.status(201).json({ count: jobs.length, jobs, skipped: jobs.skipped || [] });
-  } catch (err) {
-    res.status(err?.status || 500).json({ error: err?.message || String(err) });
-  }
 });
 
 app.post('/api/downloads/:id/retry', (req, res) => {

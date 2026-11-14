@@ -1,4 +1,4 @@
-﻿import fs from 'node:fs';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -45,7 +45,7 @@ function execFileP(cmd, args, timeout = 30000) {
   });
 }
 
-export function audioLabel(track, position) {
+function audioLabel(track, position) {
   const lang = String(track?.lang || '').toLowerCase();
   const named = LANG_NAMES[lang] || (lang.length === 3 ? '' : '');
   if (track?.title) return track.title;

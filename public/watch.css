@@ -358,8 +358,7 @@ body.leaving .player {
   pointer-events: none;
 }
 .player-tag b { font-size: clamp(15px, 1.25vw, 24px); font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
-.tag-ep, .tag-name { font-size: clamp(13px, 1vw, 19px); font-weight: 400; color: rgba(255, 255, 255, 0.85); }
-.tag-name { overflow: hidden; text-overflow: ellipsis; }
+.tag-ep { font-size: clamp(13px, 1vw, 19px); font-weight: 400; color: rgba(255, 255, 255, 0.85); }
 
 .volume-wrap { display: flex; align-items: center; }
 .vol-slider {
@@ -867,10 +866,6 @@ body.leaving .player {
 .cc-style .cc-offset { min-width: 46px; }
 
 /* ---------- narrow screens ---------- */
-
-@media (max-width: 800px) {
-  .tag-name { display: none; }
-}
 
 @media (max-width: 700px) {
   .top-bar { padding: 12px 14px 56px; }

@@ -53,10 +53,6 @@ export function frameMeta(item) {
   };
 }
 
-export function spriteFile(item) {
-  return spritePathFor(item);
-}
-
 function pump() {
   while (active < MAX_ACTIVE && queue.length) {
     const job = queue.shift();

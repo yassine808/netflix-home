@@ -203,7 +203,7 @@ export function warmTrailer(item) {
   return task;
 }
 
-export function trailerReady(item) {
+function trailerReady(item) {
   if (!item) return null;
   const row = rowFor(trailerKey(item));
   if (!row || row.status !== 'ready' || !row.path) return null;

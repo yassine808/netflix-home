@@ -34,7 +34,7 @@ export function playbackActive(windowMs = PLAYBACK_WINDOW_MS) {
 }
 
 /* Lower a running child without failing the caller if the OS refuses. */
-export function nice(child) {
+function nice(child) {
   if (!child || !child.pid) return child;
   try {
     os.setPriority(child.pid, BELOW_NORMAL);
@@ -67,11 +67,11 @@ function createLane(limit) {
 }
 
 /* One ffmpeg at a time; ffprobe reads are tiny and can overlap a little. */
-export const mediaLane = createLane(1);
-export const probeLane = createLane(3);
+const mediaLane = createLane(1);
+const probeLane = createLane(3);
 /* Artwork thumbnails are short single-frame jobs; two at a time keeps a cold
  * card grid from queueing behind a hero build. */
-export const artLane = createLane(2);
+const artLane = createLane(2);
 
 const LANES = { probe: probeLane, art: artLane, media: mediaLane };
 const laneFor = (name) => LANES[name] || mediaLane;

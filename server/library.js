@@ -27,7 +27,7 @@ let itemsById = new Map();
 let library = { root: '', items: [], collections: [], updatedAt: 0 };
 let scanning = null;
 
-export function idFor(relPath) {
+function idFor(relPath) {
   return Buffer.from(relPath, 'utf8').toString('base64url');
 }
 
@@ -58,7 +58,7 @@ const EPISODE_PATTERNS = [
   /\b(\d{1,2})x(\d{1,3})\b/i,
 ];
 
-export function parseFileName(fileName) {
+function parseFileName(fileName) {
   let base = fileName.replace(/\.[^.]+$/, '');
 
   let season = null;
@@ -546,7 +546,7 @@ export function artPath(kind, id) {
 
 /* Last known library straight from catalog.db, so the first paint does not
  * wait for the folder walk. The normal scan still runs and replaces it. */
-export function loadCachedLibrary() {
+function loadCachedLibrary() {
   const db = getDb();
   if (!db) return false;
   try {
@@ -584,5 +584,3 @@ export function initCache(dir) {
   initPictures(cacheDir);
   loadCachedLibrary();
 }
-
-export const VIDEO_EXTENSIONS = [...VIDEO_EXTS];

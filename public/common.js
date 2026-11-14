@@ -1,7 +1,5 @@
-export const LIB_STORAGE_KEY = 'netflix-home:library';
-export const LIST_KEY = 'netflix-home:mylist';
-export const PROGRESS_KEY = 'netflix-home:progress';
-export const PROFILE_KEY = 'netflix-home:profile';
+const LIST_KEY = 'netflix-home:mylist';
+const PROGRESS_KEY = 'netflix-home:progress';
 
 export async function getLibrary() {
   const res = await fetch('/api/library', { cache: 'no-cache' });
@@ -161,12 +159,6 @@ export async function deleteLibraryItem(id) {
   return res.json().catch(() => ({}));
 }
 
-export async function getSubtitles(id) {
-  const res = await fetch(`/api/subtitles/${encodeURIComponent(id)}`, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`subtitles ${res.status}`);
-  return res.json();
-}
-
 export function subtitleUrl(id, lang) {
   return `/api/subtitle/${encodeURIComponent(id)}/${encodeURIComponent(lang)}`;
 }
@@ -232,19 +224,13 @@ export function thumbUrl(item, width = 480) {
   return `/api/art/${item.id}/backdrop${w}`;
 }
 
-/* Cached hero still + 12 s preview clip (see server/hero.js). */
+/* Cached hero still + 8 s preview clip (see server/hero.js). */
 export function heroImageUrl(item) {
   return `/api/hero/${encodeURIComponent(item.id)}/image.jpg`;
 }
 
 export function heroPreviewUrl(item) {
   return `/api/hero/${encodeURIComponent(item.id)}/preview.mp4`;
-}
-
-export function posterUrl(item, width = 480) {
-  // Poster art for portrait slots; the catalog's own image, cached locally.
-  const w = Number(width) > 0 ? `?w=${Math.round(Number(width))}` : '';
-  return `/api/art/${item.id}/poster${w}`;
 }
 
 /* Transparent title wordmark from the catalog. Answers 404 when the title has
@@ -313,7 +299,7 @@ export function toggleRemoteList(entry) {
   return idx < 0;
 }
 
-export function getProgress() {
+function getProgress() {
   const all = readJson(PROGRESS_KEY, {});
   return all && typeof all === 'object' && !Array.isArray(all) ? all : {};
 }
@@ -337,15 +323,6 @@ export function saveProgress(id, t, d) {
   writeJson(PROGRESS_KEY, all);
 }
 
-export function continueWatching(items) {
-  const progress = getProgress();
-  return items
-    .map((item) => ({ item, p: progress[item.id] }))
-    .filter(({ p }) => p && Number.isFinite(p.t) && p.t > 5 && p.d > 0 && p.t / p.d < 0.965)
-    .sort((a, b) => (b.p.updatedAt || 0) - (a.p.updatedAt || 0))
-    .map(({ item, p }) => ({ item, progress: Math.min(1, p.t / p.d) }));
-}
-
 export function debounce(fn, ms = 150) {
   let timer;
   return (...args) => {
@@ -354,20 +331,11 @@ export function debounce(fn, ms = 150) {
   };
 }
 
-export function escapeText(el, text) {
-  el.textContent = text ?? '';
-  return el;
-}
-
 export function createEl(tag, className, text) {
   const el = document.createElement(tag);
   if (className) el.className = className;
   if (text != null) el.textContent = text;
   return el;
-}
-
-export function initials(name) {
-  return (name || 'N').trim().charAt(0).toUpperCase();
 }
 
 /* ---------- loading skeletons ---------- */
@@ -426,7 +394,7 @@ export function skelMeta() {
 }
 
 /* 16:9 card, same size as .card in rows and grids. */
-export function skelCard() {
+function skelCard() {
   const card = document.createElement('div');
   card.className = 'card sk-card skeleton';
   card.setAttribute('aria-hidden', 'true');
@@ -447,7 +415,7 @@ export function skelPoster() {
 }
 
 /* Episode row: thumbnail, two lines and an action button. */
-export function skelEpisode({ button = true } = {}) {
+function skelEpisode({ button = true } = {}) {
   const row = document.createElement('div');
   row.className = 'sk-episode';
   row.setAttribute('aria-hidden', 'true');
@@ -461,19 +429,6 @@ export function skelEpisode({ button = true } = {}) {
 
 export function skelEpisodes(count = 4, opts) {
   return Array.from({ length: count }, () => skelEpisode(opts));
-}
-
-/* Row with a bar for the file name and one for its size/format. */
-export function skelFileRow() {
-  const row = document.createElement('div');
-  row.className = 'sk-file';
-  row.setAttribute('aria-hidden', 'true');
-  row.append(skel('sk-dot'));
-  const lines = document.createElement('div');
-  lines.className = 'sk-episode-lines';
-  lines.append(skel('sk-line', '58%', '13px'), skel('sk-line', '30%', '10px'));
-  row.append(lines);
-  return row;
 }
 
 /* Download queue entry: poster, title, progress bar. */

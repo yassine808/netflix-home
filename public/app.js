@@ -1,6 +1,6 @@
 import {
   getLibrary, rescanLibrary, quitApp, formatDuration, formatSize, formatClock,
-  qualityLabel, thumbUrl, posterUrl, logoUrl, toggleMyList, isInMyList, getMyList, progressFor,
+  qualityLabel, thumbUrl, logoUrl, toggleMyList, isInMyList, getMyList, progressFor,
   getRemoteList, isInRemoteList, toggleRemoteList,
   getSeries, getSeriesCatalog, debounce, createEl,
   browseCastle,
@@ -1195,15 +1195,6 @@ function showFavourite() {
   els.gridTitle.textContent = 'Favourite';
   els.gridSub.textContent = `${items.length} saved title${items.length === 1 ? '' : 's'}`;
   fillGrid(els.grid, items, els.gridEmpty, 'Add titles with the + button on any detail page.');
-}
-
-function showCollection(name, items) {
-  setView('collection');
-  const groups = groupLibrary();
-  const list = groupItems(groups, items.map((item) => item.id || item));
-  els.gridTitle.textContent = name;
-  els.gridSub.textContent = `${list.length} title${list.length === 1 ? '' : 's'}`;
-  fillGrid(els.grid, list, els.gridEmpty, 'No titles here yet.');
 }
 
 /* ---------- online: random castle catalog ---------- */
@@ -3578,11 +3569,6 @@ function closeModal() {
   if (state.view === 'home') {
     setupPreview(state.byId.get(state.heroId));
   }
-}
-
-function refreshModalIfOpen() {
-  if (modalItemId && state.byId.has(modalItemId)) openModal(modalItemId);
-  else if (modalItemId) closeModal();
 }
 
 /* ---------- actions ---------- */

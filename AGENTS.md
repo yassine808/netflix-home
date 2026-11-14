@@ -24,7 +24,7 @@ There is no test suite. Verify by starting the server and hitting the API, then 
 ```powershell
 Invoke-RestMethod http://localhost:3000/api/library
 Invoke-RestMethod http://localhost:3000/api/db/stats
-Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
+Invoke-WebRequest "http://localhost:3000/api/art/<id>/poster?w=480" -SkipHttpErrorCheck
 ```
 
 ## Layout
@@ -32,14 +32,15 @@ Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 - `bundle/build.mjs` — esbuild CJS bundle, SEA blob, postject injection, PE subsystem patch (no console window)
 - `bundle/entry.js` — resolves the library root, extracts UI + ffmpeg once to `.cache\app\<buildId>`, single-instance check, opens the browser, writes `launcher.log`
 - `bundle/shims/` — `ffmpeg-static` / `ffprobe-static` replacements that read `FFMPEG_PATH` / `FFPROBE_PATH`
-- `server/index.js` — Express routes: library, rescan, stream, thumbnail, artwork, item, hero, series catalog, `GET /api/db/stats`, `POST /api/quit`
+- `server/index.js` - Express routes: library, rescan, stream, artwork, item, hero, series catalog, castle download, `GET /api/db/stats`, `POST /api/quit`
 - `server/library.js` — folder walk with a saved directory index, filename/NFO parsing, ffprobe metadata, `items` table (payload JSON), instant library load from the DB on boot
 - `server/db.js` — **one** SQLite database (`.cache\catalog.db`): schema, WAL pragmas, one-time migration from the old `pictures.db` / `library.db` / `trailers.db`, asset helpers, `dbStats`
 - `server/pictures.js` — picks a still per title by edge density over several sampled moments, stores the JPEG in `.cache\pictures\` and the row in `catalog.db`
 - `server/hero.js` — hero stills + 8 s preview clips indexed in `catalog.db`, background warm-up that aborts on playback
 - `server/artwork.js` - Cinemeta poster/backdrop/logo downloaded once into `assets` BLOBs, served with an ETag; `sizedArt` renders JPEGs at the requested ladder width into `.cache\art\sized\`; `warmArtwork` imports legacy `.cache\art` files
-- `server/subs.js` — subtitle sidecars read once into the `subtitles` table, body served from the DB with an ETag
-- `server/audio.js` — audio-track probe cached in `audio_probe` / `audio_tracks`, on-demand dub remux into `.cache\audio\`
+- `server/subs.js` - subtitle sidecars read once into the `subtitles` table, body served from the DB with an ETag
+- `server/audio.js` - audio-track probe cached in `audio_probe` / `audio_tracks`, on-demand dub remux into `.cache\audio\`
+- `server/downloads.js` - Castle HLS downloads: ffmpeg remux into the library, subtitle/art sidecars, queued jobs with pause/resume/cancel
 - `server/proc.js` — every ffmpeg/ffprobe/yt-dlp child: below-normal priority, one heavy media job at a time (`mediaLane`), ffprobe lane, playback-aware warm-up gate
 - `public/index.html` + `app.js` + `styles.css` — home UI, search, series/detail sheets
 - `public/watch.html` + `watch.js` + `watch.css` — custom player

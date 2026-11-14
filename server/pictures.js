@@ -221,12 +221,3 @@ export function ensurePicture(item, full, width = 1280) {
   pending.set(key, promise);
   return promise;
 }
-
-export function pictureStats() {
-  if (!db) return { count: 0 };
-  try {
-    return { count: db.prepare('SELECT COUNT(*) AS n FROM picture').get().n };
-  } catch {
-    return { count: 0 };
-  }
-}

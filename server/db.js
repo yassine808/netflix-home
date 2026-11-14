@@ -144,12 +144,6 @@ CREATE TABLE IF NOT EXISTS intro (
   updated_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS kv (
-  key TEXT PRIMARY KEY,
-  value TEXT,
-  updated_at INTEGER NOT NULL
-);
-
 /* Directory index: the scanner trusts a directory whose mtime is unchanged
  * instead of stat-ing every file inside it again on each launch. */
 CREATE TABLE IF NOT EXISTS dirs (
@@ -240,10 +234,6 @@ export function getDb() {
   return db;
 }
 
-export function isDbReady() {
-  return Boolean(db);
-}
-
 /* Run a batch of writes atomically. Falls back to a plain call when SQLite is
  * unavailable, so every caller keeps working without a database. */
 export function transaction(fn) {
@@ -293,26 +283,6 @@ export function putAsset({ id, kind, mime, buffer, path: filePath = null }) {
     return { mime, buffer, path: filePath, etag };
   } catch {
     return null;
-  }
-}
-
-export function getKv(key) {
-  if (!db) return null;
-  try {
-    return db.prepare('SELECT value FROM kv WHERE key = ?').get(String(key))?.value ?? null;
-  } catch {
-    return null;
-  }
-}
-
-export function setKv(key, value) {
-  if (!db) return;
-  try {
-    db.prepare(`INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
-      .run(String(key), String(value), Date.now());
-  } catch {
-    /* metadata is best effort */
   }
 }
 
