@@ -69,11 +69,15 @@ function createLane(limit) {
 /* One ffmpeg at a time; ffprobe reads are tiny and can overlap a little. */
 export const mediaLane = createLane(1);
 export const probeLane = createLane(3);
+/* Artwork thumbnails are short single-frame jobs; two at a time keeps a cold
+ * card grid from queueing behind a hero build. */
+export const artLane = createLane(2);
 
-const laneFor = (name) => (name === 'probe' ? probeLane : mediaLane);
+const LANES = { probe: probeLane, art: artLane, media: mediaLane };
+const laneFor = (name) => LANES[name] || mediaLane;
 
-/* Promise wrapper around execFile. `lane` is 'media' (default) or 'probe';
- * `timeout: 0` means no timeout (used by the dub remux). */
+/* Promise wrapper around execFile. `lane` is 'media' (default), 'probe' or
+ * 'art'; `timeout: 0` means no timeout (used by the dub remux). */
 export function run(cmd, args, { timeout = 30000, maxBuffer = DEFAULT_MAX_BUFFER, lane = 'media' } = {}) {
   return laneFor(lane)(() => new Promise((resolve, reject) => {
     const child = execFile(cmd, args, {

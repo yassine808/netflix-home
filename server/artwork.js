@@ -11,26 +11,33 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { getItem } from './library.js';
+import ffmpegPath from 'ffmpeg-static';
 import { resolveImdbId } from './imdb.js';
 import { isOffline } from './settings.js';
 import { getAsset, putAsset } from './db.js';
-import { playbackActive } from './proc.js';
+import { playbackActive, run as runProc } from './proc.js';
 
 const CINEMETA = 'https://v3-cinemeta.strem.io';
 const FIELDS = { poster: 'poster', backdrop: 'background', logo: 'logo' };
 
+/* Card and hero slots ask for one of these widths. Anything between two steps
+ * is rounded up, so a handful of files covers every layout. */
+const SIZE_LADDER = [160, 240, 320, 480, 640, 960, 1280];
+
 let artDir = null;
+let sizedDir = null;
 const inflight = new Map();
 const failures = new Map();
 const FAIL_TTL = 10 * 60 * 1000;
 
 export function initArtwork(cacheDir) {
   artDir = path.join(cacheDir, 'art');
+  sizedDir = path.join(artDir, 'sized');
   try {
-    fs.mkdirSync(artDir, { recursive: true });
+    fs.mkdirSync(sizedDir, { recursive: true });
   } catch {
     artDir = null;
+    sizedDir = null;
   }
 }
 
@@ -162,6 +169,71 @@ export async function officialArt(item, kind) {
 /* File already on disk, without starting a download. */
 export function cachedArt(id, kind) {
   return existing(id, kind);
+}
+
+/* Nearest ladder width for a `?w=` request; 0 means "serve the original". */
+export function artWidth(value) {
+  const wanted = Number(value);
+  if (!Number.isFinite(wanted) || wanted <= 0) return 0;
+  return SIZE_LADDER.find((step) => step >= Math.round(wanted)) || SIZE_LADDER[SIZE_LADDER.length - 1];
+}
+
+function sizedFile(id, kind, width) {
+  return sizedDir ? path.join(sizedDir, `${hashFor(id)}-${kind}-${width}.jpg`) : null;
+}
+
+function sizedResult(file) {
+  try {
+    const st = fs.statSync(file);
+    if (st.size > 512) return { path: file, mime: 'image/jpeg', etag: `"s${st.size}-${Math.round(st.mtimeMs)}"` };
+  } catch {
+    /* not built yet */
+  }
+  return null;
+}
+
+/* One JPEG per (title, kind, width), rendered from the cached original the
+ * first time a slot asks for it. ffmpeg clamps to the source size, so a small
+ * poster is never upscaled into a bigger file. */
+export async function sizedArt(id, kind, width, sourcePath = null) {
+  const step = artWidth(width);
+  if (!step || kind === 'logo') return null;
+  const out = sizedFile(id, kind, step);
+  if (!out) return null;
+  const already = sizedResult(out);
+  if (already) return already;
+
+  const original = sourcePath ? { path: sourcePath } : existing(id, kind);
+  if (!original) return null;
+
+  let source = original.path;
+  let temp = null;
+  if (!source) {
+    if (!original.buffer) return null;
+    temp = path.join(sizedDir, `src-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
+    try {
+      fs.writeFileSync(temp, original.buffer);
+      source = temp;
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    await runProc(ffmpegPath, [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-i', source,
+      '-vf', `scale='min(iw,${step})':-2`,
+      '-q:v', '4', '-f', 'image2', '-update', '1', out,
+    ], { timeout: 30000, maxBuffer: 1024 * 1024 * 2, lane: 'art' });
+  } catch {
+    /* fall back to the full-size image */
+  } finally {
+    if (temp) {
+      try { fs.unlinkSync(temp); } catch { /* best effort */ }
+    }
+  }
+  return sizedResult(out);
 }
 
 /* Move artwork an older build left in `.cache/art` into catalog.db, so the

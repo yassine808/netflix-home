@@ -225,9 +225,11 @@ export function qualityLabel(item) {
   return item.height ? 'SD' : '';
 }
 
-export function thumbUrl(item) {
+export function thumbUrl(item, width = 480) {
   // Always the title's official artwork, never a frame from the video.
-  return `/api/art/${item.id}/backdrop`;
+  // `width` asks the server for a JPEG scaled to the slot (0 = original).
+  const w = Number(width) > 0 ? `?w=${Math.round(Number(width))}` : '';
+  return `/api/art/${item.id}/backdrop${w}`;
 }
 
 /* Cached hero still + 12 s preview clip (see server/hero.js). */
@@ -239,9 +241,10 @@ export function heroPreviewUrl(item) {
   return `/api/hero/${encodeURIComponent(item.id)}/preview.mp4`;
 }
 
-export function posterUrl(item) {
+export function posterUrl(item, width = 480) {
   // Poster art for portrait slots; the catalog's own image, cached locally.
-  return `/api/art/${item.id}/poster`;
+  const w = Number(width) > 0 ? `?w=${Math.round(Number(width))}` : '';
+  return `/api/art/${item.id}/poster${w}`;
 }
 
 /* Transparent title wordmark from the catalog. Answers 404 when the title has

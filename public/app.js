@@ -699,7 +699,10 @@ function heroArt(item) {
     img.classList.remove('img-ready');
     setImg(img, heroImageUrl(item));
   };
-  setImg(img, thumbUrl(item));
+  // Full-size backdrop: this is the largest thing on screen and the one image
+  // worth downloading at native width.
+  img.fetchPriority = 'high';
+  setImg(img, thumbUrl(item, 0));
 }
 
 /* Hero logo: the catalog wordmark replaces the text title. The heading keeps
@@ -738,7 +741,7 @@ function playPreview(item) {
   video.volume = 0.65;
   video.muted = state.previewMuted;
   // Keep the title's own artwork on screen while the trailer buffers.
-  video.poster = thumbUrl(item);
+  video.poster = thumbUrl(item, 960);
   syncHeroMute();
   video.classList.remove('playing');
   const start = state.previewStart;
@@ -3049,7 +3052,7 @@ function localSheetDetail(group, season) {
       season: ep.season,
       movieId: ep.id,
       episodeId: ep.id,
-      thumbnail: thumbUrl(ep),
+      thumbnail: thumbUrl(ep, 320),
       resolutions: [],
     }));
   return {
@@ -3206,7 +3209,7 @@ function openLibraryModal(id) {
   els.modal.hidden = false;
   syncBodyLock();
   els.modal.scrollTop = 0;
-  setImg(els.modalImg, thumbUrl(group));
+  setImg(els.modalImg, thumbUrl(group, 960));
   els.modalImg.alt = group.title;
   els.modalTitle.textContent = group.title;
 

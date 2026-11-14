@@ -1,13 +1,15 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { initDb, dbStats } from './db.js';
 import { notePlayback } from './proc.js';
 import { initCache, scanLibrary, getLibrary, getItem, resolveItemFile,
   ensureThumb, artPath, isScanning,
 } from './library.js';
-import { initArtwork, officialArt, cachedArt, warmArtwork } from './artwork.js';
+import { initArtwork, officialArt, cachedArt, artWidth, sizedArt, warmArtwork } from './artwork.js';
 import {
   initDownloads,
   addDownload, addSeriesDownload, addHlsDownload,
@@ -231,24 +233,46 @@ const MIME = {
   '.ogv': 'video/ogg', '.divx': 'video/divx',
 };
 
+/* The library JSON is rebuilt only when something changed. gzip is computed
+ * once per revision too: for a few hundred titles that is the difference
+ * between ~400 KB and ~60 KB on the wire. */
+let libCache = { key: '', body: null, gzip: null };
+
 app.get('/api/library', (req, res) => {
   const lib = getLibrary();
   const etag = `"lib-${lib.updatedAt || 0}-${lib.items.length}"`;
+  const scanning = isScanning();
   res.setHeader('Cache-Control', 'private, no-cache');
   res.setHeader('ETag', etag);
+  res.setHeader('Vary', 'Accept-Encoding');
   if (req.headers['if-none-match'] === etag) return res.status(304).end();
-  res.json({
-    root: lib.root,
-    updatedAt: lib.updatedAt,
-    scannedInMs: lib.scannedInMs,
-    scan: lib.scan || null,
-    scanning: isScanning(),
-    items: lib.items.map((item) => {
-      const { posterPath, backdropPath, ...safe } = item;
-      return { ...safe, hasPoster: Boolean(posterPath), hasBackdrop: Boolean(backdropPath) };
-    }),
-    collections: lib.collections,
-  });
+
+  const key = `${etag}|${scanning}|${JSON.stringify(lib.scan || null)}|${lib.scannedInMs}`;
+  if (libCache.key !== key) {
+    const json = JSON.stringify({
+      root: lib.root,
+      updatedAt: lib.updatedAt,
+      scannedInMs: lib.scannedInMs,
+      scan: lib.scan || null,
+      scanning,
+      items: lib.items.map((item) => {
+        const { posterPath, backdropPath, ...safe } = item;
+        return { ...safe, hasPoster: Boolean(posterPath), hasBackdrop: Boolean(backdropPath) };
+      }),
+      collections: lib.collections,
+    });
+    libCache = { key, body: Buffer.from(json, 'utf8'), gzip: null };
+  }
+  if (/\bgzip\b/i.test(req.headers['accept-encoding'] || '')) {
+    if (!libCache.gzip) libCache.gzip = gzipSync(libCache.body, { level: 6 });
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Encoding', 'gzip');
+    res.setHeader('Content-Length', String(libCache.gzip.length));
+    return res.end(libCache.gzip);
+  }
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Length', String(libCache.body.length));
+  return res.end(libCache.body);
 });
 
 app.post('/api/rescan', async (req, res) => {
@@ -686,19 +710,30 @@ function sendArt(req, res, art, immutable = false) {
 app.get('/api/art/:id/:kind', async (req, res) => {
   const want = req.params.kind;
   const kind = want === 'poster' || want === 'logo' ? want : 'backdrop';
+  const width = artWidth(req.query.w);
   // Sidecar pictures only exist for poster/backdrop.
   const sidecar = kind === 'logo' ? null : artPath(kind, req.params.id);
   if (sidecar) {
+    // Local pictures are often 1920 px wide; scale them to the slot too.
+    const scaled = width ? await sizedArt(req.params.id, kind, width, sidecar) : null;
+    if (scaled) return sendArt(req, res, scaled, true);
     res.setHeader('Cache-Control', 'public, max-age=604800');
     return res.sendFile(sidecar);
   }
   const item = getItem(req.params.id);
   if (!item) return res.status(404).end();
+  const artId = item.seriesKey || item.id;
+  // One cached JPEG per requested width, built from the original.
+  const scaled = width && kind !== 'logo' ? await sizedArt(artId, kind, width) : null;
+  if (scaled) return sendArt(req, res, scaled, true);
   // Official artwork from the catalog, cached in catalog.db.
-  const cached = cachedArt(item.seriesKey || item.id, kind);
+  const cached = cachedArt(artId, kind);
   if (cached) return sendArt(req, res, cached, true);
   const art = await officialArt(item, kind);
   if (!art) return res.status(404).end();
+  // First view pays for the download; hand back the sized copy when asked.
+  const later = width && kind !== 'logo' ? await sizedArt(artId, kind, width) : null;
+  if (later) return sendArt(req, res, later, true);
   return sendArt(req, res, art, true);
 });
 
@@ -1009,9 +1044,44 @@ app.post('/api/quit', (req, res) => {
   setTimeout(() => process.exit(0), 200);
 });
 
-app.use(express.static(publicDir, { extensions: ['html'] }));
-app.get('/watch', (req, res) => res.sendFile(path.join(publicDir, 'watch.html')));
-app.use((req, res) => res.status(404).sendFile(path.join(publicDir, '404.html')));
+/* Assets are cached for a year, so their URLs carry a stamp that changes
+ * whenever one of the files does. HTML itself is revalidated on every load. */
+const ASSET_VERSION = (() => {
+  const hash = crypto.createHash('sha1');
+  for (const name of ['app.js', 'common.js', 'watch.js', 'styles.css', 'watch.css', 'fonts.css']) {
+    try {
+      const st = fs.statSync(path.join(publicDir, name));
+      hash.update(`${name}:${st.size}:${Math.round(st.mtimeMs)}`);
+    } catch {
+      /* a file missing from a custom build just does not contribute */
+    }
+  }
+  return hash.digest('hex').slice(0, 8);
+})();
+
+function sendHtml(res, name, status = 200) {
+  fs.readFile(path.join(publicDir, name), 'utf8', (err, html) => {
+    if (err) return res.status(500).end();
+    const versioned = html.replace(/(href|src)="\/([^"?#]+\.(?:css|js))"/g, `$1="/$2?v=${ASSET_VERSION}"`);
+    res.status(status);
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(versioned);
+  });
+}
+
+app.get(['/', '/index.html'], (req, res) => sendHtml(res, 'index.html'));
+app.get(['/watch', '/watch.html'], (req, res) => sendHtml(res, 'watch.html'));
+app.use(express.static(publicDir, {
+  extensions: ['html'],
+  setHeaders(res, filePath) {
+    if (/\.html$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+    else if (/\.(?:js|css|woff2?|ttf|otf|ico)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    } else if (/\.mp4$/i.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=86400');
+  },
+}));
+app.use((req, res) => sendHtml(res, '404.html', 404));
 
 function listen(port, attempt = 0) {
   const server = app.listen(port, async () => {

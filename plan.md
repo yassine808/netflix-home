@@ -57,18 +57,26 @@ detects it because `readdir` names and stat results are compared. Acceptable tra
 
 Success: idle CPU under 1 % with the app open, a 12 s hero build never makes playback stutter.
 
-## Phase 3 — send fewer bytes
+## Phase 3 — send fewer bytes (done)
 
-- [ ] **Compress `/api/library`.** ~20 KB JSON → gzip ~4 KB. Cache the gzipped buffer keyed by
-      `updatedAt` and send it when `Accept-Encoding` allows; keep the ETag.
-- [ ] **Size the artwork to the slot.** `/api/art/:id/poster?w=342` serves a downscaled JPEG
-      (stored once per width, like `picture`) instead of a 288 KB backdrop on a 212 px card.
-- [ ] **Immutable asset headers.** `express.static` for `public/` gets `max-age=31536000,
-      immutable` with a build-id query string, so CSS/JS/fonts load once per build.
-- [ ] **Preconnect/preload.** `<link rel="preload" as="image">` for the hero backdrop and the
-      first row's posters; nothing for below-the-fold art.
-- [ ] **Cap parallel image requests.** The browser opens 6 sockets per host; rendering rows
-      lazily (Phase 4) keeps them from queueing behind offscreen posters.
+- [x] **Compress `/api/library`.** The JSON body is built once per revision (ETag + scan
+      fingerprint) and gzipped once at level 6. Measured 886 B → 502 B for one title; the
+      ratio grows with the payload. `Vary: Accept-Encoding` and the same ETag/304 path stay.
+- [x] **Size the artwork to the slot.** `/api/art/:id/:kind?w=480` renders a JPEG at the
+      nearest ladder width (160/240/320/480/640/960/1280) once, under `.cache\art\sized\`,
+      from the cached original or a sidecar picture. ffmpeg clamps to the source width, so
+      small posters are never upscaled. `thumbUrl(item, width)` / `posterUrl(item, width)`
+      now pass `w`; hero uses the original, cards 480 (grid 640), episode thumbs 320.
+      Measured 101 KB / 1600 px → 9.7 KB at 480 px; warm hit 17 ms.
+- [x] **Immutable asset headers.** HTML is served `no-cache` with `?v=<stamp>` on every
+      `/x.css` and `/x.js`; those files (plus fonts and icons) get
+      `max-age=31536000, immutable`. The stamp hashes the six asset files' size+mtime, so a
+      deploy invalidates them automatically.
+- [ ] **Preconnect/preload.** Skipped: the hero is chosen client-side after `/api/library`,
+      so the server cannot put its URL in `<head>`. The hero `<img>` now uses
+      `fetchpriority="high"` instead.
+- [ ] **Cap parallel image requests.** Lazy rows (Phase 4) are the real fix; the server now
+      scales art through a two-slot lane, so a burst of 50 cards cannot starve a hero build.
 
 Success: home page under 150 KB transferred on a warm cache, under 900 KB on a cold one.
 

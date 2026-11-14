@@ -156,7 +156,7 @@ async function init() {
   videoTitle.classList.remove('sk-text');
   epTag.classList.remove('sk-text');
   document.body.style.background = '#000';
-  video.poster = thumbUrl(item);
+  video.poster = thumbUrl(item, 960);
   await initAudioTracks();
   video.src = streamUrl();
   video.load();
@@ -435,7 +435,7 @@ async function loadNextEpisode() {
     nextTag.textContent = `${data.episode}  ${data.title || data.name || tag}`;
     nextNote.textContent = data.kind === 'local' ? tag : `${tag} is not downloaded yet`;
     if (data.kind === 'local' && data.id) {
-      nextThumb.style.backgroundImage = `url("${thumbUrl({ id: data.id })}")`;
+      nextThumb.style.backgroundImage = `url("${thumbUrl({ id: data.id }, 240)}")`;
     }
     $('nextEp').setAttribute('aria-label', data.kind === 'local'
       ? `Play next episode ${tag}`
@@ -518,7 +518,7 @@ function renderEpisodes(season) {
     img.loading = 'lazy';
     img.alt = '';
     img.src = heroImageUrl(ep);
-    img.addEventListener('error', () => { img.src = thumbUrl(ep); }, { once: true });
+    img.addEventListener('error', () => { img.src = thumbUrl(ep, 320); }, { once: true });
     thumb.append(img);
     if (isCurrent) {
       const now = document.createElement('span');
@@ -1064,7 +1064,7 @@ async function initFrames() {
 
 function previewImage() {
   if (previewMode === 'sprite' && frames) return frames.url;
-  return video.poster || thumbUrl(item);
+  return video.poster || thumbUrl(item, 960);
 }
 
 function applyPreviewBackdrop() {
@@ -1328,7 +1328,7 @@ function setMediaSession() {
     title: item.title,
     artist: 'Netflix Home',
     album: item.collection || 'Local library',
-    artwork: [{ src: thumbUrl(item), sizes: '1280x720', type: 'image/jpeg' }],
+    artwork: [{ src: thumbUrl(item, 1280), sizes: '1280x720', type: 'image/jpeg' }],
   });
   navigator.mediaSession.setActionHandler('play', () => video.play().catch(() => {}));
   navigator.mediaSession.setActionHandler('pause', () => video.pause());
