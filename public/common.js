@@ -190,6 +190,17 @@ export async function setOfflineMode(offline) {
   return res.json();
 }
 
+/* Removes one episode/movie file from disk. Needs DELETE /api/item/:id on the server. */
+export async function deleteLibraryItem(id) {
+  const res = await fetch(`/api/item/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    throw new Error(payload?.error || `delete failed (${res.status})`);
+  }
+  return res.json().catch(() => ({}));
+}
+
 export async function getSubtitles(id) {
   const res = await fetch(`/api/subtitles/${encodeURIComponent(id)}`, { cache: 'no-store' });
   if (!res.ok) throw new Error(`subtitles ${res.status}`);

@@ -5,7 +5,7 @@ import {
   getSeries, getSeriesCatalog, debounce, createEl,
   searchCatalog, getFallbackCatalog, getCatalogItem,
   searchOnline, getOnlineTitle, searchCastle, getCastleTitle, getCastleSeriesEpisodes, startCastleDownload,
-  startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload, reorderDownloads,
+  deleteLibraryItem, startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   getSettings, setOfflineMode,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
 } from './common.js';
@@ -2668,6 +2668,51 @@ function castleAllLocal(detail) {
   return episodes.every((episode) => localMap.has(`${episode.season}x${episode.episode}`));
 }
 
+const EP_TRASH_ICON = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6.5 7l1 13h9l1-13"/><path d="M10 11v5M14 11v5"/></svg>';
+
+/* Grey delete button. First click arms it ("Sure?"), second click deletes. */
+function buildDeleteButton(local) {
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'castle-del-btn';
+  del.title = 'Delete this episode from disk';
+  del.setAttribute('aria-label', `Delete episode ${local.episode}`);
+  const paint = (text) => {
+    del.innerHTML = EP_TRASH_ICON;
+    del.append(createEl('span', '', text));
+  };
+  paint('Delete');
+  let armTimer = 0;
+  del.addEventListener('click', async () => {
+    if (!del.classList.contains('is-armed')) {
+      del.classList.add('is-armed');
+      paint('Sure?');
+      armTimer = setTimeout(() => { del.classList.remove('is-armed'); paint('Delete'); }, 3000);
+      return;
+    }
+    clearTimeout(armTimer);
+    del.disabled = true;
+    paint('Deleting…');
+    try {
+      await deleteLibraryItem(local.id);
+      await loadLibrary();
+      const group = state.castleLocal?.group;
+      if (group) {
+        const fresh = groupLibrary().find((entry) => entry.id === group.id) || group;
+        state.castleLocal = { ...state.castleLocal, group: fresh, local: localEpisodesFor(fresh) };
+      }
+      toast('Episode deleted');
+      renderCastleDownloads(state.castleTitle);
+    } catch (err) {
+      del.disabled = false;
+      del.classList.remove('is-armed');
+      paint('Delete');
+      toast(`Could not delete: ${err.message}`);
+    }
+  });
+  return del;
+}
+
 function appendCastleAction(row, detail, episode, local, quality) {
   const season = detail.activeSeason ?? state.castleSeason;
   const action = createEl('div', 'castle-ep-action');
@@ -2698,6 +2743,7 @@ function appendCastleAction(row, detail, episode, local, quality) {
     btn.setAttribute('aria-label', `Play episode ${local.episode}`);
     paint(EP_PLAY_ICON, 'Play');
     btn.addEventListener('click', () => goWatch(local.id));
+    action.append(buildDeleteButton(local));
   } else if (job && (job.status === 'downloading' || job.status === 'cancelling')) {
     btn.classList.add('is-active');
     btn.title = 'Open downloads';
@@ -2751,13 +2797,18 @@ function renderCastleDownloads(detail) {
   const canPickSeason = detail.type === 'series' && seasons.length > 1;
   els.castleSeasonTabs.hidden = !canPickSeason;
   if (canPickSeason) {
+    const select = document.createElement('select');
+    select.className = 'season-select';
+    select.setAttribute('aria-label', 'Season');
     seasons.forEach((entry) => {
-      const btn = createEl('button', 'season-tab', `Season ${entry.season}`);
-      btn.type = 'button';
-      btn.classList.toggle('active', entry.season === detail.activeSeason);
-      btn.addEventListener('click', () => selectCastleSeason(entry.season));
-      els.castleSeasonTabs.append(btn);
+      const opt = document.createElement('option');
+      opt.value = String(entry.season);
+      opt.textContent = `Season ${entry.season}`;
+      select.append(opt);
     });
+    select.value = String(detail.activeSeason);
+    select.addEventListener('change', () => selectCastleSeason(Number(select.value)));
+    els.castleSeasonTabs.append(select);
   }
 
   const allDone = castleAllLocal(detail);
