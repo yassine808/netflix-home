@@ -20,7 +20,8 @@ export async function resolveImdbId(item) {
   // the same title can still resolve.
   if (isOffline()) return '';
 
-  const key = item.seriesKey || item.id;
+  const year = Number(item.year) || 0;
+  const key = `${item.seriesKey || item.id}:${year}`;
   if (cache.has(key)) return cache.get(key);
 
   let id = '';
@@ -29,11 +30,25 @@ export async function resolveImdbId(item) {
     const wanted = normalizeTitle(item.seriesTitle || item.title);
     const results = Array.isArray(data?.results) ? data.results : [];
     const typed = item.isSeries ? results.filter((hit) => hit.type === 'series') : results;
-    const exact = typed.find((hit) => normalizeTitle(hit.title) === wanted);
-    id = (exact || typed[0])?.id || '';
+    id = pickImdbId(typed, wanted, year);
   } catch {
     /* offline or catalog down: no id, no lookup */
   }
   cache.set(key, id);
   return id;
+}
+
+/* Remakes share a title, so a bare name is ambiguous: "The Trunk" is both a
+ * 2013 series and the 2024 Netflix one, and the older one wins by catalog
+ * order. When the caller knows the year, take the closest one instead. */
+function pickImdbId(results, wanted, year) {
+  if (!results.length) return '';
+  const exact = results.filter((hit) => normalizeTitle(hit.title) === wanted);
+  const pool = exact.length ? exact : results;
+  if (!year) return pool[0].id;
+  const dated = pool
+    .filter((hit) => hit.year)
+    .map((hit) => ({ hit, delta: Math.abs(hit.year - year) }))
+    .sort((a, b) => a.delta - b.delta);
+  return (dated[0]?.hit || pool[0]).id;
 }

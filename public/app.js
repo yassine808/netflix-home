@@ -2612,6 +2612,7 @@ function loadCastlePlan(detail, episodes) {
     movieId: String(detail.id),
     episodeId: String(episodes[0]?.episodeId || ''),
     title: detail.title,
+    year: String(detail.year || ''),
     season: String(season),
     episodes: numbers.join(','),
   });

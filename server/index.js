@@ -1234,6 +1234,7 @@ app.get('/api/castle/plan', async (req, res) => {
   const episodeId = String(req.query.episodeId || '');
   const title = String(req.query.title || '').trim();
   const season = Math.max(0, Number(req.query.season) || 0);
+  const year = Math.max(0, Number(req.query.year) || 0);
   const episodes = String(req.query.episodes || '')
     .split(',')
     .map((value) => Number(value))
@@ -1247,6 +1248,7 @@ app.get('/api/castle/plan', async (req, res) => {
     const imdbId = await resolveImdbId({
       title,
       seriesTitle: title,
+      year,
       isSeries: season > 0,
       id: `castle:${movieId}`,
       seriesKey: `castle:${movieId}`,
@@ -1326,6 +1328,7 @@ app.post('/api/castle/download', async (req, res) => {
         const imdbId = await resolveImdbId({
           title,
           seriesTitle: title,
+          year: Number(body.year) || 0,
           isSeries,
           tmdbId: body.imdbId,
           id: `castle:${movieId}`,
@@ -1375,6 +1378,7 @@ app.post('/api/castle/download', async (req, res) => {
         const imdbId = await resolveImdbId({
           title,
           seriesTitle: title,
+          year: Number(body.year) || 0,
           isSeries,
           tmdbId: body.imdbId,
         });
