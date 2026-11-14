@@ -89,6 +89,13 @@ initDownloads({
     warmHeroes(lib.items, libraryRoot);
     warmTrailers(lib.items);
   },
+  // A file that is already in the library must not be downloaded twice; this is
+  // what kept producing duplicate titles (and " (1)" copies) in the UI.
+  findDownload: (fileName) => {
+    const wanted = String(fileName || '').toLowerCase();
+    if (!wanted) return null;
+    return getLibrary().items.find((entry) => entry.fileName.toLowerCase() === wanted) || null;
+  },
 });
 
 const app = express();
@@ -915,7 +922,7 @@ app.post('/api/downloads', async (req, res) => {
 
   try {
     const jobs = await addDownload(body);
-    res.status(201).json({ count: jobs.length, jobs });
+    res.status(201).json({ count: jobs.length, jobs, skipped: jobs.skipped || [] });
   } catch (err) {
     res.status(err?.status || 500).json({
       error: err?.message || String(err),
@@ -931,7 +938,7 @@ app.post('/api/downloads/series', async (req, res) => {
   }
   try {
     const jobs = await addSeriesDownload(body);
-    res.status(201).json({ count: jobs.length, jobs });
+    res.status(201).json({ count: jobs.length, jobs, skipped: jobs.skipped || [] });
   } catch (err) {
     res.status(err?.status || 500).json({ error: err?.message || String(err) });
   }

@@ -269,7 +269,7 @@ export async function scanLibrary(root) {
         displayTitle: isSeries ? `${seriesTitle} · ${episodeLabel}` : title,
         isSeries,
         seriesTitle,
-        seriesKey: isSeries ? idFor(`${collection}\u0000${seriesTitle.toLowerCase()}`) : null,
+        seriesKey: isSeries ? idFor(seriesTitle.toLowerCase()) : null,
         season: isSeries ? parsed.season : null,
         episode: isSeries ? parsed.episode : null,
         episodeLabel,

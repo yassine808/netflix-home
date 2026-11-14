@@ -67,10 +67,14 @@ let activeCount = 0;
 const MAX_ACTIVE = 2;
 let libraryRoot = '';
 let onComplete = async () => {};
+/* Returns the library item that already has this file name, or null. Downloads
+ * use it so a title that is already on disk is never copied a second time. */
+let findExisting = () => null;
 
-export function initDownloads({ root, onDownloadComplete }) {
+export function initDownloads({ root, onDownloadComplete, findDownload = null }) {
   libraryRoot = root;
   onComplete = onDownloadComplete || (async () => {});
+  findExisting = typeof findDownload === 'function' ? findDownload : () => null;
 }
 
 export function setDownloadsRoot(root) {
@@ -437,7 +441,15 @@ export async function addDownload(body = {}) {
   await fsp.mkdir(targetDir, { recursive: true });
 
   const created = [];
+  const skipped = [];
   for (const spec of specs) {
+    // Same file already in the library (any folder): reuse it instead of
+    // writing a " (1)" copy next to it.
+    const known = findExisting(spec.fileName);
+    if (known) {
+      skipped.push({ fileName: spec.fileName, id: known.id, title: known.displayTitle || known.title });
+      continue;
+    }
     const dest = await uniquePath(targetDir, spec.fileName);
     const job = {
       id: crypto.randomUUID(),
@@ -466,6 +478,7 @@ export async function addDownload(body = {}) {
   }
 
   pump();
+  created.skipped = skipped;
   return created;
 }
 
@@ -532,6 +545,13 @@ export async function addHlsDownload(body = {}) {
     ? path.join(libraryRoot, collection, folder)
     : path.join(libraryRoot, collection);
   await fsp.mkdir(targetDir, { recursive: true });
+
+  const known = findExisting(fileName);
+  if (known) {
+    const already = [];
+    already.skipped = [{ fileName, id: known.id, title: known.displayTitle || known.title }];
+    return already;
+  }
 
   const dest = await uniquePath(targetDir, fileName);
   const job = {

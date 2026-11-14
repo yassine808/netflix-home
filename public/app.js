@@ -482,11 +482,15 @@ function primaryEpisode(group) {
   }) || episodes[0];
 }
 
-/* One card per title: a series is one card with every episode attached. */
+/* One card per title: a series is one card with every episode attached. The key
+ * is the title, not the folder: the same show in "Downloads" and
+ * "Movies\Downloads" used to produce two identical cards. */
 function groupLibrary(items = state.items) {
   const groups = new Map();
   for (const item of items) {
-    const key = item.isSeries && item.seriesKey ? item.seriesKey : `movie:${item.id}`;
+    const key = item.isSeries
+      ? `series:${normalizeSearchText(item.seriesTitle || item.title)}`
+      : `movie:${item.id}`;
     let group = groups.get(key);
     if (!group) {
       group = { ...item, episodes: item.isSeries ? [item] : null };
@@ -1427,7 +1431,7 @@ async function queueDownload(item, fileName) {
   setPickerBusy(true);
   els.pickerStatus.textContent = 'Starting download…';
   try {
-    await startDownload({
+    const result = await startDownload({
       identifier: item.identifier,
       file: fileName,
       title: item.title,
@@ -1435,6 +1439,11 @@ async function queueDownload(item, fileName) {
       collection: 'Downloads',
     });
     closePicker();
+    if (!result.count) {
+      // The server skips a file that is already on disk instead of copying it.
+      toast(`Already in your library — ${result.skipped?.[0]?.title || item.title}`);
+      return;
+    }
     openDownloads();
     toast(`Download started — ${item.title}`);
     notify('start', item.title, 'Download started');
@@ -1456,8 +1465,13 @@ async function queueSeriesDownload(item) {
       folder: item.title,
     });
     closePicker();
+    if (!result.count) {
+      toast(`Already in your library — ${item.title}`);
+      return;
+    }
     openDownloads();
-    toast(`${result.count} download${result.count === 1 ? '' : 's'} started — ${item.title}`);
+    const skipped = Array.isArray(result.skipped) ? result.skipped.length : 0;
+    toast(`${result.count} download${result.count === 1 ? '' : 's'} started — ${item.title}${skipped ? ` (${skipped} already here)` : ''}`);
     notify('start', item.title, `${result.count} download${result.count === 1 ? '' : 's'} queued`);
   } catch (err) {
     els.pickerStatus.textContent = `Could not queue the series: ${err.message}`;

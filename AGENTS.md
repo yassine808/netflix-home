@@ -49,6 +49,7 @@ Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 - Build user-facing DOM with `textContent` or `createEl`, never interpolate filenames into `innerHTML` (local files can contain arbitrary characters).
 - Keep the Netflix look: black/near-black surfaces, `#e50914` red, white play buttons, 16:9 cards.
 - Progress and My List live in `localStorage`; don't move them server-side without a reason.
+- **One card per title.** `seriesKey` is derived from the show's title only, never from its folder, so the same series under `Downloads\` and `Movies\Downloads\` stays one show: one card, one episode list, and Next episode crosses folders. The home page groups series by normalized title as a second guard. Downloads skip a file whose name already exists anywhere in the library instead of writing a `" (1)"` copy.
 - Paths from IDs are resolved and checked against the library root in `resolveItemFile`.
 - The library root is resolved once: `LIBRARY_ROOT` → an exact `Movies` folder beside the app → `G:\NETFLIX` → `G:\Movies` → `G:\` → project `media\`. Compare directory names exactly; Windows is case-insensitive but the project also has `media\`.
 - Series click opens the catalog sheet (`openSeriesSheet`), which merges local episodes into the Castle episode list: local episodes get **Play** plus their progress bar, the rest keep **Download**. Episode thumbnails are the catalog API's images; never generate frames for that sheet.
