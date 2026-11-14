@@ -8,8 +8,8 @@ import { getDb } from './db.js';
 import { run as runProc, playbackActive } from './proc.js';
 
 /**
- * Trailers: KinoCheck (keyless, movies + shows + anime) resolves the official
- * trailer; older titles it misses fall back to Cinemeta, then to a YouTube
+ * Trailers: Cinemeta (keyless) resolves the official trailer of the season that
+ * matches the library; KinoCheck covers titles Cinemeta misses, then a YouTube
  * search. The cut is downloaded once into <cache>\trailers and indexed in the
  * shared catalog database. The home billboard then plays it instead of the
  * generated clip.
@@ -90,8 +90,8 @@ async function fetchJson(url, timeout = 12000) {
   return res.json();
 }
 
-/* KinoCheck is keyless and indexes movies, shows and anime by IMDb id. Older
- * titles often have no trailer there, so Cinemeta stays as the second source. */
+/* KinoCheck is keyless and indexes movies, shows and anime by IMDb id. It often
+ * has no trailer for older shows, so it runs after Cinemeta. */
 async function resolveViaKinocheck(item, imdbId) {
   const kind = item.isSeries ? 'shows' : 'movies';
   const data = await fetchJson(`${KINOCHECK}/${kind}?imdb_id=${encodeURIComponent(imdbId)}&language=en`);
@@ -108,16 +108,15 @@ async function resolveTrailer(item) {
   if (resolving.has(key)) return resolving.get(key);
   const task = (async () => {
     try {
-      const youtubeId = await resolveViaKinocheck(item, imdbId);
-      if (youtubeId) return { imdbId, youtubeId };
-    } catch {
-      /* fall through to Cinemeta */
-    }
-    try {
       const data = await fetchJson(`${CINEMETA}/meta/${type}/${encodeURIComponent(imdbId)}.json`);
       const list = Array.isArray(data?.meta?.trailers) ? data.meta.trailers : [];
       const official = list.find((entry) => entry && entry.source && entry.type !== 'Teaser') || list[0];
-      return { imdbId, youtubeId: official?.source || null };
+      if (official?.source) return { imdbId, youtubeId: official.source };
+    } catch {
+      /* fall through to KinoCheck */
+    }
+    try {
+      return { imdbId, youtubeId: await resolveViaKinocheck(item, imdbId) };
     } catch {
       return { imdbId, youtubeId: null };
     }

@@ -41,7 +41,7 @@ Invoke-WebRequest "http://localhost:3000/api/art/<id>/poster?w=480" -SkipHttpErr
 - `server/subs.js` - subtitle sidecars read once into the `subtitles` table, body served from the DB with an ETag
 - `server/audio.js` - audio-track probe cached in `audio_probe` / `audio_tracks`, on-demand dub remux into `.cache\audio\`
 - `server/downloads.js` - Castle HLS downloads: ffmpeg remux into the library, subtitle/art sidecars, queued jobs with pause/resume/cancel
-- `server/trailers.js` - KinoCheck (keyless) resolves the official YouTube trailer for movies, shows and anime; older titles it misses fall back to Cinemeta, then to `ytsearch5:"<title> <year> official trailer"`; the cut is downloaded once into `.cache\trailers\`
+- `server/trailers.js` - Cinemeta (keyless) resolves the official YouTube trailer; KinoCheck is the second source for titles it misses; last resort is `ytsearch5:"<title> <year> official trailer"`; the cut is downloaded once into `.cache\trailers\`
 - `server/settings.js` - persisted `offline` flag, read by both the API and the download/trailer warm-ups
 - `server/proc.js` — every ffmpeg/ffprobe/yt-dlp child: below-normal priority, one heavy media job at a time (`mediaLane`), ffprobe lane, playback-aware warm-up gate
 - `public/index.html` + `app.js` + `styles.css` — home UI, search, series/detail sheets

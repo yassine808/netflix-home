@@ -264,3 +264,9 @@
 - Done: probed every keyless candidate. AniList and Kitsu are anime/manga only (Peaky Blinders and Breaking Bad return nothing or unrelated anime); JustWatch GraphQL has no trailer fields and Reelgood answers 403; IMDb GraphQL 403; Jikan, imdbapi.dev and YTS time out or return nothing; Vimeo needs a token; Odysee and PeerTube carry episodes, not trailers. KinoCheck (`api.kinocheck.de`) answers without a key, takes an IMDb id and covers movies, shows and anime. `server/trailers.js` now tries KinoCheck first, then Cinemeta, then the YouTube search.
 - Verified: temp library with Peaky Blinders, Breaking Bad and Cyberpunk Edgerunners -> all three rows `ready`: Cyberpunk via KinoCheck (`bwPLTvO1ZrI`, 6.9 MB), Peaky Blinders (`EM12mcTEI88`, 1.3 MB) and Breaking Bad (`VFkjBy2b50Q`, 10.5 MB) via the Cinemeta fallback. No errors in the server log.
 - Next: rebuild, deploy, confirm the live library still resolves.
+
+### 2026-11-14 - trailer source comparison, KinoCheck demoted to fallback
+- Goal: compare Cinemeta against the new sources on real titles (Cyberpunk, Breaking Bad, Peaky Blinders, Chernobyl).
+- Done: KinoCheck answers without a key but only had one of the four in English, and for a series it returns the newest season (Cyberpunk S2) instead of the season in the library. Its German catalogue is wider (Chernobyl trailer in German only). Cinemeta had a trailer for all four. Order in `server/trailers.js` is now Cinemeta -> KinoCheck -> YouTube search, so KinoCheck only fills gaps.
+- Verified: temp library with the four shows -> all rows `ready` through Cinemeta: Breaking Bad `VFkjBy2b50Q`, Chernobyl `s9APLXM9Ei8`, Cyberpunk Edgerunners `JtqIas3bYhg` (not the S2 cut), Peaky Blinders `EM12mcTEI88`.
+- Next: rebuild, deploy. Note: the Cinemeta Breaking Bad entry is a fan "Full Series Trailer" (channel `itemax`), and the Peaky Blinders one is a 31 s BBC launch clip - both are Cinemeta data limits, not resolver bugs.
