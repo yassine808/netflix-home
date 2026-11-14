@@ -80,12 +80,12 @@ let subtitleOffset = 0;
 let subtitleRequest = 0;
 
 /* Subtitle look: text scale and the opacity of the black box behind it.
- * Defaults: English on, 100 % size, no background. Every change is stored per
+ * Defaults: English on, 130 % size, no background. Every change is stored per
  * series, so the next episode opens with the same look and language. */
 const SUB_SCALE_MIN = 0.8;
 const SUB_SCALE_MAX = 1.8;
 const SUB_SCALE_STEP = 0.1;
-let subScale = 1;
+let subScale = 1.3;
 let subBgOpacity = 0;
 
 const params = new URLSearchParams(location.search);
