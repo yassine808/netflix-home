@@ -166,6 +166,7 @@ const els = {
   castleResume: $('castleResume'),
   castleDownloadBlock: $('castleDownloadBlock'),
   castleQuality: $('castleQuality'),
+  castleTools: document.querySelector('.castle-toolbar'),
   castleSize: $('castleSize'),
   castleSeasonTabs: $('castleSeasonTabs'),
   castleEpisodes: $('castleEpisodes'),
@@ -2447,6 +2448,7 @@ function renderCastleQuality(detail, episodes) {
 
   const list = [...qualities.values()].sort((a, b) => a.resolution - b.resolution);
   els.castleQuality.replaceChildren();
+  els.castleTools.hidden = !list.length;
   if (!list.length) return { selected: 0, total: 0, duration: 0, qualities };
 
   let selected = Number(state.castleQuality);
@@ -3194,12 +3196,24 @@ async function openSeriesSheet(group, focusId) {
     highlightSheetTarget();
   } catch (err) {
     if (token !== state.castleDetailToken) return;
-    // No catalog entry (offline, unknown show): the library panel still works.
+    // The catalog is optional. Offline mode, an unknown show or a catalog
+    // error must not swap this sheet for the old library panel: keep the same
+    // layout and show the episodes that are on disk.
+    const fallback = localSheetDetail(group, state.castleSeason) || preview;
+    state.castleTitle = fallback || { ...state.castleTitle, seasons: [], episodes: [] };
+    state.castleSeason = fallback?.activeSeason || state.castleSeason;
+    state.castleCatalog = null;
     clearCastleSkeleton();
-    els.castleModal.hidden = true;
+    els.castleModal.hidden = false;
     syncBodyLock();
-    state.castleLocal = null;
-    openLibraryModal(group.id);
+    populateSeriesHero(group, null);
+    renderCastleDownloads(state.castleTitle);
+    // Download-only controls have nothing to act on without the catalog.
+    els.castleSeasonDownload.hidden = true;
+    els.castleStatus.textContent = state.offline
+      ? 'Offline mode - showing the episodes on your drive.'
+      : `Download catalog unavailable (${err.message}) - showing the episodes on your drive.`;
+    els.castleStatus.hidden = false;
   }
 }
 

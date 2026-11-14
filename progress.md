@@ -234,3 +234,9 @@
 - Done: `npm run deploy` built `dist\netflix-home.exe` build d48ce34eecbc880a (253.6 MB). The running EXE held the old file, so it was closed, the new one copied and launched.
 - Verified: source and deployed SHA256 both `3B8BBE2A...EED9AC64`. Deployed `/api/db/stats` reports `ready` with the `process` block (main 4,096 B, wal 1.4 MB); `/api/library` answers gzip with `Vary` and ETag, a conditional request returns 304, `/app.js` is `immutable`. The served UI contains `libraryPrint`, the 300 s poll, `content-visibility` and the lazy `requestFrames` path. Startup log is quiet: one `unchanged, 4 folder(s) checked in 24 ms` line and nothing since. Idle CPU measured 62 ms over 30 s (0.21 % of one core); working set 236 MB is mostly the mapped EXE image, private memory 80 MB, heap 17 MB.
 - Next: none.
+
+### 2026-11-14 - one series sheet, offline included
+- Goal: stop the old library window (details panel with `Go online to find more`) from replacing the series sheet when the download catalog is unavailable.
+- Done: `openSeriesSheet` no longer falls back to `openLibraryModal` on a catalog error. The same castle-style sheet stays open, draws the library's own episodes from `localSheetDetail`, hides `Download all` and the Quality toolbar when there is nothing to download, and explains the state in the status line (`Offline mode - showing the episodes on your drive.` or the catalog error).
+- Verified: headless Brave on a temp library with two Cyberpunk episodes and offline mode on: `#castleModal` open, `#modal` hidden, 1 episode row with Play, `Download all` hidden, Quality toolbar hidden, status text correct, zero console errors. `node --check` clean.
+- Next: full dead-code and UI pass.
