@@ -129,6 +129,30 @@
       </div>
     </div>
 
+    <div class="idle" id="idle" hidden role="dialog" aria-label="Paused" aria-live="polite">
+      <div class="idle-bg" id="idleBg"></div>
+      <div class="idle-inner">
+        <div class="idle-n" aria-hidden="true">N</div>
+        <span class="idle-eyebrow">Paused</span>
+        <h2 class="idle-title" id="idleTitle"></h2>
+        <span class="idle-ep" id="idleEp"></span>
+        <div class="idle-progress" id="idleProgress" role="progressbar" aria-label="Watch progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="idle-track"><div class="idle-fill" id="idleFill"></div></div>
+          <div class="idle-meta"><span id="idlePct">0% watched</span><span id="idleLeft"></span></div>
+        </div>
+        <div class="idle-actions">
+          <button class="idle-resume" id="idleResume" type="button">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M6 3.8 20 12 6 20.2z"/></svg>
+            Resume
+          </button>
+          <a class="idle-home" id="idleHome" href="/">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5M5.5 10v10h4.5v-6h4v6h4.5V10"/></svg>
+            Back to Home
+          </a>
+        </div>
+      </div>
+    </div>
+
     <div class="ep-panel" id="epPanel" hidden role="dialog" aria-label="Episodes">
       <div class="cc-head">
         <h2 id="epHead">Episodes</h2>

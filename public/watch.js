@@ -48,12 +48,16 @@ const subtitleLayer = $('subtitleLayer');
 const subtitleText = $('subtitleText');
 const preview = $('tlPreview');
 const skipIntroBtn = $('skipIntro');
+const idleEl = $('idle');
+const idleFill = $('idleFill');
 
 let item = null;
 let nextEpisode = null;
 let duration = 0;
 let lastSaved = 0;
 let hideTimer = null;
+let idleTimer = null;
+let idleLast = null;
 let dragging = false;
 let pendingResume = 0;
 let lastVolume = 1;
@@ -67,6 +71,7 @@ let episodesLoading = false;
 let subtitlesLoading = false;
 
 const UI_HIDE_DELAY = 3000;
+const IDLE_DELAY = 12000; /* paused and untouched this long: show the idle screen */
 const PREVIEW_HALF_MIN = 84;
 
 let frames = null;
@@ -197,6 +202,7 @@ function bindEvents() {
     setPlayIcon(true);
     startLoop();
     armHideUi();
+    hideIdle();
   });
   video.addEventListener('pause', () => {
     player.classList.add('paused');
@@ -204,6 +210,7 @@ function bindEvents() {
     stopLoop();
     showUi();
     saveNow();
+    armIdle();
   });
   video.addEventListener('ended', () => {
     player.classList.add('paused');
@@ -211,6 +218,7 @@ function bindEvents() {
     stopLoop();
     showUi();
     saveProgress(item.id, duration, duration);
+    armIdle();
   });
   video.addEventListener('timeupdate', () => {
     updateTimeline();
@@ -301,6 +309,7 @@ function bindEvents() {
   });
 
   document.addEventListener('keydown', onKeyDown);
+  bindIdle();
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) saveNow();
     else showUi();
@@ -1186,6 +1195,12 @@ function saveNow() {
 }
 
 function onKeyDown(e) {
+  if (!idleEl.hidden && e.key === 'Escape') {
+    e.preventDefault();
+    wakeIdle();
+    return;
+  }
+  if (!idleEl.hidden) wakeIdle();
   if ((e.target instanceof HTMLInputElement && e.target !== volume) || e.target instanceof HTMLSelectElement) return;
   if (e.key === 'Escape' && !epPanel.hidden) {
     e.preventDefault();
@@ -1237,6 +1252,68 @@ function onKeyDown(e) {
   }
   showUi();
   armHideUi();
+  armIdle();
+}
+
+/* ---------- idle screen ---------- */
+
+function armIdle() {
+  clearTimeout(idleTimer);
+  if (!item || !video.paused) return;
+  idleTimer = setTimeout(showIdle, IDLE_DELAY);
+}
+
+function showIdle() {
+  if (!item || !video.paused || !idleEl.hidden || panelOpen() || dragging || !errorBox.hidden) return;
+  const t = video.ended ? duration : (video.currentTime || 0);
+  const r = duration ? Math.min(1, Math.max(0, t / duration)) : 0;
+  const pct = Math.round(r * 100);
+  $('idleTitle').textContent = videoTitle.textContent;
+  $('idleEp').textContent = epTag.textContent;
+  $('idleBg').style.backgroundImage = video.poster ? `url("${video.poster}")` : '';
+  $('idlePct').textContent = `${pct}% watched`;
+  $('idleLeft').textContent = duration && r < 1 ? `${formatDuration(duration - t)} left` : (duration ? 'Finished' : '');
+  $('idleProgress').setAttribute('aria-valuenow', String(pct));
+  idleFill.style.transform = 'scaleX(0)';
+  idleEl.hidden = false;
+  idleLast = null;
+  requestAnimationFrame(() => requestAnimationFrame(() => { idleFill.style.transform = `scaleX(${r})`; }));
+  $('idleResume').focus({ preventScroll: true });
+}
+
+function hideIdle() {
+  clearTimeout(idleTimer);
+  idleEl.hidden = true;
+}
+
+/* Real input closes the screen and restarts the countdown. */
+function wakeIdle() {
+  const wasOpen = !idleEl.hidden;
+  hideIdle();
+  showUi();
+  armIdle();
+  return wasOpen;
+}
+
+function bindIdle() {
+  $('idleResume').addEventListener('click', () => {
+    hideIdle();
+    togglePlay();
+  });
+  $('idleHome').addEventListener('click', (e) => {
+    e.preventDefault();
+    leaveToHome();
+  });
+  /* tapping the backdrop wakes the player; the buttons keep their own action */
+  idleEl.addEventListener('pointerdown', (e) => {
+    if (!e.target.closest('.idle-resume, .idle-home')) wakeIdle();
+  });
+  player.addEventListener('pointermove', (e) => {
+    if (idleLast && Math.hypot(e.clientX - idleLast.x, e.clientY - idleLast.y) < 8) return;
+    const settling = !idleLast && !idleEl.hidden;
+    idleLast = { x: e.clientX, y: e.clientY };
+    if (!settling) wakeIdle();
+  });
 }
 
 function showError(message) {
