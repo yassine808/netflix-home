@@ -102,3 +102,11 @@ export function run(cmd, args, { timeout = 30000, maxBuffer = DEFAULT_MAX_BUFFER
 export function spawnNice(cmd, args, options = {}) {
   return nice(spawn(cmd, args, { windowsHide: true, ...options }));
 }
+
+/* Long, user-initiated work (a remux) only steps aside while something is
+ * actually playing. Below-normal priority cost a hardware encoder about 40 %
+ * of its throughput for no benefit on an idle machine. */
+export function spawnMedia(cmd, args, options = {}) {
+  const child = spawn(cmd, args, { windowsHide: true, ...options });
+  return playbackActive() ? nice(child) : child;
+}

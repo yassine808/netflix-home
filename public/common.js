@@ -170,6 +170,18 @@ export async function setOfflineMode(offline) {
   return res.json();
 }
 
+/* Torrentio-only switch: the server refuses to fall back to Castle's 720p file
+ * when this is off, so the UI never promises a download it would not get. */
+export async function setCastleFallback(castleFallback) {
+  const res = await fetch('/api/settings/castle-fallback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ castleFallback: Boolean(castleFallback) }),
+  });
+  if (!res.ok) throw new Error(`castle fallback ${res.status}`);
+  return res.json();
+}
+
 /* Removes one episode/movie file from disk. Needs DELETE /api/item/:id on the server. */
 export async function deleteLibraryItem(id) {
   const res = await fetch(`/api/item/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -222,6 +234,19 @@ export async function reorderDownloads(ids) {
 export async function retryDownload(id) {
   const res = await fetch(`/api/downloads/${encodeURIComponent(id)}/retry`, { method: 'POST' });
   if (!res.ok) throw new Error(`retry ${res.status}`);
+  return res.json();
+}
+
+/* Pause keeps the partial payload on disk; resume picks it up again. */
+export async function pauseDownload(id) {
+  const res = await fetch(`/api/downloads/${encodeURIComponent(id)}/pause`, { method: 'POST' });
+  if (!res.ok) throw new Error(`pause ${res.status}`);
+  return res.json();
+}
+
+export async function resumeDownload(id) {
+  const res = await fetch(`/api/downloads/${encodeURIComponent(id)}/resume`, { method: 'POST' });
+  if (!res.ok) throw new Error(`resume ${res.status}`);
   return res.json();
 }
 

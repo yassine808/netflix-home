@@ -7,7 +7,8 @@ import {
   browseCastle,
   searchOnline, getOnlineTitle, searchCastle, getCastleTitle, getCastleSeriesEpisodes, startCastleDownload,
   deleteLibraryItem, deleteLibraryItems, getDownloads, cancelDownload, retryDownload, reorderDownloads,
-  getSettings, setOfflineMode,
+  pauseDownload, resumeDownload,
+  getSettings, setOfflineMode, setCastleFallback,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
   setImg, skel, skelLines, skelMeta, skelCards, skelPoster, skelEpisodes, skelDownload,
 } from './common.js';
@@ -33,6 +34,8 @@ const state = {
   previewMode: 'clip',
   previewMuted: readJson(PREVIEW_MUTED_KEY, false) === true,
   offline: false,
+  // Mirrors the server's Castle fallback setting: false = Torrentio only.
+  castleFallback: true,
   searchHistory: readJson(SEARCH_HISTORY_KEY, []),
   toastTimer: null,
   toastExitTimer: null,
@@ -183,6 +186,9 @@ const els = {
   castleDownloadBlock: $('castleDownloadBlock'),
   castleSize: $('castleSize'),
   castleSource: $('castleSource'),
+  settingsModal: $('settingsModal'),
+  castleFallbackBtn: $('castleFallbackBtn'),
+  castleFallbackLabel: $('castleFallbackLabel'),
   castleSeasonTabs: $('castleSeasonTabs'),
   castleEpisodes: $('castleEpisodes'),
   castleStatus: $('castleStatus'),
@@ -190,6 +196,7 @@ const els = {
   profile: $('profile'),
   profileBtn: $('profileBtn'),
   profileMenu: $('profileMenu'),
+  menuSettings: $('menuSettings'),
   menuRescan: $('menuRescan'),
   menuQuit: $('menuQuit'),
   menuPath: $('menuPath'),
@@ -311,6 +318,8 @@ async function boot() {
     .then((settings) => {
       state.offline = Boolean(settings.offline);
       applyOfflineUi();
+      state.castleFallback = settings.castleFallback !== false;
+      applyCastleFallbackUi();
     })
     .catch(() => { /* older server: leave the switch online */ });
   await loadLibrary({ first: true });
@@ -1316,7 +1325,7 @@ const STATUS_LABELS = {
   downloading: 'Downloading',
   cancelling: 'Cancelling…',
   cancelled: 'Cancelled',
-  paused: 'Paused — offline',
+  paused: 'Paused',
   failed: 'Failed',
   completed: 'Completed',
 };
@@ -1543,6 +1552,16 @@ function updateDownloadRow(row, job) {
   if (job.error) r.meta.append(createEl('span', 'download-error', job.error));
 
   r.actions.replaceChildren();
+  if (job.status === 'queued' || job.status === 'downloading') {
+    const pause = createEl('button', 'download-action', 'Pause');
+    pause.addEventListener('click', () => downloadAction(job.id, 'pause', pause));
+    r.actions.append(pause);
+  }
+  if (job.status === 'paused') {
+    const resume = createEl('button', 'download-action primary', 'Resume');
+    resume.addEventListener('click', () => downloadAction(job.id, 'resume', resume));
+    r.actions.append(resume);
+  }
   if (job.status === 'queued' || job.status === 'downloading' || job.status === 'paused') {
     const btn = createEl('button', 'download-action', 'Cancel');
     btn.addEventListener('click', () => downloadAction(job.id, 'cancel', btn));
@@ -1644,6 +1663,8 @@ async function downloadAction(id, action, button) {
   button.disabled = true;
   try {
     if (action === 'cancel') await cancelDownload(id);
+    else if (action === 'pause') await pauseDownload(id);
+    else if (action === 'resume') await resumeDownload(id);
     else await retryDownload(id);
     await refreshDownloads();
   } catch {
@@ -1670,6 +1691,7 @@ function syncBodyLock() {
     || isModalOpen()
     || !els.onlineModal.hidden
     || !els.castleModal.hidden
+    || !els.settingsModal.hidden
     || !els.downloadsPanel.hidden;
   document.body.classList.toggle('modal-open', open);
 }
@@ -1811,6 +1833,50 @@ async function toggleOffline() {
     toast(`Could not switch offline mode: ${err.message}`);
   } finally {
     els.offlineBtn.disabled = false;
+  }
+}
+
+/* ---------- settings sheet ---------- */
+
+function applyCastleFallbackUi() {
+  const on = state.castleFallback !== false;
+  els.castleFallbackBtn.setAttribute('aria-checked', String(on));
+  els.castleFallbackBtn.classList.toggle('is-off', !on);
+  els.castleFallbackLabel.textContent = on ? 'On' : 'Off';
+  els.castleFallbackBtn.title = on
+    ? 'Torrentio first, Castle 720p when it has no release'
+    : 'Torrentio only — no Castle fallback';
+}
+
+function openSettings() {
+  closeProfile();
+  applyCastleFallbackUi();
+  els.settingsModal.hidden = false;
+  syncBodyLock();
+  setTimeout(() => els.settingsModal.querySelector('.modal-close')?.focus(), 40);
+}
+
+function closeSettings() {
+  els.settingsModal.hidden = true;
+  syncBodyLock();
+}
+
+async function toggleCastleFallback() {
+  els.castleFallbackBtn.disabled = true;
+  try {
+    const settings = await setCastleFallback(!(state.castleFallback !== false));
+    state.castleFallback = settings.castleFallback !== false;
+    applyCastleFallbackUi();
+    // The open sheet's source line and totals depend on this, so re-plan it.
+    state.castlePlanCache.clear();
+    if (!els.castleModal.hidden && state.castleTitle) renderCastleDownloads(state.castleTitle);
+    toast(state.castleFallback
+      ? 'Castle fallback on — 720p when Torrentio has no release'
+      : 'Torrentio only — no Castle fallback');
+  } catch (err) {
+    toast(`Could not change the download source: ${err.message}`);
+  } finally {
+    els.castleFallbackBtn.disabled = false;
   }
 }
 
@@ -2529,6 +2595,8 @@ function castlePlanFor(detail, episode) {
 }
 
 function renderCastleSizes(detail, episodes) {
+  const season = detail.activeSeason ?? state.castleSeason ?? 0;
+  const entry = state.castlePlanCache.get(castlePlanKey(detail, season));
   const plans = episodes.map((episode) => castlePlanFor(detail, episode.episode));
   const planned = plannedSummary(plans);
 
@@ -2537,6 +2605,27 @@ function renderCastleSizes(detail, episodes) {
       ? `${episodes.length} episode${episodes.length === 1 ? '' : 's'} · ${planned.quality}`
       : planned.quality;
     els.castleSize.textContent = [label, `≈ ${formatSize(planned.total)}`].filter(Boolean).join(' · ');
+    return CASTLE_RESOLUTION;
+  }
+
+  /* Torrentio-only mode never shows Castle's 720p numbers: they are not what a
+   * click would fetch. Report Torrentio's coverage of the open season instead. */
+  if (state.castleFallback === false) {
+    const count = episodes.length;
+    const head = detail.type === 'series' && count
+      ? `${count} episode${count === 1 ? '' : 's'}`
+      : '';
+    if (!entry) {
+      els.castleSize.textContent = [head, 'Torrentio only'].filter(Boolean).join(' · ');
+      return CASTLE_RESOLUTION;
+    }
+    const found = plans.filter((plan) => plan?.quality);
+    const total = found.reduce((sum, plan) => sum + (Number(plan.sizeBytes) || 0), 0);
+    els.castleSize.textContent = [
+      detail.type === 'series' && count ? `${found.length} of ${count} episodes` : '',
+      found.length ? 'Torrentio' : 'Torrentio only',
+      total ? `≈ ${formatSize(total)}` : '',
+    ].filter(Boolean).join(' · ');
     return CASTLE_RESOLUTION;
   }
 
@@ -2572,9 +2661,12 @@ function applyCastlePlan(detail, episodes) {
   const entry = state.castlePlanCache.get(castlePlanKey(detail, season));
   if (!entry) return;
   renderCastleSizes(detail, episodes);
+  const fallback = entry.fallback !== false;
   els.castleSource.textContent = entry.source === 'torrentio'
     ? 'Video + subtitles from Torrentio'
-    : `Castle fallback · ${qualityName(CASTLE_RESOLUTION)}`;
+    : fallback
+      ? `Castle fallback · ${qualityName(CASTLE_RESOLUTION)}`
+      : 'Torrentio only · no release found';
 
   const localMap = state.castleLocal?.local || null;
   els.castleEpisodes.querySelectorAll('.castle-episode').forEach((row) => {
@@ -2583,8 +2675,23 @@ function applyCastlePlan(detail, episodes) {
     if (local) return;
     const plan = entry.episodes.get(number);
     const meta = row.querySelector('.episode-date');
-    if (!meta || !plan?.quality) return;
+    if (!meta) return;
     const episode = episodes.find((item) => Number(item.episode) === number);
+    if (!plan?.quality) {
+      /* Torrentio has nothing here and the fallback is off: say so on the row
+       * and take the Download button away instead of offering a 409. */
+      if (fallback) return;
+      meta.textContent = [formatDuration(episode?.duration), 'No Torrentio release'].filter(Boolean).join(' · ');
+      const btn = row.querySelector('.castle-dl-btn');
+      const idle = btn && !btn.classList.contains('is-play') && !btn.classList.contains('queued')
+        && !btn.classList.contains('is-active') && !btn.classList.contains('is-paused');
+      if (idle) {
+        btn.disabled = true;
+        btn.title = 'Torrentio has no release with English audio and Castle fallback is off';
+        btn.querySelector('span').textContent = 'Unavailable';
+      }
+      return;
+    }
     meta.textContent = [
       formatDuration(episode?.duration),
       plan.quality,
@@ -2624,6 +2731,7 @@ function loadCastlePlan(detail, episodes) {
       state.castlePlanCache.set(key, {
         at: Date.now(),
         source: data.source,
+        fallback: data.fallback !== false,
         episodes: new Map((data.episodes || []).map((row) => [Number(row.episode), row])),
       });
       applyCastlePlan(detail, episodes);
@@ -4479,6 +4587,8 @@ function bindStaticEvents() {
   els.modal.querySelectorAll('[data-close-modal]').forEach((el) => el.addEventListener('click', closeModal));
   els.onlineModal.querySelectorAll('[data-close-online]').forEach((el) => el.addEventListener('click', closeOnlineModal));
   els.castleModal.querySelectorAll('[data-close-castle]').forEach((el) => el.addEventListener('click', closeCastleModal));
+  els.settingsModal.querySelectorAll('[data-close-settings]').forEach((el) => el.addEventListener('click', closeSettings));
+  els.castleFallbackBtn.addEventListener('click', toggleCastleFallback);
   els.castleSeasonDownload.addEventListener('click', queueCastleSeason);
   bindCastleDeleteAll();
   els.castleList.addEventListener('click', toggleCastleList);
@@ -4489,7 +4599,8 @@ function bindStaticEvents() {
   els.onlineCastleBtn.addEventListener('click', () => openCastleForTitle(state.onlineTitle?.title));
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      if (!els.downloadsPanel.hidden) closeDownloads();
+      if (!els.settingsModal.hidden) closeSettings();
+      else if (!els.downloadsPanel.hidden) closeDownloads();
       else if (!els.downloadsPanel.hidden) closeDownloads();
       else if (!els.castleModal.hidden) closeCastleModal();
       else if (!els.onlineModal.hidden) closeOnlineModal();
@@ -4499,6 +4610,7 @@ function bindStaticEvents() {
     }
     if (e.key === 'Tab') {
       if (isModalOpen()) trapFocus(e, els.modal);
+      else if (!els.settingsModal.hidden) trapFocus(e, els.settingsModal);
       else if (!els.castleModal.hidden) trapFocus(e, els.castleModal);
       else if (!els.onlineModal.hidden) trapFocus(e, els.onlineModal);
     }
@@ -4528,6 +4640,7 @@ function bindStaticEvents() {
   });
 
   els.refreshBtn.addEventListener('click', syncCastle);
+  els.menuSettings.addEventListener('click', openSettings);
   els.menuRescan.addEventListener('click', () => { closeProfile(); syncCastle(); });
   els.menuQuit?.addEventListener('click', async () => {
     closeProfile();

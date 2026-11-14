@@ -18,7 +18,8 @@ import {
   addTorrentDownload,
   planTorrentRelease,
   listDownloads, cancelDownload, retryDownload,
-  pauseDownloads, resumeDownloads,
+  pauseDownload, resumeDownload,
+  pauseDownloads, resumeDownloads, startRestoredDownloads,
 } from './downloads.js';
 import { findReleases, rankReleases, releaseLabel } from './torrentio.js';
 import { searchOnline, getOnlineTitle } from './online.js';
@@ -28,7 +29,7 @@ import {
   isCastleId, castleArt, castleEpisodeArt, castleEpisodeArtForSeries, castleTrailerItem,
 } from './castle.js';
 import { castleSyncStatus, startCastleSync } from './castle-sync.js';
-import { initSettings, getSettings, isOffline, setOffline } from './settings.js';
+import { initSettings, getSettings, isOffline, setOffline, isCastleFallback, setCastleFallback } from './settings.js';
 import { initFrames, frameMeta, ensureSprite } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
 import { initHero, heroStart, heroReady, ensureHero, warmHeroes } from './hero.js';
@@ -110,6 +111,11 @@ initDownloads({
     if (!wanted) return null;
     return getLibrary().items.find((entry) => entry.fileName.toLowerCase() === wanted) || null;
   },
+});
+/* The queue survives a crash or a restart: resume every transfer that was
+ * still running, unless offline mode says the network must stay quiet. */
+startRestoredDownloads({ online: !isOffline() }).catch((err) => {
+  console.warn(`[download] could not restore the queue: ${err?.message || err}`);
 });
 
 /* One refresh path for boot, the folder watcher and downloads. The scan is
@@ -297,6 +303,15 @@ app.post('/api/settings/offline', (req, res) => {
   if (settings.offline) pauseDownloads();
   else resumeDownloads();
   res.json(settings);
+});
+
+/* Torrentio-only switch: off means a missing Torrentio release fails the
+ * download instead of silently dropping to Castle's 720p file. */
+app.post('/api/settings/castle-fallback', (req, res) => {
+  if (typeof req.body?.castleFallback !== 'boolean') {
+    return res.status(400).json({ error: 'pass {"castleFallback": true|false}' });
+  }
+  res.json(setCastleFallback(req.body.castleFallback));
 });
 
 const MIME = {
@@ -1285,6 +1300,7 @@ app.get('/api/castle/plan', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({
       source: rows.some((row) => row?.quality) ? 'torrentio' : 'castle',
+      fallback: isCastleFallback(),
       imdbId,
       original,
       episodes: rows.filter(Boolean),
@@ -1354,6 +1370,15 @@ app.post('/api/castle/download', async (req, res) => {
       } catch (err) {
         console.warn(`[download] torrentio unavailable (${err?.message || err}); falling back to castle`);
       }
+    }
+
+    /* Torrentio-only mode: nothing above produced a job, so say so instead of
+     * quietly downloading Castle's 720p file. An explicit source: 'castle'
+     * request (tests, deep links) still means Castle. */
+    if (!isCastleFallback() && body.source !== 'castle') {
+      return res.status(409).json({
+        error: 'no Torrentio release with English audio and Castle fallback is off',
+      });
     }
 
     const stream = await getCastleStream({ movieId, episodeId, resolution });
@@ -1439,6 +1464,18 @@ app.get('/api/downloads', (req, res) => {
 
 app.post('/api/downloads/:id/retry', (req, res) => {
   const job = retryDownload(req.params.id);
+  if (!job) return res.status(404).json({ error: 'download not found' });
+  res.json(job);
+});
+
+app.post('/api/downloads/:id/pause', (req, res) => {
+  const job = pauseDownload(req.params.id);
+  if (!job) return res.status(404).json({ error: 'download not found' });
+  res.json(job);
+});
+
+app.post('/api/downloads/:id/resume', (req, res) => {
+  const job = resumeDownload(req.params.id);
   if (!job) return res.status(404).json({ error: 'download not found' });
   res.json(job);
 });

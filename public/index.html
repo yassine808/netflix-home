@@ -72,6 +72,7 @@
                 <span class="profile-menu-sub">Local library</span>
               </div>
             </div>
+            <button id="menuSettings">Settings</button>
             <button id="menuRescan">Sync catalog</button>
             <button id="menuQuit">Quit app</button>
             <div class="profile-menu-path" id="menuPath"></div>
@@ -416,6 +417,27 @@
       </div>
       <p class="downloads-root" id="downloadsRoot"></p>
     </aside>
+  </div>
+
+  <div class="modal settings-modal" id="settingsModal" hidden>
+    <div class="modal-scrim" data-close-settings></div>
+    <div class="modal-panel settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <button class="modal-close" data-close-settings aria-label="Close">✕</button>
+      <h2 class="settings-title" id="settingsTitle">Settings</h2>
+      <section class="settings-section">
+        <h3 class="settings-heading">Downloads</h3>
+        <div class="settings-row">
+          <div class="settings-copy">
+            <strong>Castle fallback</strong>
+            <span>Torrentio supplies the video. When it has no release with English audio, download Castle's 720p file instead. Off keeps downloads Torrentio-only: the episode is refused instead of lowering the quality.</span>
+          </div>
+          <button class="net-switch" id="castleFallbackBtn" type="button" role="switch" aria-checked="true" aria-label="Castle fallback" title="Use Castle's 720p file when Torrentio has no release">
+            <span class="net-switch-track" aria-hidden="true"><span class="net-switch-knob"></span></span>
+            <span class="net-switch-label" id="castleFallbackLabel">On</span>
+          </button>
+        </div>
+      </section>
+    </div>
   </div>
 
   <div class="toast" id="toast" hidden></div>

@@ -79,8 +79,12 @@ const SIZE_UNITS = {
   TB: 1024 * 1024 * MB, TIB: 1024 * 1024 * MB,
 };
 
-const QUALITY_POINTS = { '1080p': 300, '2160p': 150, '720p': 120, '480p': 40, sd: 0 };
-const CODEC_POINTS = { h264: 400, hevc: -160, av1: -200 };
+const QUALITY_POINTS = { '2160p': 300, '1080p': 300 };
+/* 1080p is the floor: a 720p release is never downloaded, no matter how healthy
+ * the swarm is, because the library is 1080p and a lower copy is wasted bytes. */
+const ACCEPTED_QUALITY = new Set(['1080p', '2160p']);
+/* The codec no longer ranks: the remux re-encodes whatever is not H.264, and a
+ * healthy 1080p HEVC release beats a dying H.264 one. The label still shows it. */
 const CODEC_LABEL = { h264: 'H.264', hevc: 'HEVC', av1: 'AV1', other: 'video' };
 
 function num(value) {
@@ -273,17 +277,19 @@ export async function findReleases({ imdbId, isSeries = true, season = 0, episod
   return releases;
 }
 
-/* Size: a 300 MB - 2.5 GB episode downloads quickly and streams comfortably.
- * Penalties grow linearly outside that band (2.5-4 GB) and are capped at
- * -80 above 4 GB and -40 below 250 MB. */
-function sizePenalty(bytes) {
+/* Smaller is better at the same quality and health. An episode around 700 MB
+ * is the sweet spot; a 2.7 GB rip costs points and a 300 MB one is suspiciously
+ * small. Unknown sizes stay neutral. */
+function sizeScore(bytes) {
   if (!bytes) return 0;
   const sizeMb = bytes / MB;
-  if (sizeMb > 4096) return -80;
-  if (sizeMb >= 2500) return -80 * ((sizeMb - 2500) / (4096 - 2500));
-  if (sizeMb >= 300) return 0;
-  if (sizeMb >= 250) return -40 * ((300 - sizeMb) / 50);
-  return -40;
+  if (sizeMb >= 8000) return -200;
+  if (sizeMb >= 4000) return -140;
+  if (sizeMb >= 2000) return -80;
+  if (sizeMb >= 1200) return -40;
+  if (sizeMb >= 700) return 0;
+  if (sizeMb >= 300) return 20;
+  return -20;
 }
 
 function languageCode(value) {
@@ -298,18 +304,16 @@ function languageCode(value) {
  * produces the same order.
  *
  *   1. Drop anything under 3 seeders (a dead torrent never finishes).
- *   2. Drop CAM/TS rips.
- *   3. Quality: 1080p +300, 2160p +150 (big files, slow), 720p +120,
- *      480p +40, sd 0.
- *   4. Codec: h264 +400 (plays in Brave without work), hevc -160 (needs a full
- *      re-encode), av1 -200.
- *   5. Audio: dual audio +250; +120 more when English plus another language is
- *      offered, +60 when English is the only one.
- *   6. Seeders: min(400, seeders) / 2 points. Health dominates: a 462-seeder
- *      release downloads in ~90 s, a 26-seeder one can stall for minutes.
- *   7. Size: see sizePenalty().
- *   8. Packs cost -10: the same download for one episode, less predictable.
- *   9. originalLanguage +80 when its 2-letter form is advertised.
+ *   2. Drop CAM/TS rips and anything under 1080p: 1080p or 2160p only.
+ *   3. Quality: 1080p and 2160p score the same +300.
+ *   4. Codec is ignored: the remux re-encodes HEVC/AV1 to H.264 anyway.
+ *   5. Audio: dual audio +120; +80 when English plus another language is
+ *      offered, +40 when English is the only one.
+ *   6. Seeders: min(700, seeders * 10). A healthy swarm is what finishes the
+ *      episode; 70+ seeders reach the cap.
+ *   7. Size: see sizeScore(). Smaller wins at equal health.
+ *   8. Packs cost -60: the same download for one episode, less predictable.
+ *   9. originalLanguage +40 when its 2-letter form is advertised.
  */
 export function rankReleases(releases, { originalLanguage = '' } = {}) {
   if (!Array.isArray(releases)) return [];
@@ -319,45 +323,43 @@ export function rankReleases(releases, { originalLanguage = '' } = {}) {
   for (const release of releases) {
     if (!release) continue;
     if (num(release.seeders) < 3) continue;
-    if (release.quality === 'cam') continue;
+    if (!ACCEPTED_QUALITY.has(release.quality)) continue;
 
     let score = 0;
     const reasons = [];
 
-    if (release.codec === 'h264' || release.codec === 'hevc' || release.codec === 'av1') {
-      score += CODEC_POINTS[release.codec];
-      reasons.push(release.codec);
-    }
-
-    if (release.quality !== 'sd') {
-      score += QUALITY_POINTS[release.quality] ?? 0;
-      reasons.push(release.quality);
-    }
+    score += QUALITY_POINTS[release.quality] ?? 0;
+    reasons.push(release.quality);
 
     const languages = Array.isArray(release.languages) ? release.languages : [];
     if (release.dualAudio) {
-      score += 250;
+      score += 120;
       reasons.push('dual audio');
     }
     if (languages.includes('en') && languages.length > 1) {
-      score += 120;
+      score += 80;
       reasons.push('en + other');
     } else if (languages.length === 1 && languages[0] === 'en') {
-      score += 60;
+      score += 40;
       reasons.push('english');
     }
 
-    score += Math.min(400, num(release.seeders)) / 2;
-    reasons.push(`${num(release.seeders)} seeders`);
+    /* Seeders decide whether a download finishes tonight or crawls for a day.
+     * Ten points each, capped at 70 seeders: health beats every other bonus
+     * combined (a 220-point spread of size bands is 22 seeders), and past ~70
+     * peers the swarm is no longer the bottleneck, so size and audio decide. */
+    const seeders = num(release.seeders);
+    score += Math.min(700, Math.round(seeders * 10));
+    reasons.push(`${seeders} seeders`);
 
-    const penalty = sizePenalty(num(release.sizeBytes));
-    if (penalty !== 0) {
-      score += penalty;
-      reasons.push(penalty < -50 ? 'very large' : penalty < 0 ? 'size' : 'small');
+    const size = sizeScore(num(release.sizeBytes));
+    if (size !== 0) {
+      score += size;
+      reasons.push(size > 0 ? 'small' : 'size');
     }
 
     if (release.isPack) {
-      score -= 10;
+      score -= 60;
       reasons.push('pack');
     }
 
@@ -369,7 +371,7 @@ export function rankReleases(releases, { originalLanguage = '' } = {}) {
     }
 
     if (wanted && languages.includes(wanted)) {
-      score += 80;
+      score += 40;
       reasons.push(`original ${wanted}`);
     }
 

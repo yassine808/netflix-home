@@ -101,8 +101,10 @@ code { font-family: Consolas, "Courier New", monospace; }
 }
 .net-switch-label { min-width: 44px; text-align: left; }
 .net-switch.is-offline { color: #9a9a9a; }
-.net-switch.is-offline .net-switch-track { background: #4a4a4a; }
-.net-switch.is-offline .net-switch-knob { background: #d0d0d0; transform: translateX(0); }
+.net-switch.is-offline .net-switch-track,
+.net-switch.is-off .net-switch-track { background: #4a4a4a; }
+.net-switch.is-offline .net-switch-knob,
+.net-switch.is-off .net-switch-knob { background: #d0d0d0; transform: translateX(0); }
 @media (max-width: 520px) {
   .net-switch { padding: 0 8px 0 7px; gap: 7px; }
   .net-switch-label { display: none; }
@@ -1159,6 +1161,20 @@ code { font-family: Consolas, "Courier New", monospace; }
 }
 .modal-close:hover { background: #000; }
 
+/* ---------- settings sheet ---------- */
+.modal-panel.settings-panel { width: min(560px, 94vw); padding: 36px 32px 28px; }
+.settings-title { margin: 0 0 22px; font-family: var(--font-display); font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
+.settings-section { border-top: 1px solid var(--line); padding-top: 18px; }
+.settings-heading { margin: 0 0 16px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted-2); }
+.settings-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 26px; }
+.settings-copy strong { display: block; margin-bottom: 6px; font-size: 15px; }
+.settings-copy span { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+.settings-row .net-switch { flex: 0 0 auto; margin-top: -6px; }
+@media (max-width: 520px) {
+  .modal-panel.settings-panel { padding: 30px 20px 22px; }
+  .settings-row { gap: 16px; }
+}
+
 .modal-hero { position: relative; min-height: 430px; height: 52vh; background: #0f0f0f; overflow: hidden; }
 .modal-hero > img { width: 100%; height: 100%; object-fit: cover; object-position: center 30%; }
 .modal-hero-grad {
@@ -1341,6 +1357,7 @@ code { font-family: Consolas, "Courier New", monospace; }
 .download-status.completed { color: #46d369; }
 .download-status.failed { color: #e87c03; }
 .download-status.cancelled { color: #999; }
+.download-status.paused { color: #c7c7c7; }
 .download-error { color: #ff6b6b; overflow-wrap: anywhere; }
 .download-actions { display: flex; align-items: center; flex: 0 0 auto; }
 .download-action {
