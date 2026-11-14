@@ -18,11 +18,11 @@ import {
 } from './downloads.js';
 import { searchOnline, getOnlineTitle } from './online.js';
 import { searchCastle, browseCastle, getCastleTitle, getCastleSeries, getCastleStream, isCastleId } from './castle.js';
-import { initSettings, getSettings, isOffline, setOffline } from './settings.js';
+import { initSettings, getSettings, isOffline, setOffline, setTmdbKey } from './settings.js';
 import { initFrames, frameMeta, ensureSprite } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
 import { initHero, heroStart, heroReady, ensureHero, warmHeroes } from './hero.js';
-import { initTrailers, trailerPathFor, trailerStatus, warmTrailer, warmTrailers } from './trailers.js';
+import { initTrailers, trailerPathFor, trailerStatus, warmTrailer, warmTrailers, validateTmdbKey } from './trailers.js';
 import { resolveImdbId } from './imdb.js';
 import { ensureEnglishSubtitle, fetchEnglishSubtitle, syncSubtitleTracks, subtitleBody } from './subs.js';
 import { initAudio, probeAudioTracks, ensureAudioVariant } from './audio.js';
@@ -275,6 +275,21 @@ app.post('/api/settings/offline', (req, res) => {
   if (settings.offline) pauseDownloads();
   else resumeDownloads();
   res.json(settings);
+});
+
+/* Trailer lookup uses TMDB when a key is configured. The key is checked
+ * against TMDB and stored in .cache\settings.json; it is never sent back. */
+app.post('/api/settings/tmdb', async (req, res) => {
+  const key = String(req.body?.key || '').trim();
+  if (!key) return res.status(400).json({ error: 'pass {"key":"<tmdb api key>"}' });
+  if (!(await validateTmdbKey(key))) {
+    return res.status(400).json({ error: 'TMDB rejected this key' });
+  }
+  res.json(setTmdbKey(key));
+});
+
+app.delete('/api/settings/tmdb', (req, res) => {
+  res.json(setTmdbKey(''));
 });
 
 const MIME = {

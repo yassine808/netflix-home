@@ -3,18 +3,20 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { resolveImdbId, normalizeTitle } from './imdb.js';
-import { isOffline } from './settings.js';
+import { isOffline, getTmdbKey } from './settings.js';
 import { getDb } from './db.js';
 import { run as runProc, playbackActive } from './proc.js';
 
 /**
- * Trailers: resolve the official YouTube trailer through Cinemeta (keyless),
- * download it once with yt-dlp into <cache>\trailers, and index it in SQLite
- * (trailers.db). The home billboard then plays the trailer instead of the
- * generated 12 s clip.
+ * Trailers: resolve the official trailer through TMDB (when an API key is set)
+ * and fall back to Cinemeta (keyless). The YouTube id is downloaded once with
+ * yt-dlp into <cache>\trailers and indexed in the shared catalog database.
+ * The home billboard then plays the trailer instead of the generated clip.
  */
 
 const CINEMETA = 'https://v3-cinemeta.strem.io';
+const TMDB = 'https://api.themoviedb.org/3';
+const TMDB_LANG = 'en-US';
 const TRAILER_HEIGHT = 720;
 
 /* SQLite is shared with the rest of the catalog; see db.js. */
@@ -96,6 +98,17 @@ async function resolveYoutubeId(item) {
   const key = `${type}:${imdbId}`;
   if (resolving.has(key)) return resolving.get(key);
   const task = (async () => {
+    let youtubeId = null;
+
+    // TMDB first: official trailer/teaser, best metadata, needs a key.
+    try {
+      youtubeId = await resolveViaTmdb(item, imdbId);
+    } catch {
+      youtubeId = null;
+    }
+    if (youtubeId) return { imdbId, youtubeId };
+
+    // Cinemeta stays as the keyless fallback.
     try {
       const data = await fetchJson(`${CINEMETA}/meta/${type}/${encodeURIComponent(imdbId)}.json`);
       const list = Array.isArray(data?.meta?.trailers) ? data.meta.trailers : [];
@@ -108,6 +121,57 @@ async function resolveYoutubeId(item) {
   resolving.set(key, task);
   task.finally(() => resolving.delete(key));
   return task;
+}
+
+/* TMDB accepts a v3 key (32-char hex) as a query parameter or a v4 read token
+ * (JWT) as a bearer header. Keep both working without asking which one it is. */
+async function tmdbJson(pathname) {
+  const key = getTmdbKey();
+  if (!key) return null;
+  const url = new URL(`${TMDB}${pathname}`);
+  url.searchParams.set('language', TMDB_LANG);
+  const headers = { accept: 'application/json' };
+  if (key.includes('.')) headers.authorization = `Bearer ${key}`;
+  else url.searchParams.set('api_key', key);
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function validateTmdbKey(key) {
+  const value = String(key || '').trim();
+  if (!value) return false;
+  const url = new URL(`${TMDB}/configuration`);
+  const headers = { accept: 'application/json' };
+  if (value.includes('.')) headers.authorization = `Bearer ${value}`;
+  else url.searchParams.set('api_key', value);
+  try {
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(10000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+function pickYoutubeTrailer(results) {
+  const list = (Array.isArray(results) ? results : [])
+    .filter((video) => video && video.site === 'YouTube' && video.key);
+  const rank = (video) => (video.type === 'Trailer' ? 0 : video.type === 'Teaser' ? 1 : 2);
+  list.sort((a, b) => rank(a) - rank(b)
+    || Number(Boolean(b.official)) - Number(Boolean(a.official))
+    || (Number(b.size) || 0) - (Number(a.size) || 0));
+  return list[0] || null;
+}
+
+/* IMDb id -> TMDB id -> official YouTube trailer. */
+async function resolveViaTmdb(item, imdbId) {
+  if (!getTmdbKey()) return null;
+  const found = await tmdbJson(`/find/${encodeURIComponent(imdbId)}?external_source=imdb_id`);
+  const hits = item.isSeries ? found?.tv_results : found?.movie_results;
+  const id = hits?.[0]?.id;
+  if (!id) return null;
+  const videos = await tmdbJson(`/${item.isSeries ? 'tv' : 'movie'}/${id}/videos`);
+  return pickYoutubeTrailer(videos?.results)?.key || null;
 }
 
 function run(cmd, args, timeout) {

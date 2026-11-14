@@ -41,6 +41,8 @@ Invoke-WebRequest "http://localhost:3000/api/art/<id>/poster?w=480" -SkipHttpErr
 - `server/subs.js` - subtitle sidecars read once into the `subtitles` table, body served from the DB with an ETag
 - `server/audio.js` - audio-track probe cached in `audio_probe` / `audio_tracks`, on-demand dub remux into `.cache\audio\`
 - `server/downloads.js` - Castle HLS downloads: ffmpeg remux into the library, subtitle/art sidecars, queued jobs with pause/resume/cancel
+- `server/trailers.js` - resolves the official YouTube trailer through TMDB when a key is set, falls back to Cinemeta, downloads it once with yt-dlp into `.cache\trailers\`
+- `server/settings.js` - persisted `offline` flag and the optional TMDB key (`POST /api/settings/tmdb`, or `TMDB_API_KEY` in the environment); the key is validated once against TMDB and never returned by `GET /api/settings`
 - `server/proc.js` — every ffmpeg/ffprobe/yt-dlp child: below-normal priority, one heavy media job at a time (`mediaLane`), ffprobe lane, playback-aware warm-up gate
 - `public/index.html` + `app.js` + `styles.css` — home UI, search, series/detail sheets
 - `public/watch.html` + `watch.js` + `watch.css` — custom player
