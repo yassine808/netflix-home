@@ -74,6 +74,7 @@ const IDLE_DELAY = 12000; /* paused and untouched this long: show the idle scree
 const PREVIEW_HALF_MIN = 84;
 
 let frames = null;
+let framesRequested = false;
 let previewMode = 'none';
 let previewBackdrop = '';
 let intro = null;
@@ -187,7 +188,9 @@ function bindEvents() {
       } catch { /* ignore */ }
     }
     attemptAutoplay();
-    initFrames();
+    // The scrubber preview starts as the poster; the sprite grid is only
+    // requested the first time the pointer reaches the timeline.
+    previewMode = duration > 60 ? 'poster' : 'none';
     initIntro();
   });
 
@@ -291,6 +294,8 @@ function bindEvents() {
   timeline.addEventListener('pointermove', onSeekMove);
   timeline.addEventListener('pointerup', onSeekUp);
   timeline.addEventListener('pointercancel', onSeekUp);
+  timeline.addEventListener('pointerenter', requestFrames, { once: true });
+  timeline.addEventListener('pointerdown', requestFrames, { once: true });
   timeline.addEventListener('pointerleave', () => {
     hidePreview();
     if (!dragging) tooltip.hidden = true;
@@ -1030,10 +1035,14 @@ function updateTooltip(e) {
 
 /* ---------- scrubber preview frames ---------- */
 
+/* Fetch the sprite once, the first time the timeline is used. */
+function requestFrames() {
+  if (framesRequested) return;
+  framesRequested = true;
+  initFrames();
+}
+
 async function initFrames() {
-  frames = null;
-  previewMode = 'none';
-  previewBackdrop = '';
   preview.hidden = true;
   if (!(duration > 60)) return;
 

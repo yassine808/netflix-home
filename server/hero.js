@@ -12,7 +12,7 @@ import { run as runProc, playbackActive } from './proc.js';
  * its "intro" preview straight from disk instead of seeking a multi-GB file.
  */
 
-const CLIP_SECONDS = 12;
+const CLIP_SECONDS = 8;
 const IMAGE_WIDTH = 1280;
 const IMAGE_HEIGHT = 720;
 
@@ -103,22 +103,28 @@ function writeRow(item, start, image, video) {
   }
 }
 
-async function build(item, full) {
+async function build(item, full, background = false) {
   const hash = hashFor(item.id);
   const image = path.join(heroDir, `${hash}.jpg`);
   const video = path.join(heroDir, `${hash}.mp4`);
   const start = heroStart(item);
   const filter = `scale=${IMAGE_WIDTH}:${IMAGE_HEIGHT}:force_original_aspect_ratio=increase,crop=${IMAGE_WIDTH}:${IMAGE_HEIGHT}`;
 
+  // A background build gives up as soon as the player is in use; the on-demand
+  // path never checks, so pressing Play still gets a hero when one is missing.
+  if (background && playbackActive()) throw new Error('paused while playing');
+
   await exec(ffmpegPath, [
     '-hide_banner', '-loglevel', 'error', '-ss', String(start), '-i', full,
     '-frames:v', '1', '-vf', filter, '-q:v', '3', '-y', image,
   ], 60000);
 
+  if (background && playbackActive()) throw new Error('paused while playing');
+
   try {
     await exec(ffmpegPath, [
       '-hide_banner', '-loglevel', 'error', '-ss', String(start), '-t', String(CLIP_SECONDS), '-i', full,
-      '-vf', filter, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '27',
+      '-vf', filter, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '27', '-threads', '1',
       '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '96k', '-ac', '2',
       '-movflags', '+faststart', '-y', video,
     ], 180000);
@@ -126,7 +132,7 @@ async function build(item, full) {
     // Some files have no audio stream; a silent clip is still useful.
     await exec(ffmpegPath, [
       '-hide_banner', '-loglevel', 'error', '-ss', String(start), '-t', String(CLIP_SECONDS), '-i', full,
-      '-vf', filter, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '27',
+      '-vf', filter, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '27', '-threads', '1',
       '-pix_fmt', 'yuv420p', '-an', '-movflags', '+faststart', '-y', video,
     ], 180000);
   }
@@ -156,7 +162,7 @@ function release() {
   else activeBuilds -= 1;
 }
 
-function startBuild(item, full) {
+function startBuild(item, full, { background = false } = {}) {
   if (!enabled) return Promise.resolve(null);
   if (building.has(item.id)) return building.get(item.id);
   const task = (async () => {
@@ -164,9 +170,9 @@ function startBuild(item, full) {
     if (cached) return cached;
     await acquire();
     try {
-      return await build(item, full);
+      return await build(item, full, background);
     } catch (err) {
-      console.warn(`hero build failed for ${item.fileName}: ${err?.message || String(err)}`);
+      console.warn(`hero build ${background ? 'paused' : 'failed'} for ${item.fileName}: ${err?.message || String(err)}`);
       return null;
     } finally {
       release();
@@ -198,7 +204,7 @@ export function warmHeroes(items, root) {
   for (const item of picks.values()) {
     if (playbackActive()) return;
     if (readFresh(item)) continue;
-    startBuild(item, path.resolve(root, item.relPath)).catch(() => {});
+    startBuild(item, path.resolve(root, item.relPath), { background: true }).catch(() => {});
   }
 }
 

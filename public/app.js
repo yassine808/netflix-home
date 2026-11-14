@@ -18,6 +18,7 @@ const SEARCH_HISTORY_LIMIT = 8;
 
 const state = {
   library: null,
+  libraryPrint: '',
   items: [],
   byId: new Map(),
   view: 'home',
@@ -311,18 +312,29 @@ async function boot() {
   scheduleDownloadPoll();
 }
 
+/* Cheap identity of the library: length plus every mtime. An ETag miss or a
+ * poll that returns the same titles must not rebuild the DOM. */
+function libraryFingerprint(items) {
+  let hash = items.length;
+  for (const item of items) hash = (Math.imul(hash, 31) + (Number(item.mtime) || 0)) | 0;
+  return `${items.length}:${hash}`;
+}
+
 async function loadLibrary({ first = false } = {}) {
   try {
     const data = await getLibrary();
     const previousUpdated = state.library?.updatedAt;
+    const previousPrint = state.libraryPrint;
     state.library = data;
     state.items = (data.items || []).map(ensureSeriesFields);
     state.byId = new Map(state.items.map((i) => [i.id, i]));
+    state.libraryPrint = libraryFingerprint(state.items);
     if (els.emptyPath) els.emptyPath.textContent = data.root || 'G:\\Movies';
     els.menuPath.textContent = data.root ? `Library: ${data.root}` : '';
     if (first) setProfile();
 
-    const changed = previousUpdated !== data.updatedAt;
+    // A 304 (or a rescan that produced the same rows) leaves the DOM alone.
+    const changed = previousUpdated !== data.updatedAt || previousPrint !== state.libraryPrint;
     if (changed || first) renderAll();
     updateLoadingState();
   } catch (err) {
@@ -373,7 +385,7 @@ function schedulePoll() {
 
   setInterval(() => {
     if (!document.hidden) loadLibrary();
-  }, 60000);
+  }, 300000);
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) loadLibrary();

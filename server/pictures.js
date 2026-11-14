@@ -17,7 +17,7 @@ import ffmpegPath from 'ffmpeg-static';
 import { getDb } from './db.js';
 import { run as runProc } from './proc.js';
 
-const SAMPLES = 8;
+const SAMPLES = 5;
 const SAMPLE_FROM = 0.12;
 const SAMPLE_TO = 0.82;
 

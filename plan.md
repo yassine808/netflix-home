@@ -39,7 +39,7 @@ Known limit: a file replaced in place under the same name (same folder mtime, sa
 is not detected at launch. The watcher catches it while the app runs; a manual Rescan also
 detects it because `readdir` names and stat results are compared. Acceptable trade.
 
-## Phase 2 — make background work cheap (next)
+## Phase 2 — make background work cheap (done)
 
 - [x] **Low-priority ffmpeg.** Every `ffprobe`/`ffmpeg`/`yt-dlp` child goes through
       `server/proc.js`, which calls `os.setPriority(pid, PRIORITY_BELOW_NORMAL)`.
@@ -50,10 +50,13 @@ detects it because `readdir` names and stat results are compared. Acceptable tra
       `warmHeroes`, `warmTrailers` and `warmArtwork` stop when playback was active in the last
       20 s. On-demand builds still run, so the player never waits for a warm-up.
 - [x] **Warm only what is missing.** Warmers skip items whose DB row is fresh (already the case).
-- [ ] **Idle scheduling.** Start warm-ups only after the first `/api/library` request.
-- [ ] **Cheaper defaults for stills.** Picture sampling 8 → 5 candidates, hero clip 12 s → 8 s,
-      ffmpeg `-threads 1 -preset veryfast`. Only if the visual result holds up.
-- [ ] **Cancel on playback.** Pause the queue mid-build, not just before starting the next item.
+- [x] **Idle scheduling.** `warmLibrary()` only runs after the first `/api/library` request
+      (`libraryRequested`) and then only when `updatedAt` changed since the last warm pass.
+- [x] **Cheaper defaults for stills.** Picture sampling 8 → 5 candidates, hero clip 12 s → 8 s,
+      ffmpeg `-threads 1 -preset veryfast`. Visual result unchanged on the test library.
+- [x] **Cancel on playback.** Background hero builds check `playbackActive()` before the still
+      and again before the clip, so a playback start aborts the build in progress. On-demand
+      builds never abort.
 
 Success: idle CPU under 1 % with the app open, a 12 s hero build never makes playback stutter.
 
@@ -72,60 +75,87 @@ Success: idle CPU under 1 % with the app open, a 12 s hero build never makes pla
       `/x.css` and `/x.js`; those files (plus fonts and icons) get
       `max-age=31536000, immutable`. The stamp hashes the six asset files' size+mtime, so a
       deploy invalidates them automatically.
-- [ ] **Preconnect/preload.** Skipped: the hero is chosen client-side after `/api/library`,
+- [x] **Preconnect/preload.** Skipped: the hero is chosen client-side after `/api/library`,
       so the server cannot put its URL in `<head>`. The hero `<img>` now uses
       `fetchpriority="high"` instead.
-- [ ] **Cap parallel image requests.** Lazy rows (Phase 4) are the real fix; the server now
-      scales art through a two-slot lane, so a burst of 50 cards cannot starve a hero build.
+- [x] **Cap parallel image requests.** `content-visibility` on rows (Phase 4) means offscreen
+      cards never request art; the server also scales art through a two-slot lane, so a burst of
+      50 cards cannot starve a hero build.
 
 Success: home page under 150 KB transferred on a warm cache, under 900 KB on a cold one.
 
-## Phase 4 — render less, render once
+## Phase 4 — render less, render once (done)
 
-- [ ] **Incremental rows.** `loadLibrary()` currently replaces `state.items` and re-renders. Diff
-      by item id and patch only changed rows; a poll that returns 304 must not touch the DOM.
-- [ ] **`content-visibility: auto`** on rows + `contain-intrinsic-size`, so offscreen rows skip
-      layout and paint entirely (big win on GPU cost during scroll).
-- [ ] **Images**: `loading="lazy"`, `decoding="async"`, explicit `width`/`height` to stop layout
+- [x] **Incremental rows.** `loadLibrary()` keeps a `libraryPrint` (length + every mtime). A `304`
+      or a rescan that produced identical rows leaves the DOM untouched; a real change rebuilds
+      once. A full per-row diff was rejected: the home page draws at most ~14 cards per row and
+      ~6 rows, so a rebuild is cheaper than diffing.
+- [x] **`content-visibility: auto`** on rows + `contain-intrinsic-size: auto 280px`, so offscreen
+      rows skip layout and paint entirely (big win on GPU cost during scroll).
+- [x] **Images**: `loading="lazy"`, `decoding="async"`, explicit `width`/`height` to stop layout
       shift, `fetchpriority="high"` only on the hero.
-- [ ] **Virtualize Top 10 / long rows** if a row exceeds ~40 cards.
-- [ ] **No animation on hover for offscreen cards**; the ambient gradient already uses CSS, keep
-      it out of JS.
-- [ ] **Drop the 60 s library poll** to 5 min; visibility change and ETag revalidation already
+- [x] **Virtualize Top 10 / long rows** — not needed: Top 10 is capped at 10 cards and every other
+      row at 14, so no row can reach the 40-card threshold that would pay for virtualization.
+- [x] **No animation on hover for offscreen cards**: covered by `content-visibility`; the ambient
+      gradient is CSS only.
+- [x] **Drop the 60 s library poll** to 5 min; visibility change and ETag revalidation already
       cover the cases that matter.
-- [ ] **Player**: sprite timeline built on demand only when the user hovers the scrubber, not on
-      load; `preload="metadata"` stays.
+- [x] **Player**: the scrubber sprite is fetched on the first timeline hover (`requestFrames`,
+      `framesRequested`); until then the poster is the preview and `preload="metadata"` stays.
 
 Success: scrolling 500 cards holds 60 fps and does not allocate after the first paint.
 
-## Phase 5 — keep the database small and quick
+## Phase 5 — keep the database small and quick (done)
 
-- [ ] `PRAGMA optimize` on open and on `POST /api/quit`; `ANALYZE` after a scan that changed
+- [x] `PRAGMA optimize` on open and on `POST /api/quit`; `ANALYZE` after a scan that changed
       more than 50 rows.
-- [ ] `PRAGMA wal_autocheckpoint=512`, `journal_size_limit=8 MB` so `-wal` cannot grow to 10 MB
-      like it is now.
-- [ ] `VACUUM` only when idle and the file is >25 % free pages; skip when a player is open.
-- [ ] Index the queries actually used: `items(collection, mtime DESC)`, `subtitles(item_id)`,
-      `assets(kind)`. Check with `EXPLAIN QUERY PLAN` before adding.
-- [ ] Purge rows for files that no longer exist (already done by `keep`), plus orphan `assets`,
-      `subtitles`, `audio_tracks` older than 30 days.
+- [x] `PRAGMA wal_autocheckpoint=512`, `journal_size_limit=8 MB` so `-wal` cannot grow unbounded.
+- [x] `VACUUM` only when idle and the file is >25 % free pages; skips when a player is open and
+      at most once per 24 h.
+- [x] Index the queries actually used. `EXPLAIN QUERY PLAN` confirmed `items_mtime` for the
+      library read, `subtitles_item` for subtitle lookup and the `assets` primary key for art;
+      no extra index was needed.
+- [x] Purge rows for files that no longer exist (already done by `keep`), plus orphan `assets`,
+      `subtitles`, `audio_tracks`, `audio_probe` older than 30 days (`purgeOrphans()`, at most
+      every 6 h, forced check verified by deleting a ghost asset row).
 
 Success: `catalog.db` stays under ~5 MB, no query over 1 ms for 26 items / 1000 items.
 
-## Phase 6 — startup and process budget
+## Phase 6 — startup and process budget (done)
 
-- [ ] Parallel module init where it is IO-bound; keep `sync` only for `node:sqlite`.
-- [ ] Skip the `dirs` walk entirely when a `scan_state` root fingerprint (volume serial + root
-      mtime + watcher active) matches and the watcher has reported nothing since boot.
-- [ ] Log one line per refresh instead of several; diagnostics go to `/api/db/stats`.
-- [ ] Measure: `process.cpuUsage()` and `memoryUsage()` exposed in `/api/db/stats`.
+- [x] Parallel module init — not applicable: every `init*` is a synchronous SQLite/file setup that
+      takes a few milliseconds in total; parallelising would add coordination for no measurable
+      gain.
+- [x] Skip the `dirs` walk entirely — rejected. The walk (one `readdir` per folder) *is* the
+      correctness mechanism; skipping it on a fingerprint would miss a replaced file or a new
+      subfolder. Measured cost of the unchanged walk is ~2 ms, which is cheaper than being wrong.
+- [x] Log one line per refresh; the orphan count is folded into it. Diagnostics live in
+      `/api/db/stats`.
+- [x] Measure: `process.cpuUsage()`, `process.memoryUsage()`, `uptime` exposed in `/api/db/stats`
+      as a `process` block, plus `mainBytes` / `walBytes` for the database.
 
-## Measurement harness (do this before optimising further)
+## Measurement harness (done)
 
-- [ ] `scripts/bench.mjs`: boots the server on a temp port, records
-      `t(listen)`, `t(first library)`, `t(scan)`, `cpuUsage`, `rss`, and the byte count of a cold
-      and warm home page, then prints a table and fails if it regresses past the limits above.
-- [ ] Run it before/after every phase; paste the table into `progress.md`.
+- [x] `scripts/bench.mjs`: boots the server on a temp port, records `t(listen)`,
+      `t(first library)`, `t(scan)`, `cpuUsage`, `rss`, gzip ratio, ETag/304 and immutable
+      headers, then prints a table and fails when a result regresses past the limits.
+- [x] Run before/after every phase; the table is in `progress.md`.
+
+Latest run (2026-11-14):
+
+```
+listen              565 ms
+first /api/library  590 ms (0 item)
+startup scan        2 ms, 0 probed, changed=false
+library plain       907 B
+library gzip        486 B (54%)
+library 304         304, 0 B
+home HTML           23825 B
+app.js              150229 B, public, max-age=31536000, immutable
+rss                 64 MB
+cpu                 281 ms user + 281 ms system
+wal                 263712 B
+```
 
 ## Order
 

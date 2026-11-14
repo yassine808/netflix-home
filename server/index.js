@@ -4,8 +4,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { initDb, dbStats } from './db.js';
-import { notePlayback } from './proc.js';
+import { initDb, dbStats, analyzeDb, purgeOrphans, maybeVacuum } from './db.js';
+import { notePlayback, playbackActive } from './proc.js';
 import { initCache, scanLibrary, getLibrary, getItem, resolveItemFile,
   ensureThumb, artPath, isScanning,
 } from './library.js';
@@ -107,8 +107,32 @@ initDownloads({
  * runs when something actually appeared. */
 let refreshTimer = null;
 let watchTimer = null;
+let lateTimer = null;
 let watchMutedUntil = 0;
 let watchDirty = false;
+let libraryRequested = false;
+let warmTimer = null;
+let warmedAt = 0;
+
+/* Warm-ups are background work: start them only after a page has actually
+ * asked for the library, so a headless launch stays silent. */
+function warmLibrary() {
+  const lib = getLibrary();
+  if (!lib.items?.length || warmedAt === lib.updatedAt) return;
+  warmedAt = lib.updatedAt;
+  warmHeroes(lib.items, libraryRoot);
+  warmTrailers(lib.items);
+  warmArtwork(lib.items);
+}
+
+function queueWarm(delay = 400) {
+  if (warmTimer) return;
+  warmTimer = setTimeout(() => {
+    warmTimer = null;
+    warmLibrary();
+  }, delay);
+  warmTimer.unref?.();
+}
 
 async function refreshLibrary(reason) {
   // Writing catalog.db (WAL) is itself a change under the watched root, so the
@@ -129,10 +153,14 @@ async function refreshLibrary(reason) {
   }
   const scan = lib.scan || {};
   if (scan.changed) {
-    console.log(`library ${reason}: ${lib.items.length} title(s), ${scan.dirs} folder(s), ${scan.readDirs} read, ${scan.probed} probed in ${scan.ms} ms`);
-    warmHeroes(lib.items, libraryRoot);
-    warmTrailers(lib.items);
-    warmArtwork(lib.items);
+    // Housekeeping rides on real changes, never on a no-op refresh.
+    const orphans = purgeOrphans();
+    if (scan.written > 50) analyzeDb();
+    if (!playbackActive()) maybeVacuum();
+    if (libraryRequested) queueWarm(0);
+    console.log(`library ${reason}: ${lib.items.length} title(s), ${scan.dirs} folder(s), `
+      + `${scan.readDirs} read, ${scan.probed} probed in ${scan.ms} ms`
+      + (orphans ? `, ${orphans} orphan row(s) removed` : ''));
   } else {
     console.log(`library ${reason}: unchanged, ${scan.dirs} folder(s) checked in ${scan.ms} ms`);
   }
@@ -160,7 +188,19 @@ function watchLibrary() {
       const base = path.basename(resolved).toLowerCase();
       if (base.endsWith('.log') || base === 'netflix-home.exe' || base === 'launcher.exe') return;
       if (Date.now() < watchMutedUntil) {
+        // A scan is running or just finished; its own follow-up only exists if
+        // the flag was already set when it ended, so schedule a late pass too.
         watchDirty = true;
+        if (!lateTimer) {
+          const delay = Math.max(500, watchMutedUntil - Date.now() + 300);
+          lateTimer = setTimeout(() => {
+            lateTimer = null;
+            if (!watchDirty) return;
+            watchDirty = false;
+            refreshLibrary('watch');
+          }, delay);
+          lateTimer.unref?.();
+        }
         return;
       }
       if (watchTimer) clearTimeout(watchTimer);
@@ -209,10 +249,22 @@ app.use('/api', (req, res, next) => {
 
 app.get('/api/settings', (req, res) => res.json(getSettings()));
 
-/* Catalog database size and row counts, for verifying the cache is populated. */
+/* Catalog database size, row counts and process cost, for verifying the cache
+ * and spotting growth without a profiler. */
 app.get('/api/db/stats', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json(dbStats());
+  const usage = process.cpuUsage();
+  const memory = process.memoryUsage();
+  res.json({
+    ...dbStats(),
+    process: {
+      cpuUserMs: Math.round(usage.user / 1000),
+      cpuSystemMs: Math.round(usage.system / 1000),
+      rssBytes: memory.rss,
+      heapUsedBytes: memory.heapUsed,
+      uptimeSec: Math.round(process.uptime()),
+    },
+  });
 });
 
 app.post('/api/settings/offline', (req, res) => {
@@ -242,6 +294,9 @@ app.get('/api/library', (req, res) => {
   const lib = getLibrary();
   const etag = `"lib-${lib.updatedAt || 0}-${lib.items.length}"`;
   const scanning = isScanning();
+  // The page is open: allow background warm-ups from now on.
+  libraryRequested = true;
+  if (lib.items.length) queueWarm();
   res.setHeader('Cache-Control', 'private, no-cache');
   res.setHeader('ETag', etag);
   res.setHeader('Vary', 'Accept-Encoding');
@@ -1041,7 +1096,16 @@ app.post('/api/quit', (req, res) => {
     return res.status(403).json({ error: 'local requests only' });
   }
   res.json({ ok: true });
-  setTimeout(() => process.exit(0), 200);
+  setTimeout(() => {
+    // Leave the file compact and the query plans fresh for the next start.
+    try {
+      analyzeDb();
+      maybeVacuum();
+    } catch {
+      /* shutting down anyway */
+    }
+    process.exit(0);
+  }, 200);
 });
 
 /* Assets are cached for a year, so their URLs carry a stamp that changes

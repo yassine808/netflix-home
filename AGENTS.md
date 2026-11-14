@@ -14,6 +14,7 @@ npm start            # dev server, port 3000 (random free port if taken)
 npm run dev          # node --watch
 npm run bundle       # build dist\netflix-home.exe (esbuild → SEA blob → postject → GUI subsystem)
 npm run deploy       # bundle, then copy the EXE to G:\NETFLIX and clean legacy folders
+node scripts/bench.mjs  # perf harness: temp library, prints timings/bytes, exits non-zero on regression
 ```
 
 Run `npm run deploy` after every app change: the copy in `G:\NETFLIX` is what Yassine actually launches, and it must match the source. `deploy.ps1` alone only copies an existing build, so run `npm run bundle` first when you changed `public/` or `server/`.
@@ -35,7 +36,7 @@ Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 - `server/library.js` — folder walk with a saved directory index, filename/NFO parsing, ffprobe metadata, `items` table (payload JSON), instant library load from the DB on boot
 - `server/db.js` — **one** SQLite database (`.cache\catalog.db`): schema, WAL pragmas, one-time migration from the old `pictures.db` / `library.db` / `trailers.db`, asset helpers, `dbStats`
 - `server/pictures.js` — picks a still per title by edge density over several sampled moments, stores the JPEG in `.cache\pictures\` and the row in `catalog.db`
-- `server/hero.js` — hero stills + 12 s preview clips indexed in `catalog.db`, background warm-up
+- `server/hero.js` — hero stills + 8 s preview clips indexed in `catalog.db`, background warm-up that aborts on playback
 - `server/artwork.js` - Cinemeta poster/backdrop/logo downloaded once into `assets` BLOBs, served with an ETag; `sizedArt` renders JPEGs at the requested ladder width into `.cache\art\sized\`; `warmArtwork` imports legacy `.cache\art` files
 - `server/subs.js` — subtitle sidecars read once into the `subtitles` table, body served from the DB with an ETag
 - `server/audio.js` — audio-track probe cached in `audio_probe` / `audio_tracks`, on-demand dub remux into `.cache\audio\`
@@ -56,8 +57,11 @@ Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 - **A launch never re-probes the library.** `dirs` stores each folder's listing (name/size/mtime); `walkIndexed` re-lists the folder, reuses saved sizes for names that still exist and stats only new ones. Directory mtimes alone are unreliable on NTFS (lazily updated), so the listing is always read and mtimes are only a hint. A scan that changes nothing keeps `updatedAt`, so the `/api/library` ETag stays stable and browsers get `304`. `fs.watch(libraryRoot, {recursive:true})` triggers the same debounced refresh (2.5 s, `.cache` and `*.part` ignored) instead of a launch crawl. Do not add a second scan path: call `refreshLibrary(reason)` in `index.js`.
 - `plan.md` holds the performance roadmap (low-priority ffmpeg, gzip, sized artwork, DOM diffing); keep measurements there and in `progress.md` when a phase lands.
 - **Never call `execFile`/`spawn` for ffmpeg, ffprobe or yt-dlp directly.** Use `run()` / `spawnNice()` from `server/proc.js`: they set below-normal priority and admit work through `mediaLane` (one heavy job) or `probeLane` (three probes). Warm-up loops check `playbackActive()` so a build never fights a stream.
+- **Warm-ups are optional and gated.** `warmHeroes` / `warmTrailers` / `warmArtwork` start only after the first `/api/library` request (`libraryRequested` + `queueWarm`, deduped by `updatedAt`) and never block a request; a background hero build aborts mid-build when playback starts. Keep new warm-up work behind the same gate.
+- **DB housekeeping rides on real scans.** `purgeOrphans()` runs at most every 6 h (30-day age cutoff), `ANALYZE` after a scan that wrote more than 50 rows, `VACUUM` only when idle with ≥25 % free pages and at most once/24 h; `/api/quit` runs `ANALYZE` + `maybeVacuum`. `dbStats()` now also reports `mainBytes`, `walBytes` and a `process` block (cpu, rss, heap, uptime).
 - `/api/library`, `/api/art/*` and `/api/subtitle/*` send an ETag and answer `304 Not Modified`, and `getLibrary()` in `public/common.js` uses `cache: 'no-cache'` so every navigation revalidates instead of downloading 20 KB again. `GET /api/db/stats` returns file size and row counts for debugging.
 - **Bytes matter: keep the cache rules intact.** `/api/library` is gzipped once per revision (`Vary: Accept-Encoding`, same ETag), and `/api/art/:id/:kind?w=` serves a JPEG from the `sized` folder at the nearest ladder width (160/240/320/480/640/960/1280). HTML is `no-cache` and rewrites `/x.css` and `/x.js` to `?v=<asset stamp>`; everything else under `public/` is `immutable` for a year, so a new deploy needs only the stamp (size+mtime hash) to change. Don't request art without a width: cards use 480 (grid 640), episode thumbs 320, hero and media-session art use the original or 1280.
+- **A poll that changed nothing must not touch the DOM.** `loadLibrary()` compares `libraryPrint` (length + every mtime) as well as `updatedAt`; identical rows skip `renderAll()`. Rows use `content-visibility: auto` so offscreen rows cost no layout/paint, and the watch page fetches its scrubber sprite only on the first timeline hover.
 - **Top nav is Home / Local / Favourite / Online.** `Local` lists the library, `Favourite` lists My List entries (local + Castle snapshots), and `Online` draws 30 random catalog titles from `GET /api/castle/browse` (merged genre searches, cached until **Shuffle** sends `?fresh=1`). archive.org is gone: no `/api/catalog/*` routes, no picker sheet.
 - Build user-facing DOM with `textContent` or `createEl`, never interpolate filenames into `innerHTML` (local files can contain arbitrary characters).
 - Keep the Netflix look: black/near-black surfaces, `#e50914` red, white play buttons, 16:9 cards.

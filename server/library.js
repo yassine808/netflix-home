@@ -487,6 +487,7 @@ export async function scanLibrary(root) {
       readDirs: changedDirs,
       probed: jobs.length,
       changed,
+      written: dirty.length + removed.length,
     };
     library = {
       root,

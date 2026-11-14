@@ -187,9 +187,17 @@ export function initDb(cacheDir) {
       PRAGMA busy_timeout = 5000;
       PRAGMA cache_size = -32000;
       PRAGMA mmap_size = 268435456;
+      /* Keep the WAL small: checkpoint often, cap it at 8 MB. */
+      PRAGMA wal_autocheckpoint = 512;
+      PRAGMA journal_size_limit = 8388608;
     `);
     db.exec(SCHEMA);
     migrateLegacy(cacheDir);
+    try {
+      db.exec('PRAGMA optimize');
+    } catch {
+      /* older SQLite builds may not support it */
+    }
     return db;
   } catch (err) {
     db = null;
@@ -308,6 +316,66 @@ export function setKv(key, value) {
   }
 }
 
+/* Index statistics after a scan that moved a lot of rows. Cheap, and without
+ * it a large library keeps whatever plan SQLite guessed on an empty table. */
+export function analyzeDb() {
+  if (!db) return false;
+  try {
+    db.exec('ANALYZE');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+let lastPurge = 0;
+const PURGE_EVERY_MS = 6 * 60 * 60 * 1000;
+const ORPHAN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/* Rows whose title is gone. Artwork is keyed by series as well as by item, so
+ * both columns count as owners; anything unreferenced for 30 days is stale. */
+export function purgeOrphans({ force = false } = {}) {
+  if (!db) return 0;
+  if (!force && Date.now() - lastPurge < PURGE_EVERY_MS) return 0;
+  lastPurge = Date.now();
+  const cutoff = Date.now() - ORPHAN_MAX_AGE_MS;
+  const owned = 'SELECT id FROM items UNION SELECT series_key FROM items WHERE series_key IS NOT NULL';
+  let removed = 0;
+  try {
+    removed += Number(db.prepare(`DELETE FROM assets WHERE updated_at < ?
+      AND id NOT IN (${owned})`).run(cutoff).changes) || 0;
+    removed += Number(db.prepare(`DELETE FROM subtitles WHERE updated_at < ?
+      AND item_id NOT IN (SELECT id FROM items)`).run(cutoff).changes) || 0;
+    removed += Number(db.prepare(`DELETE FROM audio_tracks WHERE item_id NOT IN (SELECT id FROM items)`).run().changes) || 0;
+    removed += Number(db.prepare(`DELETE FROM audio_probe WHERE item_id NOT IN (SELECT id FROM items)`).run().changes) || 0;
+  } catch {
+    /* best effort */
+  }
+  return removed;
+}
+
+let lastVacuum = 0;
+const VACUUM_EVERY_MS = 24 * 60 * 60 * 1000;
+
+/* VACUUM only pays off when a quarter of the file is free pages. Returns true
+ * when the file was rewritten. */
+export function maybeVacuum({ force = false } = {}) {
+  if (!db) return false;
+  if (!force && Date.now() - lastVacuum < VACUUM_EVERY_MS) return false;
+  try {
+    const pages = Number(db.prepare('PRAGMA page_count').get()?.page_count) || 0;
+    const free = Number(db.prepare('PRAGMA freelist_count').get()?.freelist_count) || 0;
+    if (!pages || free / pages < 0.25) return false;
+    lastVacuum = Date.now();
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    db.exec('VACUUM');
+    db.exec('PRAGMA optimize');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /* Counts + file size, for verifying what is actually stored. */
 export function dbStats() {
   if (!db || !dbFile) return { ready: false };
@@ -327,6 +395,8 @@ export function dbStats() {
     ready: true,
     file: dbFile,
     bytes: sizeOf(dbFile) + sizeOf(`${dbFile}-wal`) + sizeOf(`${dbFile}-shm`),
+    mainBytes: sizeOf(dbFile),
+    walBytes: sizeOf(`${dbFile}-wal`),
     tables: counts,
   };
 }

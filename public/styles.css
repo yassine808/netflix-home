@@ -403,7 +403,13 @@ code { font-family: Consolas, "Courier New", monospace; }
 
 .rows { position: relative; z-index: 3; margin-top: -10vh; padding-bottom: 30px; }
 
-.row { margin: 0 0 6px; }
+.row {
+  margin: 0 0 6px;
+  /* Offscreen rows skip layout, paint and compositing entirely. `auto` keeps
+   * the last measured height, so scrolling back does not jump. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 280px;
+}
 .row-head {
   display: flex;
   align-items: baseline;
