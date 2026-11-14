@@ -4,7 +4,7 @@ export const PROGRESS_KEY = 'netflix-home:progress';
 export const PROFILE_KEY = 'netflix-home:profile';
 
 export async function getLibrary() {
-  const res = await fetch('/api/library', { cache: 'no-store' });
+  const res = await fetch('/api/library', { cache: 'no-cache' });
   if (!res.ok) throw new Error(`library ${res.status}`);
   return res.json();
 }

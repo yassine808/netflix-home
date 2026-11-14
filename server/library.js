@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import ffmpegPath from 'ffmpeg-static';
 import ffprobeStatic from 'ffprobe-static';
 import { initPictures, ensurePicture } from './pictures.js';
+import { getDb, transaction } from './db.js';
 
 const ffprobePath = ffprobeStatic.path;
 
@@ -23,7 +24,6 @@ const SKIP_DIRS = new Set([
 const QUALITY_TAGS = /\b(2160p|1080p|720p|480p|360p|4k|uhd|hdr10?|dv|dolby\s?vision|bluray|blu-ray|brrip|bdrip|webrip|web-dl|webdl|web|hdtv|dvdrip|dvdscr|hdrip|cam|ts|tc|remux|x264|x265|h264|h265|hevc|avc|10bit|8bit|aac\d?|ac3|eac3|dts(-hd)?|truehd|atmos|5\.1|7\.1|2\.0|proper|repack|extended|unrated|directors?\.?cut|imax|internal|multi|dual|subbed|dubbed)\b/gi;
 
 let cacheDir;
-let metaCache = {};
 let itemsById = new Map();
 let library = { root: '', items: [], collections: [], updatedAt: 0 };
 let scanning = null;
@@ -191,20 +191,46 @@ async function probe(filePath) {
   }
 }
 
-function safeJsonRead(file) {
+/* Rows already in catalog.db: reused when size + mtime still match, which
+ * avoids both ffprobe and re-reading NFO files on every scan. */
+function storedRows() {
+  const map = new Map();
+  const db = getDb();
+  if (!db) return map;
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    for (const row of db.prepare('SELECT rel_path, size, mtime, payload FROM items').all()) {
+      map.set(row.rel_path, row);
+    }
+  } catch {
+    /* an empty or broken table just means a full scan */
+  }
+  return map;
+}
+
+/* meta.json was the old probe cache. Read it once on upgrade so the first
+ * scan after this change does not re-probe every file. */
+function legacyProbeCache() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(cacheDir, 'meta.json'), 'utf8'));
   } catch {
     return {};
   }
 }
 
-async function saveMetaCache() {
-  try {
-    await fsp.writeFile(path.join(cacheDir, 'meta.json'), JSON.stringify(metaCache));
-  } catch {
-    /* cache is best effort */
+function collectionsFor(items) {
+  const map = new Map();
+  for (const item of items) {
+    const list = map.get(item.collection) || [];
+    list.push(item);
+    map.set(item.collection, list);
   }
+  return [...map.entries()]
+    .map(([name, list]) => ({
+      name,
+      count: list.length,
+      items: list.sort((a, b) => b.mtime - a.mtime || a.title.localeCompare(b.title)).map((i) => i.id),
+    }))
+    .sort((a, b) => b.items.length - a.items.length || a.name.localeCompare(b.name));
 }
 
 export async function scanLibrary(root) {
@@ -214,44 +240,58 @@ export async function scanLibrary(root) {
     const files = [];
     await walk(root, 0, files);
 
-    const nextCache = {};
-    const fresh = [];
+    const stored = storedRows();
+    const legacy = stored.size ? {} : legacyProbeCache();
+    const entries = [];
+    const jobs = [];
+    const keep = new Set();
 
     for (const filePath of files) {
       const rel = path.relative(root, filePath);
+      keep.add(rel);
       let st;
       try {
         st = await fsp.stat(filePath);
       } catch {
         continue;
       }
-      const prev = metaCache[rel];
-      if (prev && prev.size === st.size && prev.mtimeMs === st.mtimeMs) {
-        nextCache[rel] = prev;
-      } else {
-        fresh.push({ filePath, rel, st });
+      const size = st.size;
+      const mtime = Math.round(st.mtimeMs);
+      const row = stored.get(rel);
+      if (row && Number(row.size) === size && Number(row.mtime) === mtime) {
+        try {
+          entries.push({ rel, item: JSON.parse(row.payload) });
+          continue;
+        } catch {
+          /* payload damaged; rebuild below */
+        }
       }
+      const cached = legacy[rel];
+      const probed = cached && cached.size === size && Math.round(cached.mtimeMs) === mtime ? cached : null;
+      const entry = { rel, filePath, size, mtime, probed };
+      entries.push(entry);
+      if (!probed) jobs.push(entry);
     }
 
     const concurrency = 4;
     let cursor = 0;
     async function worker() {
-      while (cursor < fresh.length) {
-        const job = fresh[cursor++];
-        const probed = await probe(job.filePath);
-        nextCache[job.rel] = { size: job.st.size, mtimeMs: job.st.mtimeMs, ...probed };
+      while (cursor < jobs.length) {
+        const job = jobs[cursor++];
+        job.probed = await probe(job.filePath);
       }
     }
-    await Promise.all(Array.from({ length: Math.min(concurrency, fresh.length) }, worker));
-    metaCache = nextCache;
+    await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
 
     const nextItems = [];
-    const collectionsMap = new Map();
+    const dirty = [];
 
-    for (const filePath of files) {
-      const rel = path.relative(root, filePath);
-      const meta = metaCache[rel];
-      if (!meta) continue;
+    for (const entry of entries) {
+      if (entry.item) {
+        nextItems.push(entry.item);
+        continue;
+      }
+      const { rel, filePath, size, mtime, probed } = entry;
       const parsed = parseFileName(path.basename(filePath));
       const nfo = readNfo(filePath) || {};
       const collection = rel.includes(path.sep) ? rel.split(path.sep)[0] : 'Movies';
@@ -280,41 +320,59 @@ export async function scanLibrary(root) {
         posterPath: findArtwork(filePath, 'poster'),
         backdropPath: findArtwork(filePath, 'backdrop'),
         collection,
-        durationSec: meta.durationSec,
-        width: meta.width,
-        height: meta.height,
-        videoCodec: meta.videoCodec,
-        audioCodec: meta.audioCodec,
-        size: meta.size,
-        mtime: Math.round(meta.mtimeMs),
+        durationSec: probed.durationSec,
+        width: probed.width,
+        height: probed.height,
+        videoCodec: probed.videoCodec,
+        audioCodec: probed.audioCodec,
+        size,
+        mtime,
       };
       nextItems.push(item);
-
-      const list = collectionsMap.get(item.collection) || [];
-      list.push(item);
-      collectionsMap.set(item.collection, list);
+      dirty.push(item);
     }
 
     nextItems.sort((a, b) => b.mtime - a.mtime || a.title.localeCompare(b.title));
 
-    const collections = [...collectionsMap.entries()]
-      .map(([name, list]) => ({
-        name,
-        count: list.length,
-        items: list.sort((a, b) => b.mtime - a.mtime || a.title.localeCompare(b.title)).map((i) => i.id),
-      }))
-      .sort((a, b) => b.items.length - a.items.length || a.name.localeCompare(b.name));
+    const db = getDb();
+    if (db) {
+      try {
+        transaction(() => {
+          const remove = db.prepare('DELETE FROM items WHERE rel_path = ?');
+          for (const rel of stored.keys()) {
+            if (!keep.has(rel)) remove.run(rel);
+          }
+          const upsert = db.prepare(`INSERT INTO items
+            (id, rel_path, series_key, collection, size, mtime, payload, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              rel_path = excluded.rel_path,
+              series_key = excluded.series_key,
+              collection = excluded.collection,
+              size = excluded.size,
+              mtime = excluded.mtime,
+              payload = excluded.payload,
+              updated_at = excluded.updated_at`);
+          const now = Date.now();
+          for (const item of dirty) {
+            upsert.run(item.id, item.relPath, item.seriesKey, item.collection,
+              item.size, item.mtime, JSON.stringify(item), now);
+          }
+        });
+      } catch (err) {
+        console.warn('catalog write failed:', err?.message || String(err));
+      }
+    }
 
     itemsById = new Map(nextItems.map((i) => [i.id, i]));
     library = {
       root,
       items: nextItems,
-      collections,
+      collections: collectionsFor(nextItems),
       updatedAt: Date.now(),
       scannedInMs: Date.now() - started,
     };
 
-    await saveMetaCache();
     return library;
   })().finally(() => {
     scanning = null;
@@ -359,11 +417,45 @@ export function artPath(kind, id) {
   return kind === 'poster' ? item.posterPath : item.backdropPath;
 }
 
+/* Last known library straight from catalog.db, so the first paint does not
+ * wait for the folder walk. The normal scan still runs and replaces it. */
+export function loadCachedLibrary() {
+  const db = getDb();
+  if (!db) return false;
+  try {
+    const rows = db.prepare('SELECT payload, updated_at FROM items ORDER BY mtime DESC').all();
+    if (!rows.length) return false;
+    const items = [];
+    let updatedAt = 0;
+    for (const row of rows) {
+      try {
+        items.push(JSON.parse(row.payload));
+        updatedAt = Math.max(updatedAt, Number(row.updated_at) || 0);
+      } catch {
+        /* skip a damaged row; the scan rewrites it */
+      }
+    }
+    if (!items.length) return false;
+    itemsById = new Map(items.map((i) => [i.id, i]));
+    library = {
+      root: library.root,
+      items,
+      collections: collectionsFor(items),
+      updatedAt,
+      scannedInMs: 0,
+      cached: true,
+    };
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function initCache(dir) {
   cacheDir = dir;
   fs.mkdirSync(path.join(cacheDir, 'thumbs'), { recursive: true });
   initPictures(cacheDir);
-  metaCache = safeJsonRead(path.join(cacheDir, 'meta.json'));
+  loadCachedLibrary();
 }
 
 export const VIDEO_EXTENSIONS = [...VIDEO_EXTS];

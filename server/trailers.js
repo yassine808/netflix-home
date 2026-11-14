@@ -3,9 +3,9 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { resolveImdbId, normalizeTitle } from './imdb.js';
 import { isOffline } from './settings.js';
+import { getDb } from './db.js';
 
 /**
  * Trailers: resolve the official YouTube trailer through Cinemeta (keyless),
@@ -17,15 +17,7 @@ import { isOffline } from './settings.js';
 const CINEMETA = 'https://v3-cinemeta.strem.io';
 const TRAILER_HEIGHT = 720;
 
-/* createRequire keeps sqlite synchronous, like hero.js. */
-let DatabaseSync = null;
-try {
-  const nodeRequire = createRequire(process.execPath);
-  ({ DatabaseSync } = nodeRequire('node:sqlite'));
-} catch {
-  console.warn('node:sqlite is unavailable; trailers will not be indexed');
-}
-
+/* SQLite is shared with the rest of the catalog; see db.js. */
 let db = null;
 let trailerDir = null;
 let ytDlp = process.env.YTDLP_PATH || 'yt-dlp.exe';
@@ -40,8 +32,8 @@ export function initTrailers(cacheDir, { ytDlpPath } = {}) {
   trailerDir = path.join(cacheDir, 'trailers');
   try {
     fs.mkdirSync(trailerDir, { recursive: true });
-    if (!DatabaseSync) throw new Error('sqlite missing');
-    db = new DatabaseSync(path.join(cacheDir, 'trailers.db'));
+    db = getDb();
+    if (!db) throw new Error('sqlite missing');
     db.exec(`CREATE TABLE IF NOT EXISTS trailers (
       id TEXT PRIMARY KEY,
       imdb_id TEXT,

@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import ffmpegPath from 'ffmpeg-static';
 import ffprobeStatic from 'ffprobe-static';
+import { getDb, transaction } from './db.js';
 
 /**
  * Audio-track support.
@@ -53,17 +54,85 @@ export function audioLabel(track, position) {
   return `Audio track ${position + 1}`;
 }
 
-/* Probes the audio streams of one file. Cached until the file changes. */
-export async function probeAudioTracks(full) {
+/* Tracks saved by a previous launch are trusted only while the source file
+ * still has the same size and mtime; the probe then costs one indexed SELECT. */
+function storedTracks(item) {
+  const db = getDb();
+  if (!db || !item) return null;
+  try {
+    const probe = db.prepare('SELECT source_size, source_mtime FROM audio_probe WHERE item_id = ?').get(item.id);
+    if (!probe) return null;
+    if (Number(probe.source_size) !== Number(item.size) || Number(probe.source_mtime) !== Number(item.mtime)) return null;
+    const rows = db.prepare(`SELECT stream_index, position, lang, title, codec, channels, bit_rate, is_default, label, variant_path
+      FROM audio_tracks WHERE item_id = ? ORDER BY position`).all(item.id);
+    if (!rows.length) return null;
+    return rows.map((row) => ({
+      streamIndex: Number(row.stream_index),
+      position: Number(row.position),
+      lang: row.lang || '',
+      title: row.title || '',
+      codec: row.codec || '',
+      channels: Number(row.channels) || 0,
+      bitRate: Number(row.bit_rate) || 0,
+      default: Number(row.is_default) === 1,
+      label: row.label || '',
+      variantPath: row.variant_path || null,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+function saveTracks(item, tracks) {
+  const db = getDb();
+  if (!db || !item) return;
+  try {
+    transaction(() => {
+      const previous = new Map(
+        db.prepare('SELECT stream_index, variant_path FROM audio_tracks WHERE item_id = ?')
+          .all(item.id).map((row) => [Number(row.stream_index), row.variant_path]),
+      );
+      db.prepare('DELETE FROM audio_tracks WHERE item_id = ?').run(item.id);
+      const insert = db.prepare(`INSERT INTO audio_tracks
+        (item_id, stream_index, position, lang, title, codec, channels, bit_rate, is_default, label, variant_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const track of tracks) {
+        insert.run(item.id, track.streamIndex, track.position, track.lang || '', track.title || '',
+          track.codec || '', track.channels || 0, track.bitRate || 0, track.default ? 1 : 0,
+          track.label || '', previous.get(track.streamIndex) || track.variantPath || null);
+      }
+      db.prepare(`INSERT INTO audio_probe (item_id, source_size, source_mtime, probed_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(item_id) DO UPDATE SET
+          source_size = excluded.source_size,
+          source_mtime = excluded.source_mtime,
+          probed_at = excluded.probed_at`)
+        .run(item.id, Number(item.size) || 0, Number(item.mtime) || 0, Date.now());
+    });
+  } catch {
+    /* the in-memory cache below still answers this run */
+  }
+}
+
+/* Probes the audio streams of one file. Cached in SQLite until the file
+ * changes, with a small in-memory layer in front for the player's requests. */
+export async function probeAudioTracks(item, full) {
   let stat;
   try {
     stat = await fsp.stat(full);
   } catch {
     return [];
   }
+  const itemId = item?.id || null;
   const key = `${full}:${stat.mtimeMs}:${stat.size}`;
   const hit = probeCache.get(key);
   if (hit) return hit;
+
+  const stored = storedTracks(item);
+  if (stored?.length) {
+    probeCache.set(key, stored);
+    return stored;
+  }
 
   let streams = [];
   try {
@@ -93,6 +162,7 @@ export async function probeAudioTracks(full) {
   });
 
   for (const track of tracks) track.label = audioLabel(track, track.position);
+  if (itemId) saveTracks(item, tracks);
   if (probeCache.size > 60) probeCache.clear();
   probeCache.set(key, tracks);
   return tracks;
@@ -109,11 +179,20 @@ function variantPath(full, track, stat) {
  * Returns a file whose first audio stream is `track`. The file's original
  * stream order is kept, so requesting the first track returns the source.
  */
-export async function ensureAudioVariant(full, track) {
-  const tracks = await probeAudioTracks(full);
+export async function ensureAudioVariant(item, full, track) {
+  const tracks = await probeAudioTracks(item, full);
   const first = tracks[0];
   if (!first || !track || track.streamIndex === first.streamIndex) return full;
   if (!audioDir) return full;
+
+  const saved = tracks.find((entry) => entry.streamIndex === track.streamIndex)?.variantPath;
+  if (saved) {
+    try {
+      if ((await fsp.stat(saved)).size > 1024) return saved;
+    } catch {
+      /* file was cleaned; rebuild below */
+    }
+  }
 
   const stat = await fsp.stat(full);
   const target = variantPath(full, track, stat);
@@ -144,6 +223,15 @@ export async function ensureAudioVariant(full, track) {
       await execFileP(ffmpegPath, args, 0);
       await fsp.rm(target, { force: true }).catch(() => {});
       await fsp.rename(part, target);
+      const db = getDb();
+      if (db && item) {
+        try {
+          db.prepare('UPDATE audio_tracks SET variant_path = ? WHERE item_id = ? AND stream_index = ?')
+            .run(target, item.id, track.streamIndex);
+        } catch {
+          /* the file itself is still served */
+        }
+      }
       return target;
     } catch (err) {
       await fsp.rm(part, { force: true }).catch(() => {});

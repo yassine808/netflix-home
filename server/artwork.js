@@ -9,12 +9,12 @@
  */
 
 import fs from 'node:fs';
-import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { getItem } from './library.js';
 import { resolveImdbId } from './imdb.js';
 import { isOffline } from './settings.js';
+import { getAsset, putAsset } from './db.js';
 
 const CINEMETA = 'https://v3-cinemeta.strem.io';
 const FIELDS = { poster: 'poster', backdrop: 'background', logo: 'logo' };
@@ -41,6 +41,12 @@ function cacheFile(id, kind, ext) {
   return artDir ? path.join(artDir, `${hashFor(id)}-${kind}.${ext || (kind === 'logo' ? 'png' : 'jpg')}`) : null;
 }
 
+function mimeForExt(ext) {
+  if (ext === 'png') return 'image/png';
+  if (ext === 'webp') return 'image/webp';
+  return 'image/jpeg';
+}
+
 /* A logo is a transparent wordmark, usually PNG; the extension decides the
  * content type the route sends back, so remember what was actually stored. */
 function imageExt(buffer) {
@@ -50,14 +56,32 @@ function imageExt(buffer) {
   return null;
 }
 
+/* Cached artwork as { buffer, mime, etag } (or { path } for anything that was
+ * too large for the database). Files written by older builds are imported once
+ * into catalog.db instead of being re-downloaded. */
 function existing(id, kind) {
+  const row = getAsset(id, kind);
+  if (row?.blob && row.blob.length > 1024) {
+    return { buffer: Buffer.from(row.blob), mime: row.mime || 'image/jpeg', etag: row.etag };
+  }
+  if (row?.path) {
+    try {
+      if (fs.statSync(row.path).size > 1024) {
+        return { path: row.path, mime: row.mime || 'image/jpeg', etag: row.etag };
+      }
+    } catch {
+      /* file removed; look on disk again */
+    }
+  }
   const exts = kind === 'logo' ? ['png', 'jpg', 'webp'] : ['jpg'];
   for (const ext of exts) {
     const file = cacheFile(id, kind, ext);
-    if (!file) return null;
+    if (!file) break;
     try {
-      const stat = fs.statSync(file);
-      if (stat.isFile() && stat.size > 1024) return file;
+      if (fs.statSync(file).size <= 1024) continue;
+      const buffer = fs.readFileSync(file);
+      const saved = putAsset({ id, kind, mime: mimeForExt(ext), buffer, path: file });
+      return { buffer, mime: mimeForExt(ext), etag: saved?.etag };
     } catch {
       /* not cached yet */
     }
@@ -118,10 +142,11 @@ export async function officialArt(item, kind) {
         failures.set(key, Date.now());
         return null;
       }
-      const file = cacheFile(artId, kind, imageExt(buffer) || (kind === 'logo' ? 'png' : 'jpg'));
-      await fsp.writeFile(file, buffer);
+      const ext = imageExt(buffer) || (kind === 'logo' ? 'png' : 'jpg');
+      const mime = mimeForExt(ext);
+      const saved = putAsset({ id: artId, kind, mime, buffer });
       failures.delete(key);
-      return file;
+      return { buffer, mime, etag: saved?.etag };
     } catch {
       failures.set(key, Date.now());
       return null;
@@ -136,4 +161,19 @@ export async function officialArt(item, kind) {
 /* File already on disk, without starting a download. */
 export function cachedArt(id, kind) {
   return existing(id, kind);
+}
+
+/* Move artwork an older build left in `.cache/art` into catalog.db, so the
+ * first card render does not pay for the import. Runs after each scan. */
+export function warmArtwork(items) {
+  const ids = new Set();
+  for (const item of items || []) {
+    const id = item.seriesKey || item.id;
+    if (id) ids.add(id);
+  }
+  for (const id of ids) {
+    existing(id, 'poster');
+    existing(id, 'backdrop');
+    existing(id, 'logo');
+  }
 }

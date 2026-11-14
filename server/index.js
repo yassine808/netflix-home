@@ -2,11 +2,11 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  initCache, scanLibrary, getLibrary, getItem, resolveItemFile,
+import { initDb, dbStats } from './db.js';
+import { initCache, scanLibrary, getLibrary, getItem, resolveItemFile,
   ensureThumb, artPath, isScanning,
 } from './library.js';
-import { initArtwork, officialArt, cachedArt } from './artwork.js';
+import { initArtwork, officialArt, cachedArt, warmArtwork } from './artwork.js';
 import {
   initDownloads,
   addDownload, addSeriesDownload, addHlsDownload,
@@ -21,7 +21,7 @@ import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
 import { initHero, heroStart, heroReady, ensureHero, warmHeroes } from './hero.js';
 import { initTrailers, trailerPathFor, trailerStatus, warmTrailer, warmTrailers } from './trailers.js';
 import { resolveImdbId } from './imdb.js';
-import { ensureEnglishSubtitle, fetchEnglishSubtitle } from './subs.js';
+import { ensureEnglishSubtitle, fetchEnglishSubtitle, syncSubtitleTracks, subtitleBody } from './subs.js';
 import { initAudio, probeAudioTracks, ensureAudioVariant } from './audio.js';
 
 /* In the single-file build there is no real file on disk, so the bundle passes
@@ -71,6 +71,7 @@ const preferredPort = Number(process.env.PORT) || 3000;
 // than fail, walk to a random high port and remember it for the launcher.
 const PORT_FILE = path.join(cacheDir, 'port');
 
+initDb(cacheDir);
 initCache(cacheDir);
 initSettings(cacheDir);
 initArtwork(cacheDir);
@@ -88,6 +89,7 @@ initDownloads({
     const lib = await scanLibrary(libraryRoot);
     warmHeroes(lib.items, libraryRoot);
     warmTrailers(lib.items);
+    warmArtwork(lib.items);
   },
   // A file that is already in the library must not be downloaded twice; this is
   // what kept producing duplicate titles (and " (1)" copies) in the UI.
@@ -119,6 +121,12 @@ app.use('/api', (req, res, next) => {
 
 app.get('/api/settings', (req, res) => res.json(getSettings()));
 
+/* Catalog database size and row counts, for verifying the cache is populated. */
+app.get('/api/db/stats', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(dbStats());
+});
+
 app.post('/api/settings/offline', (req, res) => {
   if (typeof req.body?.offline !== 'boolean') {
     return res.status(400).json({ error: 'pass {"offline": true|false}' });
@@ -139,6 +147,10 @@ const MIME = {
 
 app.get('/api/library', (req, res) => {
   const lib = getLibrary();
+  const etag = `"lib-${lib.updatedAt || 0}-${lib.items.length}"`;
+  res.setHeader('Cache-Control', 'private, no-cache');
+  res.setHeader('ETag', etag);
+  if (req.headers['if-none-match'] === etag) return res.status(304).end();
   res.json({
     root: lib.root,
     updatedAt: lib.updatedAt,
@@ -157,6 +169,7 @@ app.post('/api/rescan', async (req, res) => {
     const lib = await scanLibrary(libraryRoot);
     warmHeroes(lib.items, libraryRoot);
     warmTrailers(lib.items);
+    warmArtwork(lib.items);
     res.json({ ok: true, count: lib.items.length, updatedAt: lib.updatedAt });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });
@@ -417,10 +430,10 @@ app.get('/api/stream/:id', async (req, res) => {
   const wanted = Number(req.query.audio);
   if (Number.isInteger(wanted) && wanted >= 0) {
     try {
-      const tracks = await probeAudioTracks(full);
+      const tracks = await probeAudioTracks(found.item, full);
       const track = tracks.find((entry) => entry.streamIndex === wanted);
       if (track && tracks[0] && track.streamIndex !== tracks[0].streamIndex) {
-        const variant = await ensureAudioVariant(full, track);
+        const variant = await ensureAudioVariant(found.item, full, track);
         if (variant !== full) return sendMedia(req, res, variant, 'video/mp4');
       }
     } catch {
@@ -437,11 +450,11 @@ app.get('/api/audio/:id', async (req, res) => {
   if (!found) return res.status(404).json({ error: 'not found' });
   let tracks = [];
   try {
-    tracks = await probeAudioTracks(found.full);
+    tracks = await probeAudioTracks(found.item, found.full);
   } catch {
     tracks = [];
   }
-  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Cache-Control', 'private, max-age=300');
   res.json({
     tracks: tracks.map((track) => ({
       index: track.streamIndex,
@@ -572,24 +585,35 @@ app.post('/api/intro/:id', (req, res) => {
   res.json(saved);
 });
 
+function sendArt(req, res, art, immutable = false) {
+  if (!art) return res.status(404).end();
+  res.setHeader('Cache-Control', immutable ? 'public, max-age=604800' : 'public, max-age=86400');
+  if (art.etag) {
+    res.setHeader('ETag', art.etag);
+    if (req.headers['if-none-match'] === art.etag) return res.status(304).end();
+  }
+  if (art.path) return res.sendFile(art.path);
+  res.setHeader('Content-Type', art.mime || 'image/jpeg');
+  return res.end(art.buffer);
+}
+
 app.get('/api/art/:id/:kind', async (req, res) => {
   const want = req.params.kind;
   const kind = want === 'poster' || want === 'logo' ? want : 'backdrop';
   // Sidecar pictures only exist for poster/backdrop.
   const sidecar = kind === 'logo' ? null : artPath(kind, req.params.id);
-  if (sidecar) return res.sendFile(sidecar);
+  if (sidecar) {
+    res.setHeader('Cache-Control', 'public, max-age=604800');
+    return res.sendFile(sidecar);
+  }
   const item = getItem(req.params.id);
   if (!item) return res.status(404).end();
-  // Official artwork from the catalog, cached next to the other pictures.
+  // Official artwork from the catalog, cached in catalog.db.
   const cached = cachedArt(item.seriesKey || item.id, kind);
-  if (cached) {
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    return res.sendFile(cached);
-  }
+  if (cached) return sendArt(req, res, cached, true);
   const art = await officialArt(item, kind);
   if (!art) return res.status(404).end();
-  res.setHeader('Cache-Control', 'public, max-age=86400');
-  res.sendFile(art);
+  return sendArt(req, res, art, true);
 });
 
 app.get('/api/item/:id', (req, res) => {
@@ -600,72 +624,35 @@ app.get('/api/item/:id', (req, res) => {
 });
 
 /* ---------- subtitles (sidecar .vtt files next to the video) ---------- */
-
-const SUBTITLE_LABELS = {
-  en: 'English', fr: 'Français', ar: 'العربية', it: 'Italiano', es: 'Español',
-  de: 'Deutsch', pt: 'Português', nl: 'Nederlands', pl: 'Polski', ru: 'Русский',
-  tr: 'Türkçe', ja: '日本語', ko: '한국어', zh: '中文', hi: 'हिन्दी',
-  th: 'ไทย', vi: 'Tiếng Việt', id: 'Bahasa Indonesia', ms: 'Bahasa Melayu',
-  tl: 'Filipino', sv: 'Svenska', da: 'Dansk', no: 'Norsk', fi: 'Suomi',
-  cs: 'Čeština', el: 'Ελληνικά', he: 'עברית', hu: 'Magyar', ro: 'Română',
-  uk: 'Українська', bg: 'Български', hr: 'Hrvatski', sr: 'Српски', sk: 'Slovenčina',
-};
-const SUBTITLE_ORDER = ['en', 'fr', 'ar', 'it'];
-
-function subtitleTracks(full) {
-  let names;
-  try {
-    names = fs.readdirSync(path.dirname(full));
-  } catch {
-    return [];
-  }
-  const stem = path.basename(full).replace(/\.[^.]+$/, '').toLowerCase();
-  const tracks = [];
-  const seen = new Set();
-  for (const name of names) {
-    if (!/\.vtt$/i.test(name)) continue;
-    const base = name.replace(/\.vtt$/i, '');
-    if (!base.toLowerCase().startsWith(stem)) continue;
-    const suffix = base.slice(stem.length);
-    const match = /\.([a-z]{2,3})$/i.exec(suffix);
-    const lang = match ? match[1].toLowerCase() : '';
-    if (!lang || seen.has(lang)) continue;
-    seen.add(lang);
-    tracks.push({ lang, label: SUBTITLE_LABELS[lang] || lang.toUpperCase(), file: name });
-  }
-  const rank = (lang) => {
-    const index = SUBTITLE_ORDER.indexOf(lang);
-    return index >= 0 ? index : SUBTITLE_ORDER.length;
-  };
-  return tracks.sort((a, b) => rank(a.lang) - rank(b.lang) || a.lang.localeCompare(b.lang));
-}
-
 app.get('/api/subtitles/:id', async (req, res) => {
   const found = resolveItemFile(req.params.id);
   if (!found) return res.status(404).json({ error: 'not found' });
-  let tracks = subtitleTracks(found.full);
+  let tracks = syncSubtitleTracks(found.item, found.full);
   // Old downloads may predate the English track. Fetch it once on demand so the
   // player always offers English next to the original language.
   if (!tracks.some((track) => track.lang === 'en') && !isOffline()) {
     try {
       const added = await ensureEnglishSubtitle(found.full, found.item);
-      if (added) tracks = subtitleTracks(found.full);
+      if (added) tracks = syncSubtitleTracks(found.item, found.full);
     } catch {
       /* stay with whatever sidecars exist */
     }
   }
-  res.json({ tracks });
+  res.setHeader('Cache-Control', 'private, max-age=60');
+  res.json({ tracks: tracks.map(({ lang, label }) => ({ lang, label })) });
 });
 
 app.get('/api/subtitle/:id/:lang', (req, res) => {
   const found = resolveItemFile(req.params.id);
   if (!found) return res.status(404).json({ error: 'not found' });
   const lang = String(req.params.lang || '').toLowerCase();
-  const track = subtitleTracks(found.full).find((entry) => entry.lang === lang);
+  const track = subtitleBody(found.item, found.full, lang);
   if (!track) return res.status(404).json({ error: 'subtitle not found' });
+  if (track.etag) res.setHeader('ETag', track.etag);
+  if (track.etag && req.headers['if-none-match'] === track.etag) return res.status(304).end();
   res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
-  res.sendFile(path.join(path.dirname(found.full), track.file));
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.send(track.body);
 });
 
 /* ---------- online catalog (metadata only) ---------- */
@@ -952,6 +939,7 @@ function listen(port, attempt = 0) {
       console.log(`library ready: ${lib.items.length} title(s) in ${lib.scannedInMs} ms`);
       warmHeroes(lib.items, libraryRoot);
     warmTrailers(lib.items);
+    warmArtwork(lib.items);
     } catch (err) {
       console.error('scan failed:', err);
     }

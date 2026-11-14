@@ -3,8 +3,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { createRequire } from 'node:module';
 import ffmpegPath from 'ffmpeg-static';
+import { getDb } from './db.js';
 
 /**
  * Hero cache: one still frame + one short preview clip per title, built once
@@ -15,17 +15,6 @@ import ffmpegPath from 'ffmpeg-static';
 const CLIP_SECONDS = 12;
 const IMAGE_WIDTH = 1280;
 const IMAGE_HEIGHT = 720;
-
-/* createRequire keeps this synchronous, so the cache is ready before the first
- * library scan. A plain dynamic import would need top-level await, which the
- * single-file bundle cannot use. */
-let DatabaseSync = null;
-try {
-  const nodeRequire = createRequire(process.execPath);
-  ({ DatabaseSync } = nodeRequire('node:sqlite'));
-} catch {
-  console.warn('node:sqlite is unavailable; hero previews will be generated on demand without a cache index');
-}
 
 let db = null;
 let heroDir = null;
@@ -55,8 +44,8 @@ export function initHero(cacheDir) {
   heroDir = path.join(cacheDir, 'hero');
   try {
     fs.mkdirSync(heroDir, { recursive: true });
-    if (!DatabaseSync) throw new Error('sqlite missing');
-    db = new DatabaseSync(path.join(cacheDir, 'library.db'));
+    db = getDb();
+    if (!db) throw new Error('sqlite missing');
     db.exec(`CREATE TABLE IF NOT EXISTS hero (
       id TEXT PRIMARY KEY,
       source_size INTEGER NOT NULL,

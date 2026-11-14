@@ -14,19 +14,12 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { createRequire } from 'node:module';
 import ffmpegPath from 'ffmpeg-static';
+import { getDb } from './db.js';
 
 const SAMPLES = 8;
 const SAMPLE_FROM = 0.12;
 const SAMPLE_TO = 0.82;
-
-let DatabaseSync = null;
-try {
-  ({ DatabaseSync } = createRequire(process.execPath)('node:sqlite'));
-} catch {
-  /* the index is best effort; the JPEG files still work */
-}
 
 let db = null;
 let pictureDir = null;
@@ -43,9 +36,9 @@ function hashFor(id) {
 export function initPictures(cacheDir) {
   pictureDir = path.join(cacheDir, 'pictures');
   fs.mkdirSync(pictureDir, { recursive: true });
-  if (!DatabaseSync) return;
+  db = getDb();
+  if (!db) return;
   try {
-    db = new DatabaseSync(path.join(cacheDir, 'pictures.db'));
     db.exec(`CREATE TABLE IF NOT EXISTS picture (
       key TEXT PRIMARY KEY,
       id TEXT NOT NULL,
@@ -57,6 +50,7 @@ export function initPictures(cacheDir) {
       score REAL NOT NULL,
       built_at INTEGER NOT NULL
     )`);
+    db.exec('CREATE INDEX IF NOT EXISTS picture_id ON picture(id)');
   } catch (err) {
     db = null;
     console.warn('picture cache disabled:', err?.message || String(err));

@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import ffprobeStatic from 'ffprobe-static';
 import { resolveImdbId } from './imdb.js';
 import { isOffline } from './settings.js';
+import { getDb } from './db.js';
 
 const CHAPTER_INTRO = /\b(intro|opening|opening credits|main title|recap)\b/i;
 const chapterCache = new Map();
@@ -20,6 +21,38 @@ let markers = {};
 
 export function initIntro(cacheDir) {
   cacheFile = path.join(cacheDir, 'intro.json');
+  const db = getDb();
+  if (db) {
+    try {
+      const rows = db.prepare('SELECT key, start_sec, end_sec, source, updated_at FROM intro').all();
+      if (rows.length) {
+        markers = {};
+        for (const row of rows) {
+          markers[row.key] = {
+            startSec: Number(row.start_sec),
+            endSec: Number(row.end_sec),
+            source: row.source || 'cache',
+            updatedAt: Number(row.updated_at) || 0,
+          };
+        }
+        return;
+      }
+      // First start after the upgrade: import the old JSON file once.
+      const legacy = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+      if (legacy && typeof legacy === 'object' && !Array.isArray(legacy)) {
+        markers = legacy;
+        const insert = db.prepare(`INSERT OR IGNORE INTO intro (key, start_sec, end_sec, source, updated_at)
+          VALUES (?, ?, ?, ?, ?)`);
+        for (const [key, value] of Object.entries(legacy)) {
+          if (!Number.isFinite(Number(value?.startSec)) || !Number.isFinite(Number(value?.endSec))) continue;
+          insert.run(key, Number(value.startSec), Number(value.endSec), value.source || 'cache', Number(value.updatedAt) || Date.now());
+        }
+        return;
+      }
+    } catch {
+      /* fall through to the JSON file */
+    }
+  }
   try {
     const raw = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
     markers = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
@@ -159,7 +192,25 @@ export async function getIntroMarkers(item, full) {
 export function saveIntroMarkers(item, startSec, endSec, source = 'cache') {
   const value = normalize(startSec, endSec, item.durationSec);
   if (!value) return null;
-  markers[keyFor(item)] = { ...value, source, updatedAt: Date.now() };
+  const key = keyFor(item);
+  const saved = { ...value, source, updatedAt: Date.now() };
+  markers[key] = saved;
+  const db = getDb();
+  if (db) {
+    try {
+      db.prepare(`INSERT INTO intro (key, start_sec, end_sec, source, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          start_sec = excluded.start_sec,
+          end_sec = excluded.end_sec,
+          source = excluded.source,
+          updated_at = excluded.updated_at`)
+        .run(key, saved.startSec, saved.endSec, source, saved.updatedAt);
+      return { ...value, source };
+    } catch {
+      /* keep the in-memory value for this run */
+    }
+  }
   try {
     fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
     fs.writeFileSync(cacheFile, JSON.stringify(markers, null, 2));

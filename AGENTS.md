@@ -2,7 +2,7 @@
 
 ## What this is
 
-A local, Netflix-style streaming app. Node/Express backend scans a movie folder (default `G:\NETFLIX`), probes files with ffmpeg/ffprobe, keeps a picture database (one chosen still per title), builds cached hero previews, streams video with HTTP range support, and downloads films and episodes from the Castle catalog. Vanilla JS frontend in `public/`.
+A local, Netflix-style streaming app. Node/Express backend scans a movie folder (default `G:\NETFLIX`), probes files with ffmpeg/ffprobe, records everything it knows in one SQLite catalog (`catalog.db`), builds cached hero previews, streams video with HTTP range support, and downloads films and episodes from the Castle catalog. Vanilla JS frontend in `public/`.
 
 The shipped artifact is a **single self-contained EXE**: server, UI, ffmpeg and ffprobe are bundled with Node SEA (`bundle/`), so the deployment folder holds only the EXE, the videos and `.cache/`.
 
@@ -22,6 +22,7 @@ There is no test suite. Verify by starting the server and hitting the API, then 
 
 ```powershell
 Invoke-RestMethod http://localhost:3000/api/library
+Invoke-RestMethod http://localhost:3000/api/db/stats
 Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 ```
 
@@ -30,15 +31,18 @@ Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 - `bundle/build.mjs` — esbuild CJS bundle, SEA blob, postject injection, PE subsystem patch (no console window)
 - `bundle/entry.js` — resolves the library root, extracts UI + ffmpeg once to `.cache\app\<buildId>`, single-instance check, opens the browser, writes `launcher.log`
 - `bundle/shims/` — `ffmpeg-static` / `ffprobe-static` replacements that read `FFMPEG_PATH` / `FFPROBE_PATH`
-- `server/index.js` — Express routes: library, rescan, stream, thumbnail, artwork, item, hero, series catalog, `POST /api/quit`
-- `server/library.js` — folder walk, filename/NFO parsing, ffprobe metadata cache; `ensureThumb` delegates to the picture cache
-- `server/pictures.js` — `pictures.db`: picks a still per title by edge density over several sampled moments, stores the JPEG in `.cache\pictures\`
-- `server/hero.js` — SQLite-indexed hero stills + 12 s preview clips, background warm-up
-- `server/audio.js` — audio-track probe + on-demand dub remux into `.cache\audio\`
+- `server/index.js` — Express routes: library, rescan, stream, thumbnail, artwork, item, hero, series catalog, `GET /api/db/stats`, `POST /api/quit`
+- `server/db.js` — **one** SQLite database (`.cache\catalog.db`): schema, WAL pragmas, one-time migration from the old `pictures.db` / `library.db` / `trailers.db`, asset helpers, `dbStats`
+- `server/library.js` — folder walk, filename/NFO parsing, ffprobe metadata, `items` table (payload JSON), instant library load from the DB on boot
+- `server/pictures.js` — picks a still per title by edge density over several sampled moments, stores the JPEG in `.cache\pictures\` and the row in `catalog.db`
+- `server/hero.js` — hero stills + 12 s preview clips indexed in `catalog.db`, background warm-up
+- `server/artwork.js` — Cinemeta poster/backdrop/logo downloaded once into `assets` BLOBs, served with an ETag; `warmArtwork` imports legacy `.cache\art` files
+- `server/subs.js` — subtitle sidecars read once into the `subtitles` table, body served from the DB with an ETag
+- `server/audio.js` — audio-track probe cached in `audio_probe` / `audio_tracks`, on-demand dub remux into `.cache\audio\`
 - `public/index.html` + `app.js` + `styles.css` — home UI, search, series/detail sheets
 - `public/watch.html` + `watch.js` + `watch.css` — custom player
 - `public/common.js` — shared formatting, storage, and API helpers
-- `<library root>\.cache\` — `library.db`, `pictures.db`, `pictures\`, `hero\`, `app\` (extracted UI), `port`, settings (gitignored)
+- `<library root>\.cache\` — `catalog.db`, `pictures\`, `hero\`, `audio\`, `art\`, `frames\`, `trailers\`, `app\` (extracted UI), `port`, settings (gitignored)
 - `deploy.ps1` — copies the built EXE to `G:\NETFLIX` and removes legacy `server/public/node_modules/package*.json`
 - `media/` — fallback library used when no `G:` location exists; test videos can live here (gitignored)
 - `G:\NETFLIX\` — real deployment: `Movies\`, `.cache\`, `netflix-home.exe`
@@ -46,6 +50,9 @@ Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 ## Conventions
 
 - Vanilla ES modules, no framework. The bundler is only for the single-file EXE.
+- **Everything metadata-ish lives in `catalog.db`.** One `node:sqlite` connection (`server/db.js`) owns the file, opened with WAL, `synchronous=NORMAL`, `busy_timeout=5000`, a 32 MB page cache and mmap. Small assets (posters, backdrops, logos, subtitle text) are rows in `assets` / `subtitles`; large media (pictures, hero stills/clips, trailers, dub MP4s) stay on disk and are indexed by path. Do not add a second database file for a new feature: add a table to `db.js` and a prepared statement in the owning module.
+- Scans write inside one `transaction()`; the HTTP side reads from memory, so a scan never blocks a request.
+- `/api/library`, `/api/art/*` and `/api/subtitle/*` send an ETag and answer `304 Not Modified`, and `getLibrary()` in `public/common.js` uses `cache: 'no-cache'` so every navigation revalidates instead of downloading 20 KB again. `GET /api/db/stats` returns file size and row counts for debugging.
 - **Top nav is Home / Local / Favourite / Online.** `Local` lists the library, `Favourite` lists My List entries (local + Castle snapshots), and `Online` draws 30 random catalog titles from `GET /api/castle/browse` (merged genre searches, cached until **Shuffle** sends `?fresh=1`). archive.org is gone: no `/api/catalog/*` routes, no picker sheet.
 - Build user-facing DOM with `textContent` or `createEl`, never interpolate filenames into `innerHTML` (local files can contain arbitrary characters).
 - Keep the Netflix look: black/near-black surfaces, `#e50914` red, white play buttons, 16:9 cards.
@@ -62,10 +69,11 @@ Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 ## Gotchas
 
 - Windows paths: IDs are base64url of the path relative to the root.
-- Pictures are generated on demand by `server/pictures.js` and indexed per width in `pictures.db`; a title's JPEG path is `<sha1(id)>-<width>.jpg`.
-- Subtitles are plain sidecar `.vtt` files next to the video (`<name>.<lang>.vtt`); `/api/subtitles` scans the folder, so adding a file needs no rescan. Castle supplies most of them; OpenSubtitles legacy REST (`rest.opensubtitles.org/search/episode-<e>/imdbid-<id>/season-<s>/sublanguageid-<lang>`, `User-Agent` required, `.srt.gz`) fills the rest.
+- Pictures are generated on demand by `server/pictures.js`; the JPEG lives at `<cache>\pictures\<sha1(id)>-<width>.jpg` and its row in `catalog.db` keeps source size/mtime so a rebuild only happens when the video changes.
+- Subtitles are plain sidecar `.vtt` files next to the video (`<name>.<lang>.vtt`); `syncSubtitleTracks` reads them into `catalog.db` once per directory-mtime change, and `/api/subtitle/:id/:lang` serves the stored body. Castle supplies most of them; OpenSubtitles legacy REST (`rest.opensubtitles.org/search/episode-<e>/imdbid-<id>/season-<s>/sublanguageid-<lang>`, `User-Agent` required, `.srt.gz`) fills the rest and the file is picked up on the next directory change.
+- Legacy `pictures.db`, `library.db` and `trailers.db` are migrated once via `ATTACH` (only when the target table is empty) and then left on disk; `meta.json` is read only as a first-upgrade probe cache. Don't resurrect them as write targets.
 - Hero rows must be returned normalized (`{image, video, startSec, builtAt}`); the raw SQLite row uses snake_case and breaks the preview route.
-- `node:sqlite` is built into Node 22+; no dependency to install. Load it with `createRequire(process.execPath)('node:sqlite')` — top-level `await import` breaks CJS SEA bundling.
+- `node:sqlite` is built into Node 22+; no dependency to install. `server/db.js` loads it with `createRequire(process.execPath)('node:sqlite')` — a top-level `await import` breaks CJS SEA bundling.
 - The EXE is GUI-subsystem: there is no console and no tray icon. Quit through the profile menu (`POST /api/quit`, loopback only). A second launch probes `.cache\port` and only opens the browser.
 - postject prints `warning: The signature seems corrupted!` during injection — expected.
 - npm 11 blocks install scripts by default; if `ffmpeg-static/ffmpeg.exe` is missing, run `npm install-scripts approve ffmpeg-static` or the package's `install.js`.
