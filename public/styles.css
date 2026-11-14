@@ -666,6 +666,50 @@ code { font-family: Consolas, "Courier New", monospace; }
 .online-head .page-sub { margin: 0; }
 .online-head .btn { flex: 0 0 auto; }
 
+.online-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 26px;
+}
+.online-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.filter-pill {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #cfcfcf;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s var(--ease), border-color 0.18s var(--ease), color 0.18s var(--ease);
+}
+.filter-pill:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.filter-pill:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.filter-pill.is-active {
+  background: #fff;
+  border-color: #fff;
+  color: #111;
+}
+.filter-pill:disabled { opacity: 0.5; cursor: default; }
+.online-rating {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 7px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #ffd24d;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
 /* ---------- hero empty / loading ---------- */
 
 .empty-hero {

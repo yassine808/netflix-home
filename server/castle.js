@@ -28,6 +28,84 @@ const KEY_TTL = 10 * 60 * 1000;
 const CACHE_TTL = 5 * 60 * 1000;
 const CACHE_MAX = 120;
 
+/* Country -> language the service names its tracks with. Only the first
+ * country with a known language is used; anime falls back to Japanese. */
+const COUNTRY_LANGUAGES = {
+  'united states': 'English', 'united states of america': 'English', usa: 'English',
+  'united kingdom': 'English', uk: 'English', 'great britain': 'English', england: 'English',
+  canada: 'English', australia: 'English', 'new zealand': 'English', ireland: 'English',
+  'south africa': 'English', nigeria: 'English', kenya: 'English', ghana: 'English',
+  japan: 'Japanese', 'south korea': 'Korean', korea: 'Korean', 'republic of korea': 'Korean',
+  china: 'Chinese', 'mainland china': 'Chinese', 'hong kong': 'Chinese', taiwan: 'Chinese',
+  india: 'Hindi', pakistan: 'Urdu', bangladesh: 'Bengali', nepal: 'Nepali',
+  'sri lanka': 'Sinhala', myanmar: 'Burmese', cambodia: 'Khmer', laos: 'Lao',
+  thailand: 'Thai', indonesia: 'Indonesian', malaysia: 'Malay', philippines: 'Filipino',
+  vietnam: 'Vietnamese', mongolia: 'Mongolian',
+  france: 'French', germany: 'Germany', 'west germany': 'Germany', austria: 'Germany',
+  switzerland: 'Germany', spain: 'Spanish', mexico: 'Spanish', argentina: 'Spanish',
+  colombia: 'Spanish', chile: 'Spanish', peru: 'Spanish', venezuela: 'Spanish',
+  italy: 'Italian', portugal: 'Portuguese', brazil: 'Portuguese',
+  poland: 'Polish', russia: 'Russian', 'soviet union': 'Russian', ukraine: 'Ukrainian',
+  turkey: 'Turkish', greece: 'Greek', israel: 'Hebrew',
+  'saudi arabia': 'Arabic', egypt: 'Arabic', 'united arab emirates': 'Arabic',
+  qatar: 'Arabic', lebanon: 'Arabic', morocco: 'Arabic', iraq: 'Arabic', iran: 'Persian',
+  denmark: 'Danish', sweden: 'Swedish', norway: 'Norwegian', finland: 'Finnish',
+  netherlands: 'Dutch', holland: 'Dutch', belgium: 'French',
+  'czech republic': 'Czech', czechia: 'Czech', hungary: 'Hungarian', romania: 'Romanian',
+  serbia: 'Serbian', croatia: 'Croatian', slovenia: 'Slovenian', slovakia: 'Slovak',
+  bulgaria: 'Bulgarian', lithuania: 'Lithuanian', latvia: 'Latvian', estonia: 'Estonian',
+  iceland: 'Icelandic', kazakhstan: 'Kazakh', uzbekistan: 'Uzbek', azerbaijan: 'Azerbaijani',
+  georgia: 'Georgian', armenia: 'Armenian', ethiopia: 'Amharic', tanzania: 'Swahili',
+};
+
+/* Castle spells some languages differently from the ISO name ("Germany" for
+ * German, "OST" for original sound). Compare by canonical key, not raw text. */
+const LANGUAGE_ALIASES = {
+  german: 'germany', deutsch: 'germany',
+  mandarin: 'chinese', cantonese: 'chinese',
+  farsi: 'persian', castilian: 'spanish', 'brazilian portuguese': 'portuguese',
+  tagalog: 'filipino', myanmar: 'burmese', bengali: 'bengali',
+  'original soundtrack': 'ost', original: 'ost',
+};
+
+/* ISO 639-1 -> ISO 639-2/B, because MP4 language tags are three letters. */
+const ISO_639_2 = {
+  en: 'eng', ja: 'jpn', hi: 'hin', de: 'deu', fr: 'fra', cs: 'ces', pl: 'pol',
+  pt: 'por', es: 'spa', th: 'tha', id: 'ind', it: 'ita', ko: 'kor', zh: 'zho',
+  cmn: 'zho', ru: 'rus', tr: 'tur', da: 'dan', sv: 'swe', no: 'nor', nb: 'nor',
+  fi: 'fin', nl: 'nld', hu: 'hun', ro: 'ron', uk: 'ukr', el: 'ell', he: 'heb',
+  ar: 'ara', fa: 'fas', vi: 'vie', ms: 'msa', tl: 'fil', fil: 'fil', ta: 'tam',
+  te: 'tel', ml: 'mal', bn: 'ben', mr: 'mar', pa: 'pan', gu: 'guj', kn: 'kan',
+  ur: 'urd', ne: 'nep', si: 'sin', my: 'mya', km: 'khm', lo: 'lao', ka: 'kat',
+  az: 'aze', kk: 'kaz', uz: 'uzb', sr: 'srp', hr: 'hrv', sl: 'slv', sk: 'slk',
+  bg: 'bul', lt: 'lit', lv: 'lav', et: 'est', is: 'ice', ga: 'gle', cy: 'cym',
+  sq: 'alb', mk: 'mac', bs: 'bos', be: 'bel', hy: 'arm', sw: 'swa', am: 'amh',
+  af: 'afr', zu: 'zul', yo: 'yor', ig: 'ibo', ha: 'hau', so: 'som', ceb: 'ceb',
+};
+
+function languageKey(name) {
+  const value = String(name || '').trim().toLowerCase();
+  return LANGUAGE_ALIASES[value] || value;
+}
+
+function sameLanguage(a, b) {
+  const left = languageKey(a);
+  const right = languageKey(b);
+  return Boolean(left) && left === right;
+}
+
+function inferOriginalLanguage({ countries = [], anime = false } = {}) {
+  const names = (Array.isArray(countries) ? countries : [])
+    .map((country) => String(country || '').trim().toLowerCase())
+    .filter(Boolean);
+  if (anime && names.includes('japan')) return 'Japanese';
+  for (const name of names) {
+    const language = COUNTRY_LANGUAGES[name];
+    if (language) return language;
+  }
+  return anime ? 'Japanese' : '';
+}
+
 let keyCache = { value: '', at: 0 };
 const cache = new Map();
 
@@ -154,19 +232,22 @@ function normalize(row) {
   };
 }
 
-export async function searchCastle(query, page = 1) {
+export async function searchCastle(query, page = 1, { tagId = '', size = 24 } = {}) {
   const q = String(query || '').trim();
   if (!q) throw httpError('q is required', 400);
 
-  return cached(`search:${q}:${page}`, CACHE_TTL, async () => {
+  const tag = String(tagId || '').trim();
+  const pageSize = Math.min(50, Math.max(1, Number(size) || 24));
+  return cached(`search:${q}:${page}:${tag}:${pageSize}`, CACHE_TTL, async () => {
     const params = new URLSearchParams({
       channel: CHANNEL,
       clientType: CLIENT,
       lang: LANG,
       keyword: q,
       page: String(Math.max(1, Number(page) || 1)),
-      size: '24',
+      size: String(pageSize),
     });
+    if (tag) params.set('tagId', tag);
     const data = await request(`/film-api/v1.1.0/movie/searchByKeyword?${params}`);
     const rows = Array.isArray(data?.rows) ? data.rows : [];
     return {
@@ -178,11 +259,30 @@ export async function searchCastle(query, page = 1) {
 }
 
 /* A random-looking shelf for the Online page. Castle only exposes keyword
- * search, so this asks a handful of broad genres and shuffles the union. */
+ * search, so this asks a handful of broad words and shuffles the union. */
 const BROWSE_KEYWORDS = [
   'action', 'comedy', 'drama', 'horror', 'thriller', 'romance', 'sci-fi',
   'animation', 'crime', 'adventure', 'family', 'mystery', 'war', 'fantasy',
 ];
+
+/* Genre tag ids accepted by Castle's search filter. Horror is not a tag on
+ * this source; horror titles are filed under Thriller. */
+export const CASTLE_GENRES = [
+  { name: 'Action', tagId: '1003' },
+  { name: 'Adventure', tagId: '5992705930904576' },
+  { name: 'Animation', tagId: '1008' },
+  { name: 'Comedy', tagId: '1006' },
+  { name: 'Crime', tagId: '1011' },
+  { name: 'Documentary', tagId: '1009' },
+  { name: 'Drama', tagId: '1004' },
+  { name: 'Mystery', tagId: '1002' },
+  { name: 'Romance', tagId: '1007' },
+  { name: 'Sci-Fi', tagId: '1001' },
+  { name: 'Thriller', tagId: '1005' },
+];
+
+const TAG_POOL_KEYWORDS = ['a', 'e', 'i', 'o', 'u', 'the'];
+const OVERALL_TAG_IDS = ['1003', '1004', '1005', '1006', '1007', '1001', '1011', '1002'];
 
 function shuffled(rows) {
   const copy = [...rows];
@@ -193,26 +293,148 @@ function shuffled(rows) {
   return copy;
 }
 
-export async function browseCastle({ fresh = false, limit = 30 } = {}) {
-  const key = fresh ? `browse:${Date.now()}:${Math.random()}` : 'browse:picks';
+function genreFor(value) {
+  const wanted = String(value || '').trim().toLowerCase();
+  return CASTLE_GENRES.find((genre) => genre.name.toLowerCase() === wanted) || null;
+}
+
+function mergeResults(settled) {
+  const seen = new Set();
+  const rows = [];
+  for (const entry of settled) {
+    if (entry.status !== 'fulfilled') continue;
+    for (const item of entry.value.results) {
+      if (!item.id || !item.title || !item.poster || seen.has(item.id)) continue;
+      seen.add(item.id);
+      rows.push(item);
+    }
+  }
+  return rows;
+}
+
+async function tagPool(tagId, keywords = TAG_POOL_KEYWORDS) {
+  const settled = await Promise.allSettled(
+    keywords.map((keyword) => searchCastle(keyword, 1, { tagId, size: 40 })),
+  );
+  return mergeResults(settled);
+}
+
+async function overallPool(keywords = ['a', 'the']) {
+  const queries = [];
+  for (const tagId of OVERALL_TAG_IDS) {
+    for (const keyword of keywords) queries.push({ tagId, keyword });
+  }
+  const settled = await Promise.allSettled(
+    queries.map(({ tagId, keyword }) => searchCastle(keyword, 1, { tagId, size: 40 })),
+  );
+  return mergeResults(settled);
+}
+
+/* Evenly samples a long pool, so "most watched" does not only consider the
+ * first page of one search. */
+function spread(rows, count) {
+  if (rows.length <= count) return rows;
+  const step = rows.length / count;
+  return Array.from({ length: count }, (_, index) => rows[Math.floor(index * step)]);
+}
+
+async function mapLimit(items, limit, mapper) {
+  const output = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      output[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return output;
+}
+
+/* Rating and watch counts for one title. Cached separately from the full
+ * detail payload because the ratings API and "most watched" need only these. */
+export async function getCastleStats(id) {
+  if (!isCastleId(id)) throw httpError('invalid castle id', 400);
+  return cached(`stats:${id}`, CACHE_TTL, async () => {
+    const data = await request(
+      `/film-api/v1.9.9/movie?channel=${CHANNEL}&clientType=${CLIENT}&lang=${LANG}`
+      + `&movieId=${encodeURIComponent(id)}&packageName=${PKG}`,
+    );
+    return {
+      id: String(data?.id || id),
+      title: String(data?.title || '').trim(),
+      type: typeOf(data || {}),
+      year: yearOf(data || {}),
+      rating: Number(data?.score) || 0,
+      watchCount: Number(data?.watchCount) || 0,
+      commentTotal: Number(data?.commentTotal) || 0,
+      genres: Array.isArray(data?.tags) ? data.tags.filter(Boolean).slice(0, 6) : [],
+      poster: data?.coverVerticalImage || '',
+    };
+  });
+}
+
+/**
+ * Online shelves. Modes:
+ *  - random: shuffle a broad pool (optionally inside one genre)
+ *  - top: highest Castle score
+ *  - popular: highest watch count, enriched from the detail endpoint
+ */
+export async function browseCastle({ mode = 'random', genre = '', fresh = false, limit = 60 } = {}) {
+  const selected = genre ? genreFor(genre) : null;
+  if (genre && !selected) throw httpError(`unknown genre “${genre}”`, 400);
+  if (!['random', 'top', 'popular'].includes(mode)) throw httpError('unknown browse mode', 400);
+
+  const capped = Math.min(120, Math.max(1, Number(limit) || 60));
+  const key = fresh ? `browse:${Date.now()}:${Math.random()}` : `browse:${mode}:${selected?.name || 'all'}`;
   return cached(key, fresh ? 0 : CACHE_TTL, async () => {
-    const picks = shuffled(BROWSE_KEYWORDS).slice(0, 6);
-    const settled = await Promise.allSettled(picks.map((query) => searchCastle(query)));
-    const seen = new Set();
-    const rows = [];
-    for (const entry of settled) {
-      if (entry.status !== 'fulfilled') continue;
-      for (const item of entry.value.results) {
-        if (!item.id || !item.title || !item.poster || seen.has(item.id)) continue;
-        seen.add(item.id);
-        rows.push(item);
+    if (mode === 'random' && !selected) {
+      const picks = shuffled(BROWSE_KEYWORDS).slice(0, 6);
+      const settled = await Promise.allSettled(picks.map((query) => searchCastle(query)));
+      const rows = mergeResults(settled);
+      if (!rows.length) {
+        const failure = settled.find((entry) => entry.status === 'rejected');
+        throw failure?.reason || httpError('castle returned no titles');
       }
+      return shuffled(rows).slice(0, capped);
     }
-    if (!rows.length) {
-      const failure = settled.find((entry) => entry.status === 'rejected');
-      throw failure?.reason || httpError('castle returned no titles');
+
+    if (mode === 'random') {
+      const keywords = shuffled(TAG_POOL_KEYWORDS).slice(0, 4);
+      const rows = await tagPool(selected.tagId, keywords);
+      if (!rows.length) throw httpError('castle returned no titles');
+      return shuffled(rows).slice(0, capped);
     }
-    return shuffled(rows).slice(0, Math.max(1, Number(limit) || 30));
+
+    const pool = mode === 'popular'
+      ? (selected ? await tagPool(selected.tagId) : await overallPool(['a', 'the', 's']))
+      : (selected ? await tagPool(selected.tagId) : await overallPool());
+    if (!pool.length) throw httpError('castle returned no titles');
+
+    if (mode === 'top') {
+      return [...pool]
+        .sort((a, b) => (b.rating - a.rating) || ((b.year || 0) - (a.year || 0)))
+        .slice(0, capped);
+    }
+
+    const candidates = spread(pool, Math.min(capped * 2, 140));
+    const enriched = await mapLimit(candidates, 8, async (row) => {
+      try {
+        const stats = await getCastleStats(row.id);
+        return {
+          ...row,
+          rating: stats.rating || row.rating,
+          watchCount: stats.watchCount,
+          commentTotal: stats.commentTotal,
+        };
+      } catch {
+        return { ...row, watchCount: 0, commentTotal: 0 };
+      }
+    });
+    return enriched
+      .sort((a, b) => (b.watchCount - a.watchCount) || (b.rating - a.rating))
+      .slice(0, capped);
   });
 }
 
@@ -260,6 +482,8 @@ export async function getCastleTitle(id, { season } = {}) {
       type: seasons.length ? 'series' : 'movie',
       year: yearOf(data),
       rating: Number(data.score) || 0,
+      watchCount: Number(data.watchCount) || 0,
+      commentTotal: Number(data.commentTotal) || 0,
       poster: data.coverVerticalImage || '',
       background: data.coverHorizontalImage || '',
       description: String(data.briefIntroduction || '').trim(),
@@ -376,4 +600,70 @@ export async function getCastleStream({ movieId, episodeId, resolution = 2, lang
       size: Number(video.size) || 0,
     })),
   };
+}
+
+/* The episode `tracks` array carries the exact mux index of each audio
+ * language, so a download can map only the tracks it wants. `languages`
+ * lists names in stream order but has no indexes; `audioTags` is only the
+ * enabled subset and is not reliable as an index map. */
+function normalizeAudioTracks(rows) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((track) => {
+      const code = String(track?.abbreviate || '').trim().toLowerCase();
+      return {
+        index: Number(track?.index),
+        language: String(track?.languageName || '').trim(),
+        code,
+        iso: code.length === 3 ? code : (ISO_639_2[code] || ''),
+        default: Boolean(track?.isDefault),
+      };
+    })
+    .filter((track) => Number.isInteger(track.index) && track.index >= 0 && track.language);
+}
+
+export async function getCastleEpisodeTracks({ movieId, episodeId } = {}) {
+  if (!isCastleId(movieId)) throw httpError('invalid movieId', 400);
+
+  const detail = await cached(`audio:${movieId}`, CACHE_TTL, async () => {
+    const data = await request(
+      `/film-api/v1.9.9/movie?channel=${CHANNEL}&clientType=${CLIENT}&lang=${LANG}`
+      + `&movieId=${encodeURIComponent(movieId)}&packageName=${PKG}`,
+    );
+    const episodes = {};
+    for (const episode of Array.isArray(data?.episodes) ? data.episodes : []) {
+      const tracks = normalizeAudioTracks(episode?.tracks);
+      if (tracks.length) episodes[String(episode.id)] = tracks;
+    }
+    const own = normalizeAudioTracks(data?.tracks);
+    if (own.length) episodes[String(data?.id || movieId)] = own;
+    return {
+      episodes,
+      countries: Array.isArray(data?.countries) ? data.countries.filter(Boolean) : [],
+      anime: Number(data?.movieType) === 5,
+    };
+  });
+
+  return {
+    tracks: detail.episodes[String(episodeId)] || detail.episodes[String(movieId)] || [],
+    countries: detail.countries,
+    anime: detail.anime,
+    original: inferOriginalLanguage(detail),
+  };
+}
+
+/**
+ * Picks the original-language track plus English (when it exists and differs).
+ * With no tracks at all the caller keeps the old all-audio behaviour; with
+ * tracks but an unknown original, the service default stands in for it.
+ */
+export function selectCastleAudioTracks(tracks, originalLanguage) {
+  if (!Array.isArray(tracks) || !tracks.length) return [];
+  const original = originalLanguage
+    ? tracks.find((track) => sameLanguage(track.language, originalLanguage))
+    : null;
+  const primary = original || tracks.find((track) => track.default) || tracks[0];
+  const english = tracks.find((track) => sameLanguage(track.language, 'English'));
+  const picked = [primary];
+  if (english && english.index !== primary.index) picked.push(english);
+  return picked;
 }

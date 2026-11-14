@@ -41,6 +41,9 @@ const state = {
   onlineBrowse: [],
   onlineBrowseLoading: false,
   onlineBrowseToken: 0,
+  onlineBrowseAbort: null,
+  onlineMode: 'random',
+  onlineGenre: '',
   downloads: [],
   downloadsSynced: false,
   downloadsLoaded: false,
@@ -194,6 +197,9 @@ const els = {
   onlineLoading: $('onlineLoading'),
   onlineNote: $('onlineNote'),
   onlineShuffle: $('onlineShuffle'),
+  onlineFilters: $('onlineFilters'),
+  onlineModes: $('onlineModes'),
+  onlineGenres: $('onlineGenres'),
   downloadsBtn: $('downloadsBtn'),
   downloadsBadge: $('downloadsBadge'),
   downloadsPanel: $('downloadsPanel'),
@@ -1211,8 +1217,25 @@ function showFavourite() {
 
 /* ---------- online: random castle catalog ---------- */
 
+function renderOnlineFilters() {
+  for (const button of els.onlineModes.querySelectorAll('[data-online-mode]')) {
+    const active = button.dataset.onlineMode === state.onlineMode;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', String(active));
+    button.disabled = state.offline;
+  }
+  for (const button of els.onlineGenres.querySelectorAll('[data-online-genre]')) {
+    const active = button.dataset.onlineGenre === state.onlineGenre;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', String(active));
+    button.disabled = state.offline;
+  }
+  els.onlineShuffle.disabled = state.offline;
+}
+
 function showOnline() {
   setView('online');
+  renderOnlineFilters();
   if (state.offline) {
     els.onlineGrid.replaceChildren();
     els.onlineEmpty.hidden = true;
@@ -1242,11 +1265,19 @@ function setOnlineBusy(busy) {
 
 async function loadOnlineBrowse({ fresh = false } = {}) {
   const token = ++state.onlineBrowseToken;
+  state.onlineBrowseAbort?.abort();
+  const controller = new AbortController();
+  state.onlineBrowseAbort = controller;
   setOnlineBusy(true);
   els.onlineEmpty.hidden = true;
   showOnlineNote('');
   try {
-    const data = await browseCastle({ fresh });
+    const data = await browseCastle({
+      fresh,
+      mode: state.onlineMode,
+      genre: state.onlineGenre,
+      signal: controller.signal,
+    });
     if (token !== state.onlineBrowseToken) return;
     const results = Array.isArray(data.results) ? data.results : [];
     state.onlineBrowse = results;
@@ -1256,13 +1287,16 @@ async function loadOnlineBrowse({ fresh = false } = {}) {
       showOnlineNote('The catalog returned nothing — press Shuffle to try again.');
     }
   } catch (err) {
-    if (token !== state.onlineBrowseToken) return;
+    if (err.name === 'AbortError' || token !== state.onlineBrowseToken) return;
     state.onlineBrowse = [];
     els.onlineGrid.replaceChildren();
     els.onlineEmpty.hidden = false;
     showOnlineNote(`Could not load the catalog (${err.message}). Check your connection and press Shuffle.`);
   } finally {
-    if (token === state.onlineBrowseToken) setOnlineBusy(false);
+    if (token === state.onlineBrowseToken) {
+      state.onlineBrowseAbort = null;
+      setOnlineBusy(false);
+    }
   }
 }
 
@@ -1722,6 +1756,7 @@ function applyOfflineUi() {
   els.offlineBtn.title = label;
   els.offlineBtn.setAttribute('aria-label', label);
   document.body.classList.toggle('is-offline', state.offline);
+  renderOnlineFilters();
   if (state.offline) {
     resetOnlineSearch();
     resetCastleSearch();
@@ -2078,7 +2113,12 @@ function buildOnlineCard(item, { castle = false } = {}) {
   overlay.append(createEl('strong', '', item.title));
   overlay.append(createEl('span', '', [item.year, kind].filter(Boolean).join(' • ')));
 
-  art.append(fallback, img, badge, overlay);
+  art.append(fallback, img, badge);
+  const rating = Number(item.rating) || 0;
+  if (rating > 0) {
+    art.append(createEl('span', 'online-rating', `★ ${rating.toFixed(1)}`));
+  }
+  art.append(overlay);
   card.append(art);
 
   const open = () => (castle ? openCastleModal(item) : openOnlineModal(item));
@@ -4186,7 +4226,28 @@ function bindStaticEvents() {
   els.searchOnlineResults.addEventListener('click', () => closeSearch());
 
   els.onlineShuffle.addEventListener('click', () => {
-    if (state.onlineBrowseLoading) return;
+    state.onlineMode = 'random';
+    renderOnlineFilters();
+    loadOnlineBrowse({ fresh: true });
+  });
+
+  els.onlineModes.addEventListener('click', (e) => {
+    const button = e.target.closest('[data-online-mode]');
+    if (!button) return;
+    const mode = button.dataset.onlineMode;
+    if (!mode || mode === state.onlineMode) return;
+    state.onlineMode = mode;
+    renderOnlineFilters();
+    loadOnlineBrowse({ fresh: true });
+  });
+
+  els.onlineGenres.addEventListener('click', (e) => {
+    const button = e.target.closest('[data-online-genre]');
+    if (!button) return;
+    const genre = button.dataset.onlineGenre || '';
+    if (genre === state.onlineGenre) return;
+    state.onlineGenre = genre;
+    renderOnlineFilters();
     loadOnlineBrowse({ fresh: true });
   });
 

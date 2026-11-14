@@ -197,6 +197,9 @@ export async function addHlsDownload(body = {}) {
     controller: null,
     ffmpeg: null,
     subtitles: normalizeSubtitleTracks(body),
+    // Castle episode tracks: { index, language, code, iso, default }. Empty
+    // means the source did not expose tracks, so every audio stream is kept.
+    audioTracks: Array.isArray(body.audioTracks) ? body.audioTracks : [],
   };
   jobs.set(job.id, job);
   queue.push(job);
@@ -382,14 +385,25 @@ async function runHlsJob(job) {
 
   const args = ['-y', '-loglevel', 'error'];
   if (job.referer) args.push('-headers', `Referer: ${job.referer}\r\n`);
-  // Map every audio rendition: dubs are muxed into the same HLS stream and
-  // ffmpeg would otherwise keep only the first one.
+  // Castle muxes every dub into the same HLS stream. Map only the selected
+  // languages (original + English); without track data keep every audio
+  // rendition, because ffmpeg would otherwise drop all but the first one.
+  const audioTracks = (Array.isArray(job.audioTracks) ? job.audioTracks : [])
+    .filter((track) => Number.isInteger(Number(track?.index)) && Number(track.index) >= 0);
+  args.push('-i', job.url, '-map', '0:v:0');
+  if (audioTracks.length) {
+    audioTracks.forEach((track, position) => {
+      args.push('-map', `0:a:${Number(track.index)}?`);
+      args.push(`-metadata:s:a:${position}`, `language=${track.iso || track.code || 'und'}`);
+      args.push(`-metadata:s:a:${position}`, `title=${track.language || `Audio ${position + 1}`}`);
+      args.push(`-disposition:a:${position}`, position === 0 ? 'default' : '0');
+    });
+  } else {
+    args.push('-map', '0:a?');
+    args.push('-disposition:a:0', 'default');
+  }
   args.push(
-    '-i', job.url,
-    '-map', '0:v:0',
-    '-map', '0:a?',
     '-c', 'copy',
-    '-disposition:a:0', 'default',
     '-movflags', '+faststart',
     '-f', 'mp4',
     part,

@@ -17,7 +17,11 @@ import {
   pauseDownloads, resumeDownloads,
 } from './downloads.js';
 import { searchOnline, getOnlineTitle } from './online.js';
-import { searchCastle, browseCastle, getCastleTitle, getCastleSeries, getCastleStream, isCastleId } from './castle.js';
+import {
+  searchCastle, browseCastle, getCastleTitle, getCastleSeries, getCastleStream,
+  getCastleEpisodeTracks, selectCastleAudioTracks, getCastleStats, CASTLE_GENRES,
+  isCastleId,
+} from './castle.js';
 import { initSettings, getSettings, isOffline, setOffline } from './settings.js';
 import { initFrames, frameMeta, ensureSprite } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
@@ -976,10 +980,42 @@ app.get('/api/online/title/:type/:id', async (req, res) => {
 /* ---------- castle catalog (search + real downloads) ---------- */
 
 app.get('/api/castle/browse', async (req, res) => {
+  const mode = String(req.query.mode || 'random');
+  const genre = String(req.query.genre || '').trim();
   try {
-    const results = await browseCastle({ fresh: req.query.fresh === '1' });
+    const results = await browseCastle({ mode, genre, fresh: req.query.fresh === '1' });
     res.set('Cache-Control', 'no-store');
-    res.json({ provider: 'castle', count: results.length, results });
+    res.json({
+      provider: 'castle',
+      mode,
+      genre,
+      count: results.length,
+      genres: CASTLE_GENRES.map((entry) => entry.name),
+      results,
+    });
+  } catch (err) {
+    res.status(err?.status || 502).json({ error: err?.message || String(err) });
+  }
+});
+
+/* Ratings for a handful of Castle ids in one request:
+ * /api/castle/ratings?ids=6161299972855808,6150388343775232 */
+app.get('/api/castle/ratings', async (req, res) => {
+  const ids = String(req.query.ids || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
+  if (!ids.length) return res.status(400).json({ error: 'ids is required' });
+  if (ids.length > 24) return res.status(400).json({ error: 'at most 24 ids per request' });
+  if (ids.some((id) => !isCastleId(id))) return res.status(400).json({ error: 'every id must be a castle id' });
+
+  try {
+    const settled = await Promise.allSettled(ids.map((id) => getCastleStats(id)));
+    const ratings = settled
+      .filter((entry) => entry.status === 'fulfilled')
+      .map((entry) => entry.value);
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json({ provider: 'castle', count: ratings.length, ratings });
   } catch (err) {
     res.status(err?.status || 502).json({ error: err?.message || String(err) });
   }
@@ -1052,10 +1088,16 @@ app.post('/api/castle/download', async (req, res) => {
     : `${title}${body.year ? ` (${body.year})` : ''} ${quality}.mp4`;
 
   try {
-    const stream = await getCastleStream({ movieId, episodeId, resolution });
+    const [stream, audio] = await Promise.all([
+      getCastleStream({ movieId, episodeId, resolution }),
+      getCastleEpisodeTracks({ movieId, episodeId }).catch(() => null),
+    ]);
     if (stream.preview) {
       return res.status(409).json({ error: 'this quality is only available as a preview' });
     }
+
+    // Original language + English only; the rest are dubs we do not keep.
+    const audioTracks = audio ? selectCastleAudioTracks(audio.tracks, audio.original) : [];
 
     // Keep every track the service ships (original language + English and the
     // rest), then add an English track from OpenSubtitles if it is missing.
@@ -1096,12 +1138,15 @@ app.post('/api/castle/download', async (req, res) => {
       poster: String(body.poster || ''),
       source: 'castle',
       subtitles,
+      audioTracks,
     });
     res.status(201).json({
       count: jobs.length,
       jobs,
       subtitleCount: stream.subtitles.length,
       subtitles: subtitles.map((track) => track.language),
+      audio: audioTracks.map((track) => track.language),
+      originalAudio: audio?.original || '',
     });
   } catch (err) {
     res.status(err?.status || 500).json({ error: err?.message || String(err) });

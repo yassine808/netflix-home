@@ -167,12 +167,33 @@
         <div class="online-head">
           <div>
             <h1 class="page-title">Online</h1>
-            <p class="page-sub">Random movies and series from the download catalog - open a title to download it.</p>
+            <p class="page-sub">Movies and series from the download catalog. Filter by rating, popularity or genre, then open a title to download it.</p>
           </div>
           <button class="btn btn-info" id="onlineShuffle" type="button">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="M4 4l5 5"/></svg>
             <span>Shuffle</span>
           </button>
+        </div>
+        <div class="online-filters" id="onlineFilters">
+          <div class="online-filter-group" id="onlineModes" role="group" aria-label="Sort the catalog">
+            <button class="filter-pill is-active" type="button" data-online-mode="random" aria-pressed="true">Random</button>
+            <button class="filter-pill" type="button" data-online-mode="top" aria-pressed="false">Top rated</button>
+            <button class="filter-pill" type="button" data-online-mode="popular" aria-pressed="false">Most watched</button>
+          </div>
+          <div class="online-filter-group" id="onlineGenres" role="group" aria-label="Filter by genre">
+            <button class="filter-pill is-active" type="button" data-online-genre="" aria-pressed="true">All genres</button>
+            <button class="filter-pill" type="button" data-online-genre="Action" aria-pressed="false">Action</button>
+            <button class="filter-pill" type="button" data-online-genre="Adventure" aria-pressed="false">Adventure</button>
+            <button class="filter-pill" type="button" data-online-genre="Animation" aria-pressed="false">Animation</button>
+            <button class="filter-pill" type="button" data-online-genre="Comedy" aria-pressed="false">Comedy</button>
+            <button class="filter-pill" type="button" data-online-genre="Crime" aria-pressed="false">Crime</button>
+            <button class="filter-pill" type="button" data-online-genre="Documentary" aria-pressed="false">Documentary</button>
+            <button class="filter-pill" type="button" data-online-genre="Drama" aria-pressed="false">Drama</button>
+            <button class="filter-pill" type="button" data-online-genre="Mystery" aria-pressed="false">Mystery</button>
+            <button class="filter-pill" type="button" data-online-genre="Romance" aria-pressed="false">Romance</button>
+            <button class="filter-pill" type="button" data-online-genre="Sci-Fi" aria-pressed="false">Sci-Fi</button>
+            <button class="filter-pill" type="button" data-online-genre="Thriller" aria-pressed="false">Thriller</button>
+          </div>
         </div>
         <p class="discover-note" id="onlineNote" hidden></p>
         <div class="online-grid" id="onlineGrid"></div>

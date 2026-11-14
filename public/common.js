@@ -21,9 +21,11 @@ export async function quitApp() {
 }
 
 /* Random shelf for the Online page: genre searches merged and shuffled. */
-export async function browseCastle({ fresh = false, signal } = {}) {
+export async function browseCastle({ fresh = false, mode = 'random', genre = '', signal } = {}) {
   const params = new URLSearchParams();
   if (fresh) params.set('fresh', '1');
+  if (mode && mode !== 'random') params.set('mode', mode);
+  if (genre) params.set('genre', genre);
   const query = params.toString();
   const res = await fetch(`/api/castle/browse${query ? `?${query}` : ''}`, { cache: 'no-store', signal });
   if (!res.ok) {
