@@ -4,7 +4,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { initDb, dbStats, analyzeDb, purgeOrphans, maybeVacuum } from './db.js';
+import { initDb, dbStats, analyzeDb, purgeOrphans, maybeVacuum,
+  getCastleTitleSaved, castleTitleCount, castleMediaCount,
+} from './db.js';
 import { notePlayback, playbackActive } from './proc.js';
 import { initCache, scanLibrary, getLibrary, getItem, resolveItemFile,
   ensureThumb, artPath, isScanning,
@@ -20,8 +22,9 @@ import { searchOnline, getOnlineTitle } from './online.js';
 import {
   searchCastle, browseCastle, getCastleTitle, getCastleSeries, getCastleStream,
   getCastleEpisodeTracks, selectCastleAudioTracks, getCastleStats, CASTLE_GENRES,
-  isCastleId,
+  isCastleId, castleArt, castleEpisodeArt, castleEpisodeArtForSeries, castleTrailerItem,
 } from './castle.js';
+import { castleSyncStatus, startCastleSync } from './castle-sync.js';
 import { initSettings, getSettings, isOffline, setOffline } from './settings.js';
 import { initFrames, frameMeta, ensureSprite } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
@@ -237,16 +240,27 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '128kb' }));
 
 /* Offline mode: the flag lives on the server, so the browser cannot route
- * around it. Every route that reaches the internet answers 503. */
+ * around it. Every route that reaches the internet answers 503. Castle reads
+ * that come straight from catalog.db (saved title, saved art, saved trailer,
+ * sync status) stay available; only their refresh/download actions are
+ * blocked. */
 app.use('/api', (req, res, next) => {
   if (!isOffline()) return next();
   const p = req.path;
   const method = req.method;
-  const blocked = p.startsWith('/online/')
-    || p.startsWith('/castle/')
+  const savedCastleRead = method === 'GET' && (
+    p.startsWith('/castle/title/')
+    || p.startsWith('/castle/series/')
+    || p.startsWith('/castle/art/')
+    || p.startsWith('/castle/episode-art/')
+    || p.startsWith('/castle/trailer/')
+    || p === '/castle/sync'
+  );
+  const blocked = (p.startsWith('/online/')
+    || (p.startsWith('/castle/') && !savedCastleRead)
     || (method === 'POST' && (p === '/downloads'
       || p === '/downloads/series'
-      || /^\/downloads\/[^/]+\/retry$/.test(p)));
+      || /^\/downloads\/[^/]+\/retry$/.test(p))));
   if (!blocked) return next();
   res.status(503).json({ error: 'offline mode is on — internet access is disabled', offline: true });
 });
@@ -396,6 +410,8 @@ app.get('/api/series/:key', (req, res) => {
     title: episodes[0].seriesTitle,
     count: payload.reduce((total, season) => total + season.episodes.length, 0),
     seasons: payload,
+    // Saved Castle episode pictures for the player's episode panel.
+    art: castleEpisodeArtForSeries(key),
   });
 });
 
@@ -1045,6 +1061,88 @@ app.get('/api/castle/title/:id', async (req, res) => {
   } catch (err) {
     res.status(err?.status || 502).json({ error: err?.message || String(err) });
   }
+});
+
+/* Saved Castle pictures. The first request downloads the image into
+ * catalog.db; every later request (including offline) is a row read. */
+function sendCastleImage(req, res, row) {
+  if (!row?.blob) return res.status(404).end();
+  res.setHeader('Content-Type', row.mime || 'image/jpeg');
+  res.setHeader('Cache-Control', 'public, max-age=604800');
+  if (row.etag) {
+    res.setHeader('ETag', row.etag);
+    if (req.headers['if-none-match'] === row.etag) return res.status(304).end();
+  }
+  return res.end(Buffer.from(row.blob));
+}
+
+app.get('/api/castle/art/:id/:kind', async (req, res) => {
+  const kind = req.params.kind === 'poster' ? 'poster' : req.params.kind === 'backdrop' ? 'backdrop' : '';
+  if (!kind || !isCastleId(req.params.id)) return res.status(404).end();
+  try {
+    sendCastleImage(req, res, await castleArt(req.params.id, kind));
+  } catch {
+    res.status(404).end();
+  }
+});
+
+app.get('/api/castle/episode-art/:episodeId', async (req, res) => {
+  if (!isCastleId(req.params.episodeId)) return res.status(404).end();
+  try {
+    sendCastleImage(req, res, await castleEpisodeArt(req.params.episodeId));
+  } catch {
+    res.status(404).end();
+  }
+});
+
+/* Trailer for a catalog-only title. It shares the trailer key with a saved
+ * local copy of the same show, so both play the same cut. */
+app.get('/api/castle/trailer/:id', (req, res) => {
+  const saved = isCastleId(req.params.id) ? getCastleTitleSaved(req.params.id) : null;
+  if (!saved) return res.status(404).json({ error: 'title is not saved' });
+  const item = castleTrailerItem(saved);
+  warmTrailer(item);
+  const status = trailerStatus(item);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    ...status,
+    url: status.status === 'ready'
+      ? `/api/castle/trailer/${encodeURIComponent(req.params.id)}/file.mp4?v=${status.version || 0}`
+      : '',
+  });
+});
+
+app.get('/api/castle/trailer/:id/file.mp4', (req, res) => {
+  const saved = isCastleId(req.params.id) ? getCastleTitleSaved(req.params.id) : null;
+  if (!saved) return res.status(404).end();
+  const file = trailerPathFor(castleTrailerItem(saved));
+  if (!file) return res.status(404).end();
+  res.setHeader('Cache-Control', 'public, no-cache');
+  res.setHeader('Content-Type', 'video/mp4');
+  res.sendFile(file);
+});
+
+/* Sync refreshes all saved Castle titles. GET reports progress; POST starts it. */
+app.get('/api/castle/sync', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    ...castleSyncStatus(),
+    savedTitles: castleTitleCount(),
+    savedImages: castleMediaCount(),
+  });
+});
+
+app.post('/api/castle/sync', (req, res) => {
+  const result = startCastleSync();
+  if (!result.started && result.offline) {
+    return res.status(503).json({ error: 'offline mode is on — internet access is disabled', offline: true });
+  }
+  res.status(result.started ? 202 : 200).json({
+    ...result,
+    ...castleSyncStatus(),
+    savedTitles: castleTitleCount(),
+    savedImages: castleMediaCount(),
+  });
 });
 
 /* All seasons with full episode lists, for "Download all". */

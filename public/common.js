@@ -13,6 +13,26 @@ export async function rescanLibrary() {
   return res.json();
 }
 
+/* Refresh every Castle title already saved in catalog.db. The call returns as
+ * soon as the worker starts; poll getCastleSyncStatus for progress. */
+export async function syncCastleCatalog() {
+  const res = await fetch('/api/castle/sync', { method: 'POST' });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    const error = new Error(payload?.error || `sync ${res.status}`);
+    error.offline = Boolean(payload?.offline);
+    throw error;
+  }
+  return res.json();
+}
+
+export async function getCastleSyncStatus() {
+  const res = await fetch('/api/castle/sync', { cache: 'no-store' });
+  if (!res.ok) throw new Error(`sync status ${res.status}`);
+  return res.json();
+}
+
 /* Stops the bundled app: the server exits, so the page goes dead afterwards. */
 export async function quitApp() {
   const res = await fetch('/api/quit', { method: 'POST' });

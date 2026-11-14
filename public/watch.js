@@ -1,5 +1,5 @@
 import {
-  formatClock, formatDuration, progressFor, saveProgress, thumbUrl, heroImageUrl, readJson, writeJson, getSeries,
+  formatClock, formatDuration, progressFor, saveProgress, thumbUrl, readJson, writeJson, getSeries,
   skel,
 } from './common.js';
 
@@ -66,6 +66,7 @@ let lastTimeLabel = '';
 let seekQueued = false;
 let lastSeekAt = 0;
 let seriesSeasons = [];
+let seriesArt = {};
 let episodesLoading = false;
 let subtitlesLoading = false;
 
@@ -464,6 +465,7 @@ async function loadEpisodes() {
   try {
     const data = await getSeries(item.seriesKey);
     seriesSeasons = (data.seasons || []).filter((s) => s.episodes?.length);
+    seriesArt = data.art || {};
   } catch {
     seriesSeasons = [];
   }
@@ -522,8 +524,14 @@ function renderEpisodes(season) {
     const img = document.createElement('img');
     img.loading = 'lazy';
     img.alt = '';
-    img.src = heroImageUrl(ep);
-    img.addEventListener('error', () => { img.src = thumbUrl(ep, 320); }, { once: true });
+    // Catalog picture saved in catalog.db; a missing row falls back to a
+    // still grab from the local file so the row is never empty.
+    const savedArt = seriesArt[`${entry.season}x${ep.episode}`] || '';
+    const fallback = thumbUrl(ep, 320);
+    img.src = savedArt || fallback;
+    img.addEventListener('error', () => {
+      if (savedArt && img.src !== fallback) img.src = fallback;
+    }, { once: true });
     thumb.append(img);
     if (isCurrent) {
       const now = document.createElement('span');

@@ -203,9 +203,3 @@ export async function netflixTrailer(item) {
   cache.set(key, { value, until: Date.now() + (value ? SUCCESS_TTL : MISS_TTL) });
   return value;
 }
-
-/* Test seam: lets the trailer module exercise the resolver without shipping
- * a second code path. */
-export function clearNetflixCache() {
-  cache.clear();
-}

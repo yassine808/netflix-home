@@ -13,7 +13,7 @@ npm start
 
 Open the URL it prints: `http://localhost:3000`, or a random free port when 3000 is already taken.
 
-The server scans the library on startup. Use the refresh button in the header (or the profile menu) to rescan after adding files.
+The server scans the library on startup. The header button (or the profile menu) is **Sync catalog**: it refreshes every Castle title already saved in `catalog.db`. To rescan the library folder after adding files, use **Scan library** on the empty home page.
 
 ### Build the single-file app
 
@@ -81,7 +81,7 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 
 - Netflix-style billboard with a cached hero still and a 12 s preview clip (built with ffmpeg, indexed in SQLite under `.cache\library.db`), so the home page never seeks a multi-GB file
 - The billboard picks a different title on every load and plays that title's official trailer (id from Cinemeta, downloaded one at a time with `yt-dlp` into `.cache\trailers`), falling back to the cached clip and then the real stream; the title's main picture stays visible while the trailer buffers, then the video fades in when it actually plays
-- Series in your library open a catalog-style sheet: hero art, **+ My List**, **Resume**, **Download all**, quality chips and season tabs; episodes already on disk get **Play** with their watched progress bar, the rest get **Download**. The library's own episodes draw immediately, so a local series opens without a loading wait (the catalog merge and skeleton only cover remote titles). Episode art is the catalog's own thumbnail — no frames are generated
+- Series in your library open a catalog-style sheet: hero art, **+ My List**, **Resume**, **Download all**, size line and season tabs; episodes already on disk get **Play** with their watched progress bar, the rest get **Download**. The library's own episodes draw immediately, so a local series opens without a loading wait (the catalog merge and skeleton only cover remote titles). Episode art is the catalog's own thumbnail — saved in `catalog.db` and reused by the player's Episodes panel — no frames are generated
 - **Download all** queues every episode of every season, skips what is already on disk, and only turns into **Everything downloaded** when the whole series is local
 - **Next episode** in the player: a downloaded episode plays straight away; one that is not on disk opens the series sheet on that season with the episode highlighted, ready to download
 - One picture per title drawn from the official catalog artwork (resolved through Cinemeta and cached in `.cache\art`), so a card never shows a frame sampled from the video
@@ -93,9 +93,11 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 - The billboard's main action is a large white pill (64 px tall, 24 px label, 30 px triangle, dropping to 54 px on phones); sheets keep their normal **Play**/**Resume** button with a larger triangle inside
 - Search across your library and the online movie/series catalog, split into local results first and online results second
 - Local search tolerates typos ("cyberpunck" finds Cyberpunk) and keeps the last searches as removable chips
-- Offline switch in the header: the server stops all internet traffic and pauses downloads until it is off again
+- Details, seasons, pictures and trailers of every Castle title you open are saved in `catalog.db` and reused, so a saved title opens instantly and stays available offline; **Sync catalog** refreshes them and fills in new artwork
+- New & Popular is the **Online** page: browse the Castle catalog by mode and genre, then open any card to download it
+- Offline switch in the header: the server stops all internet traffic and pauses downloads until it is off again; saved Castle titles, pictures, episode art and trailers keep working
 - Online title pages with overview, IMDb rating, genres, seasons and episode lists, plus legal watch links
-- New & Popular page: search archive.org, pick a film or multi-file item, and download it into the library
+- Downloads from the Online page: pick a film or series, choose episodes, and it lands in the library
 - Downloads drawer with live progress, speed, cancel/retry, and automatic library refresh
 - Free-download search for public-domain films when the online catalog has no local copy
 - Custom player: resume, seek preview, buffered bar, volume, large ±10 s skips, fullscreen, keyboard shortcuts; the control bar shows `SxxExx` in the middle (the title for a movie)
@@ -107,7 +109,7 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 
 ## Offline mode
 
-The **Online/Offline** switch in the header is enforced by the server, not the browser. Turning it on writes `offline: true` to `.cache/settings.json`, answers 503 on every route that would reach the internet (`/api/online/*`, `/api/castle/*`, `/api/catalog/search`, `/api/catalog/item/*`, and new download requests), and pauses active downloads. Paused jobs keep their `.part` file and resume when the switch goes back to Online. Fonts are served from `public/fonts`, so the page makes no external requests at all while offline.
+The **Online/Offline** switch in the header is enforced by the server, not the browser. Turning it on writes `offline: true` to `.cache/settings.json`, answers 503 on every route that would reach the internet (`/api/online/*`, Castle search/browse/download/refresh, `/api/catalog/search`, `/api/catalog/item/*`, and new download requests), and pauses active downloads. Castle data already saved in `catalog.db` stays readable: the title sheet, posters/backdrops, episode pictures, trailers and the Sync status route all keep answering offline. Paused jobs keep their `.part` file and resume when the switch goes back to Online. Fonts are served from `public/fonts`, so the page makes no external requests at all while offline.
 
 Cancelling a download removes the job and deletes its `.part` file, so cancelled items never show up under Finished.
 
@@ -125,9 +127,9 @@ Cinemeta is community-run, so the server treats responses defensively, caches th
 
 ## Discover and download
 
-Open **New & Popular** in the top nav (or **New** on mobile). Search archive.org or pick one of the curated titles. Click a card to see its files: choose one source and download it, or use **Download all** for a multi-file item. The download drawer tracks progress and offers cancel/retry. Finished files land in `G:\Movies\Downloads\` (or `Series\<title>\` for multi-file items) and show up in the library after the automatic rescan.
+Open **Online** in the top nav (or **New** on mobile). Browse the Castle catalog by mode and genre or shuffle it, then click a card to open its download sheet: season tabs, per-episode buttons, and **Download all** for a series. The download drawer tracks progress and offers cancel/retry. Finished files land in the library folder (or `Series\<title>\` for a series) and show up after the automatic rescan.
 
-In the local search overlay, every query shows two sections: **In your library** first, then **Movies & series online**. The online section uses the IMDb-backed catalog and opens a detail view with seasons and legal watch links. Below both sections, **Free downloads** opens the archive.org search with that query already applied.
+In the local search overlay, every query shows two sections: **In your library** first, then **Movies & series online** (Cinemeta metadata) and **Downloadable** (Castle). The online section opens with seasons and legal watch links; the downloadable section opens the Castle sheet. Below both, **Free downloads** opens the archive.org search with that query already applied.
 
 ## Download sources
 
@@ -138,7 +140,7 @@ Two independent sources feed the download queue:
 | archive.org | Public-domain films and multi-part items | Public domain only |
 | Castle (`api.hlowb.com`) | Mainstream movies, series and anime, with seasons, episodes, sizes and subtitle tracks | Keyless, but 1080p is premium-only; 720p and 480p download normally |
 
-The Castle catalog is searched from the same overlay (**Downloadable** section) and from **New & Popular**. Any title opens a download dialog with season tabs, per-episode buttons, a quality picker, and **Download all**, which covers every season of the series. The backend resolves a signed HLS playlist per episode and remuxes it to MP4 with ffmpeg, so the result is a plain H.264/AAC file the built-in player can stream. Every subtitle track the service offers (original language, English and the rest) is saved next to the video as `<name>.<lang>.vtt`.
+The Castle catalog is searched from the same overlay (**Downloadable** section) and browsed on the **Online** page. Any title opens a download dialog with season tabs, per-episode buttons and **Download all**, which covers every season of the series; downloads are fixed at 720p. The backend resolves a signed HLS playlist per episode and remuxes it to MP4 with ffmpeg, so the result is a plain H.264/AAC file the built-in player can stream. Every subtitle track the service offers (original language, English and the rest) is saved next to the video as `<name>.<lang>.vtt`.
 
 When Castle has no English track, the free OpenSubtitles REST endpoint (`rest.opensubtitles.org`) fills the gap: it is searched by IMDb id, season and episode, the best `.srt` is downloaded and converted to `.vtt`. The player also calls the same fallback lazily through `/api/subtitles/:id`, so older local downloads gain an English track next to their original-language one. Some seasons simply have no Italian release; the player then lists only the tracks that exist.
 
@@ -184,8 +186,14 @@ Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Bet
 | `GET /api/online/search?q=` | Search mainstream movies and series (Cinemeta metadata) |
 | `GET /api/online/title/:type/:id` | Title detail with seasons and episodes (`type` is `movie` or `series`, `id` is an IMDb id) |
 | `GET /api/castle/search?q=` | Search the downloadable Castle catalog (movies, series, anime) |
-| `GET /api/castle/title/:id?season=` | Season and episode list with per-resolution sizes and subtitle tracks |
+| `GET /api/castle/title/:id?season=` | Season and episode list with per-resolution sizes and subtitle tracks (saved row first) |
 | `GET /api/castle/series/:id/episodes` | Every season with its full episode list, used by **Download all** |
+| `GET /api/castle/art/:id/poster\|backdrop` | Saved Castle poster/backdrop; downloaded into `catalog.db` on first request and readable offline |
+| `GET /api/castle/episode-art/:episodeId` | Saved Castle episode thumbnail |
+| `GET /api/castle/trailer/:id` | Trailer status for a saved Castle title (queues it on first call) |
+| `GET /api/castle/trailer/:id/file.mp4` | Trailer file for a saved Castle title |
+| `GET /api/castle/sync` | Sync progress: running, counts, saved titles and saved pictures |
+| `POST /api/castle/sync` | Refresh every saved Castle title, fill in new artwork, queue missing trailers |
 | `POST /api/castle/download` | Resolve one episode's HLS stream and queue an MP4 download |
 | `POST /api/downloads` | Queue a film (or several files) for download |
 | `POST /api/downloads/series` | Queue every video file from one item into a folder |
@@ -196,7 +204,7 @@ Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Bet
 
 ### Download films
 
-The downloader accepts archive.org URLs only, so it stays limited to openly downloadable media. Files land in `<library root>\<collection>\`, then the library rescans automatically.
+The downloader accepts archive.org URLs and Castle HLS streams, so it covers openly downloadable media and the keyless Castle catalog. Files land in `<library root>\<collection>\`, then the library rescans automatically.
 
 ```powershell
 # find something

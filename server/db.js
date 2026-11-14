@@ -152,6 +152,36 @@ CREATE TABLE IF NOT EXISTS castle_stats (
   fetched_at INTEGER NOT NULL
 );
 
+/* Complete Castle title snapshots: description, tags, seasons, episodes,
+ * resolutions and the original artwork URLs. The sheet reads this row first,
+ * so a title opens instantly and keeps working offline; Sync refreshes it. */
+CREATE TABLE IF NOT EXISTS castle_titles (
+  id TEXT PRIMARY KEY,
+  series_key TEXT,
+  search_key TEXT,
+  payload TEXT NOT NULL,
+  fetched_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS castle_titles_series ON castle_titles(series_key);
+CREATE INDEX IF NOT EXISTS castle_titles_search ON castle_titles(search_key);
+
+/* Castle artwork downloaded through the server. The address is the upstream
+ * CDN location; the blob is the saved copy. Rows exist as soon as a title is
+ * saved, even before the bytes arrive, so the art route knows where to fetch
+ * from. */
+CREATE TABLE IF NOT EXISTS castle_media (
+  key TEXT PRIMARY KEY,
+  castle_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  url TEXT NOT NULL,
+  mime TEXT,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  blob BLOB,
+  etag TEXT,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS castle_media_title ON castle_media(castle_id);
+
 /* Directory index: the scanner trusts a directory whose mtime is unchanged
  * instead of stat-ing every file inside it again on each launch. */
 CREATE TABLE IF NOT EXISTS dirs (
@@ -194,6 +224,23 @@ export function initDb(cacheDir) {
       PRAGMA journal_size_limit = 8388608;
     `);
     db.exec(SCHEMA);
+    // Older databases grew the title table before the series key column.
+    try {
+      db.exec('ALTER TABLE castle_titles ADD COLUMN series_key TEXT');
+    } catch {
+      /* column already exists */
+    }
+    try {
+      db.exec('ALTER TABLE castle_titles ADD COLUMN search_key TEXT');
+    } catch {
+      /* column already exists */
+    }
+    try {
+      db.exec('CREATE INDEX IF NOT EXISTS castle_titles_series ON castle_titles(series_key)');
+      db.exec('CREATE INDEX IF NOT EXISTS castle_titles_search ON castle_titles(search_key)');
+    } catch {
+      /* best effort */
+    }
     migrateLegacy(cacheDir);
     try {
       db.exec('PRAGMA optimize');
@@ -287,6 +334,156 @@ export function putCastleStat(stats) {
     return stats;
   } catch {
     return null;
+  }
+}
+
+/* Saved Castle title, or null. `fetchedAt` is kept out of the payload so the
+ * stored JSON is exactly what Castle returned, normalized. */
+export function getCastleTitleSaved(id) {
+  if (!db) return null;
+  try {
+    const row = db.prepare('SELECT payload, fetched_at FROM castle_titles WHERE id = ?')
+      .get(String(id));
+    if (!row) return null;
+    return { ...JSON.parse(row.payload), fetchedAt: Number(row.fetched_at) || 0 };
+  } catch {
+    return null;
+  }
+}
+
+export function getCastleTitleBySeriesKey(seriesKey) {
+  if (!db || !seriesKey) return null;
+  try {
+    const row = db.prepare(`SELECT payload, fetched_at FROM castle_titles
+      WHERE series_key = ? OR search_key = ?
+      ORDER BY fetched_at DESC LIMIT 1`)
+      .get(String(seriesKey), String(seriesKey));
+    if (!row) return null;
+    return { ...JSON.parse(row.payload), fetchedAt: Number(row.fetched_at) || 0 };
+  } catch {
+    return null;
+  }
+}
+
+export function putCastleTitleSaved(title) {
+  if (!db || !title || !title.id) return null;
+  try {
+    const { fetchedAt, seriesKey, searchKey, ...payload } = title;
+    db.prepare(`INSERT INTO castle_titles (id, series_key, search_key, payload, fetched_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        series_key = excluded.series_key,
+        search_key = excluded.search_key,
+        payload = excluded.payload,
+        fetched_at = excluded.fetched_at`)
+      .run(String(title.id), seriesKey || null, searchKey || null, JSON.stringify(payload), Number(fetchedAt) || Date.now());
+    return title;
+  } catch {
+    return null;
+  }
+}
+
+export function listCastleTitleIds() {
+  if (!db) return [];
+  try {
+    return db.prepare('SELECT id FROM castle_titles ORDER BY id')
+      .all()
+      .map((row) => String(row.id));
+  } catch {
+    return [];
+  }
+}
+
+export function castleTitleCount() {
+  if (!db) return 0;
+  try {
+    return db.prepare('SELECT COUNT(*) AS n FROM castle_titles').get()?.n || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/* Castle rotates the CDN host while keeping the image path. Two URLs with the
+ * same path are the same picture, so a host change updates the address but
+ * keeps the saved bytes instead of downloading them again. */
+function mediaPath(url) {
+  try {
+    return new URL(String(url)).pathname;
+  } catch {
+    return String(url || '');
+  }
+}
+
+/* Artwork index row. The URL is recorded before the bytes exist so the art
+ * route can download on first request; a changed image path drops the blob. */
+export function indexCastleMedia({ key, castleId, kind, url }) {
+  if (!db || !key || !url) return null;
+  try {
+    const old = db.prepare('SELECT url FROM castle_media WHERE key = ?').get(String(key));
+    if (!old) {
+      db.prepare(`INSERT INTO castle_media (key, castle_id, kind, url, mime, bytes, blob, etag, updated_at)
+        VALUES (?, ?, ?, ?, NULL, 0, NULL, NULL, ?)`)
+        .run(String(key), String(castleId), String(kind), String(url), Date.now());
+    } else if (String(old.url) !== String(url)) {
+      if (mediaPath(old.url) === mediaPath(url)) {
+        db.prepare(`UPDATE castle_media
+          SET castle_id = ?, kind = ?, url = ?, updated_at = ?
+          WHERE key = ?`)
+          .run(String(castleId), String(kind), String(url), Date.now(), String(key));
+      } else {
+        db.prepare(`UPDATE castle_media
+          SET castle_id = ?, kind = ?, url = ?, mime = NULL, bytes = 0, blob = NULL, etag = NULL, updated_at = ?
+          WHERE key = ?`)
+          .run(String(castleId), String(kind), String(url), Date.now(), String(key));
+      }
+    }
+    return true;
+  } catch {
+    return null;
+  }
+}
+
+export function getCastleMedia(key) {
+  if (!db) return null;
+  try {
+    return db.prepare('SELECT key, castle_id, kind, url, mime, bytes, blob, etag FROM castle_media WHERE key = ?')
+      .get(String(key)) || null;
+  } catch {
+    return null;
+  }
+}
+
+/* Cheap existence check for the warm pass: reads the byte count without
+ * pulling the image BLOB into memory. */
+export function castleMediaReady(key) {
+  if (!db) return false;
+  try {
+    return (db.prepare('SELECT bytes FROM castle_media WHERE key = ?').get(String(key))?.bytes || 0) > 1024;
+  } catch {
+    return false;
+  }
+}
+
+export function putCastleMediaBlob({ key, mime, buffer }) {
+  if (!db || !key || !buffer?.length) return null;
+  const etag = `"${hash32(buffer)}"`;
+  try {
+    db.prepare(`UPDATE castle_media
+      SET mime = ?, bytes = ?, blob = ?, etag = ?, updated_at = ?
+      WHERE key = ?`)
+      .run(mime || 'image/jpeg', buffer.length, buffer, etag, Date.now(), String(key));
+    return { key, mime: mime || 'image/jpeg', bytes: buffer.length, etag };
+  } catch {
+    return null;
+  }
+}
+
+export function castleMediaCount() {
+  if (!db) return 0;
+  try {
+    return db.prepare('SELECT COUNT(*) AS n FROM castle_media WHERE bytes > 1024').get()?.n || 0;
+  } catch {
+    return 0;
   }
 }
 

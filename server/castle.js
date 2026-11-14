@@ -1,5 +1,10 @@
 import crypto from 'node:crypto';
-import { getCastleStat, putCastleStat } from './db.js';
+import {
+  getCastleStat, putCastleStat,
+  getCastleTitleSaved, getCastleTitleBySeriesKey, putCastleTitleSaved,
+  indexCastleMedia, getCastleMedia, putCastleMediaBlob, castleMediaReady,
+} from './db.js';
+import { isOffline } from './settings.js';
 
 /**
  * Castle (api.hlowb.com) catalog client.
@@ -236,6 +241,25 @@ function normalize(row) {
   };
 }
 
+/* Search and browse cards reuse a saved poster/backdrop when this title has
+ * already been opened. The card then comes from catalog.db instead of the CDN
+ * and stays correct while offline. */
+function savedArtFor(id) {
+  if (!id) return null;
+  const poster = getCastleMedia(titleMediaKey(id, 'poster'));
+  const backdrop = getCastleMedia(titleMediaKey(id, 'backdrop'));
+  if (!poster?.blob && !backdrop?.blob) return null;
+  const art = {};
+  if (poster?.blob) art.poster = `/api/castle/art/${encodeURIComponent(id)}/poster`;
+  if (backdrop?.blob) art.background = `/api/castle/art/${encodeURIComponent(id)}/backdrop`;
+  return art;
+}
+
+function withSavedArt(item) {
+  const art = savedArtFor(item.id);
+  return art ? { ...item, ...art } : item;
+}
+
 export async function searchCastle(query, page = 1, { tagId = '', size = 24 } = {}) {
   const q = String(query || '').trim();
   if (!q) throw httpError('q is required', 400);
@@ -257,7 +281,7 @@ export async function searchCastle(query, page = 1, { tagId = '', size = 24 } = 
     return {
       query: q,
       total: Number(data?.total) || rows.length,
-      results: rows.map(normalize).filter((item) => item.id && item.title),
+      results: rows.map(normalize).filter((item) => item.id && item.title).map(withSavedArt),
     };
   });
 }
@@ -478,106 +502,379 @@ function episodeOf(entry, movieId) {
   };
 }
 
-export async function getCastleTitle(id, { season } = {}) {
-  if (!isCastleId(id)) throw httpError('invalid castle id', 400);
-
-  return cached(`title:${id}:${season ?? ''}`, CACHE_TTL, async () => {
-    const data = await request(
-      `/film-api/v1.9.9/movie?channel=${CHANNEL}&clientType=${CLIENT}&lang=${LANG}`
-      + `&movieId=${encodeURIComponent(id)}&packageName=${PKG}`,
-    );
-    const seasons = (Array.isArray(data?.seasons) ? data.seasons : [])
-      .map((entry) => ({
-        season: Number(entry.number) || 0,
-        movieId: String(entry.movieId),
-        current: Boolean(entry.isCurrent),
-      }))
-      .sort((a, b) => a.season - b.season);
-
-    const base = {
-      provider: 'castle',
-      id: String(data.id || id),
-      title: String(data.title || '').trim(),
-      type: seasons.length ? 'series' : 'movie',
-      year: yearOf(data),
-      rating: Number(data.score) || 0,
-      watchCount: Number(data.watchCount) || 0,
-      commentTotal: Number(data.commentTotal) || 0,
-      poster: data.coverVerticalImage || '',
-      background: data.coverHorizontalImage || '',
-      description: String(data.briefIntroduction || '').trim(),
-      genres: Array.isArray(data.tags) ? data.tags.filter(Boolean).slice(0, 6) : [],
-      languages: Array.isArray(data.audioTags)
-        ? data.audioTags.map((tag) => tag?.languageName).filter(Boolean)
-        : [],
-      seasonCount: seasons.length,
-      seasons: [],
-      downloadable: true,
-    };
-
-    // Opening a sheet also refreshes the saved rating snapshot.
-    putCastleStat({
-      id: base.id,
-      title: base.title,
-      type: base.type,
-      year: base.year,
-      rating: base.rating,
-      watchCount: base.watchCount,
-      commentTotal: base.commentTotal,
-      genres: base.genres,
-      poster: base.poster,
-    });
-
-    if (!seasons.length) {
-      const episodes = (Array.isArray(data.episodes) ? data.episodes : [])
-        .map((entry) => episodeOf(entry, id))
-        .filter((entry) => entry.episodeId);
-      base.episodes = episodes;
-      base.episodeCount = episodes.length;
-      base.duration = episodes[0]?.duration || 0;
-      return base;
-    }
-
-    const wanted = Number(season) > 0 ? Number(season) : seasons[0].season;
-    const target = seasons.find((entry) => entry.season === wanted) || seasons[0];
-
-    let detail = data;
-    if (String(target.movieId) !== String(id)) {
-      detail = await request(
-        `/film-api/v1.9.9/movie?channel=${CHANNEL}&clientType=${CLIENT}&lang=${LANG}`
-        + `&movieId=${encodeURIComponent(target.movieId)}&packageName=${PKG}`,
-      );
-    }
-
-    const episodes = (Array.isArray(detail?.episodes) ? detail.episodes : [])
-      .map((entry) => episodeOf(entry, target.movieId))
-      .filter((entry) => entry.episodeId);
-
-    base.seasons = seasons.map((entry) => ({
-      season: entry.season,
-      episodes: entry.season === target.season ? episodes : [],
-    }));
-    base.activeSeason = target.season;
-    base.episodeCount = episodes.length;
-    return base;
-  });
+/* Same stable key the library uses for a series: base64url of the lowercased
+ * title. It lets the player find saved episode pictures without a lookup. */
+function titleKey(title) {
+  return Buffer.from(String(title || '').toLowerCase(), 'utf8').toString('base64url');
 }
 
-/* Every season with its full episode list (resolutions included). Used by the
- * "Download all" action, which needs all seasons, not just the open tab. */
+function searchKeyFor(title) {
+  return String(title || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function statsOf(title) {
+  return {
+    id: String(title.id),
+    title: title.title,
+    type: title.type,
+    year: title.year,
+    rating: Number(title.rating) || 0,
+    watchCount: Number(title.watchCount) || 0,
+    commentTotal: Number(title.commentTotal) || 0,
+    genres: Array.isArray(title.genres) ? title.genres : [],
+    poster: title.poster || '',
+  };
+}
+
+function mergeTitle(saved, fresh) {
+  if (!saved) return fresh;
+  const merged = { ...saved };
+  for (const key of ['title', 'type', 'poster', 'background', 'description', 'movieType']) {
+    if (fresh[key]) merged[key] = fresh[key];
+  }
+  for (const key of ['year', 'rating', 'watchCount', 'commentTotal', 'seasonCount']) {
+    if (Number(fresh[key]) > 0) merged[key] = fresh[key];
+  }
+  if (Array.isArray(fresh.genres) && fresh.genres.length) merged.genres = fresh.genres;
+  if (Array.isArray(fresh.languages) && fresh.languages.length) merged.languages = fresh.languages;
+
+  if (Array.isArray(fresh.seasons) && fresh.seasons.length) {
+    const bySeason = new Map((saved.seasons || []).map((row) => [row.season, row]));
+    for (const row of fresh.seasons) {
+      const old = bySeason.get(row.season);
+      // An empty fresh list means the season was not fetched in this pass;
+      // keep the episodes already saved instead of erasing them.
+      const episodes = row.episodes?.length ? row.episodes : (old?.episodes || []);
+      bySeason.set(row.season, { season: row.season, movieId: row.movieId || old?.movieId, episodes });
+    }
+    merged.seasons = [...bySeason.values()].sort((a, b) => a.season - b.season);
+    if (fresh.activeSeason != null) merged.activeSeason = fresh.activeSeason;
+    merged.episodeCount = merged.seasons.reduce((sum, row) => sum + (row.episodes?.length || 0), 0);
+  }
+
+  if (Array.isArray(fresh.episodes) && fresh.episodes.length) {
+    merged.episodes = fresh.episodes;
+    merged.episodeCount = fresh.episodes.length;
+  }
+  if (fresh.duration) merged.duration = fresh.duration;
+  return merged;
+}
+
+function decorateEpisode(entry) {
+  return {
+    ...entry,
+    thumbnail: entry.episodeId
+      ? `/api/castle/episode-art/${encodeURIComponent(entry.episodeId)}`
+      : '',
+  };
+}
+
+function shapeTitle(title, season) {
+  const seasons = Array.isArray(title.seasons) ? title.seasons : [];
+  const out = { ...title };
+  delete out.fetchedAt;
+  delete out.seriesKey;
+  out.poster = title.poster ? `/api/castle/art/${encodeURIComponent(title.id)}/poster` : '';
+  out.background = title.background ? `/api/castle/art/${encodeURIComponent(title.id)}/backdrop` : '';
+
+  if (!seasons.length) {
+    out.episodes = (title.episodes || []).map(decorateEpisode);
+    out.episodeCount = out.episodes.length;
+    out.duration = title.duration || out.episodes[0]?.duration || 0;
+    return out;
+  }
+
+  const active = seasons.find((row) => row.season === Number(season))
+    || seasons.find((row) => row.season === title.activeSeason)
+    || seasons[0];
+  out.seasons = seasons.map((row) => ({
+    season: row.season,
+    movieId: row.movieId,
+    episodes: row.season === active.season ? (row.episodes || []).map(decorateEpisode) : [],
+  }));
+  out.activeSeason = active.season;
+  out.episodeCount = active.episodes?.length || 0;
+  out.duration = active.episodes?.[0]?.duration || title.duration || 0;
+  delete out.episodes;
+  return out;
+}
+
+async function fetchTitle(id, season) {
+  const data = await request(
+    `/film-api/v1.9.9/movie?channel=${CHANNEL}&clientType=${CLIENT}&lang=${LANG}`
+    + `&movieId=${encodeURIComponent(id)}&packageName=${PKG}`,
+  );
+  const seasons = (Array.isArray(data?.seasons) ? data.seasons : [])
+    .map((entry) => ({
+      season: Number(entry.number) || 0,
+      movieId: String(entry.movieId),
+      current: Boolean(entry.isCurrent),
+    }))
+    .sort((a, b) => a.season - b.season);
+
+  const base = {
+    provider: 'castle',
+    id: String(data.id || id),
+    title: String(data.title || '').trim(),
+    type: seasons.length ? 'series' : 'movie',
+    year: yearOf(data),
+    rating: Number(data.score) || 0,
+    watchCount: Number(data.watchCount) || 0,
+    commentTotal: Number(data.commentTotal) || 0,
+    poster: data.coverVerticalImage || '',
+    background: data.coverHorizontalImage || '',
+    description: String(data.briefIntroduction || '').trim(),
+    genres: Array.isArray(data.tags) ? data.tags.filter(Boolean).slice(0, 6) : [],
+    languages: Array.isArray(data.audioTags)
+      ? data.audioTags.map((tag) => tag?.languageName).filter(Boolean)
+      : [],
+    seasonCount: seasons.length,
+    seasons: [],
+    downloadable: true,
+  };
+
+  if (!seasons.length) {
+    const episodes = (Array.isArray(data.episodes) ? data.episodes : [])
+      .map((entry) => episodeOf(entry, id))
+      .filter((entry) => entry.episodeId);
+    base.episodes = episodes;
+    base.episodeCount = episodes.length;
+    base.duration = episodes[0]?.duration || 0;
+    return base;
+  }
+
+  const wanted = Number(season) > 0 ? Number(season) : seasons[0].season;
+  const target = seasons.find((entry) => entry.season === wanted) || seasons[0];
+
+  let detail = data;
+  if (String(target.movieId) !== String(id)) {
+    detail = await request(
+      `/film-api/v1.9.9/movie?channel=${CHANNEL}&clientType=${CLIENT}&lang=${LANG}`
+      + `&movieId=${encodeURIComponent(target.movieId)}&packageName=${PKG}`,
+    );
+  }
+
+  const episodes = (Array.isArray(detail?.episodes) ? detail.episodes : [])
+    .map((entry) => episodeOf(entry, target.movieId))
+    .filter((entry) => entry.episodeId);
+
+  base.seasons = seasons.map((entry) => ({
+    season: entry.season,
+    movieId: entry.movieId,
+    episodes: entry.season === target.season ? episodes : [],
+  }));
+  base.activeSeason = target.season;
+  base.episodeCount = episodes.length;
+  return base;
+}
+
+/* ---------- saved artwork ---------- */
+
+const MEDIA_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+  Referer: BASE,
+};
+const mediaTasks = new Map();
+
+function titleMediaKey(id, kind) {
+  return `title:${id}:${kind}`;
+}
+
+function episodeMediaKey(episodeId) {
+  return `episode:${episodeId}`;
+}
+
+/* Index every picture a title references. The route can then download the
+ * bytes on first request even after a restart. */
+function indexTitleMedia(title) {
+  if (!title?.id) return;
+  const entries = [
+    { key: titleMediaKey(title.id, 'poster'), kind: 'poster', url: title.poster },
+    { key: titleMediaKey(title.id, 'backdrop'), kind: 'backdrop', url: title.background },
+  ];
+  for (const row of title.seasons || []) {
+    for (const ep of row.episodes || []) {
+      if (ep.episodeId) entries.push({ key: episodeMediaKey(ep.episodeId), kind: 'thumb', url: ep.thumbnail });
+    }
+  }
+  for (const ep of title.episodes || []) {
+    if (ep.episodeId) entries.push({ key: episodeMediaKey(ep.episodeId), kind: 'thumb', url: ep.thumbnail });
+  }
+  for (const entry of entries) {
+    if (entry.url) indexCastleMedia({ ...entry, castleId: title.id });
+  }
+}
+
+async function ensureCastleMedia(key) {
+  const row = getCastleMedia(key);
+  if (!row?.url) return null;
+  if (row.blob && Number(row.bytes) > 1024) return row;
+  if (isOffline()) return null;
+  if (mediaTasks.has(key)) return mediaTasks.get(key);
+
+  const task = (async () => {
+    try {
+      const res = await fetch(row.url, { headers: MEDIA_HEADERS, signal: AbortSignal.timeout(20000) });
+      if (!res.ok) return null;
+      const type = String(res.headers.get('content-type') || '');
+      if (type && !type.startsWith('image/')) return null;
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length < 1024) return null;
+      const saved = putCastleMediaBlob({ key, mime: type || 'image/jpeg', buffer });
+      return saved ? { ...row, ...saved, blob: buffer } : null;
+    } catch {
+      return null;
+    } finally {
+      mediaTasks.delete(key);
+    }
+  })();
+  mediaTasks.set(key, task);
+  return task;
+}
+
+/* Downloads every missing poster, backdrop and episode thumbnail. Returns how
+ * many files were newly saved, which the Sync summary reports. */
+async function warmCastleMedia(title) {
+  if (!title || isOffline()) return 0;
+  const entries = [];
+  if (title.poster) entries.push(titleMediaKey(title.id, 'poster'));
+  if (title.background) entries.push(titleMediaKey(title.id, 'backdrop'));
+  for (const row of title.seasons || []) {
+    for (const ep of row.episodes || []) if (ep.episodeId) entries.push(episodeMediaKey(ep.episodeId));
+  }
+  for (const ep of title.episodes || []) if (ep.episodeId) entries.push(episodeMediaKey(ep.episodeId));
+  if (!entries.length) return 0;
+  let added = 0;
+  await mapLimit(entries, 4, async (key) => {
+    if (castleMediaReady(key)) return;
+    const after = await ensureCastleMedia(key);
+    if (after?.blob) added += 1;
+  });
+  return added;
+}
+
+export async function castleArt(id, kind) {
+  if (!isCastleId(id)) return null;
+  const saved = getCastleTitleSaved(id);
+  if (!saved) return null;
+  const url = kind === 'poster' ? saved.poster : kind === 'backdrop' ? saved.background : '';
+  if (!url) return null;
+  const key = titleMediaKey(id, kind);
+  indexCastleMedia({ key, castleId: id, kind, url });
+  return ensureCastleMedia(key);
+}
+
+export async function castleEpisodeArt(episodeId) {
+  if (!isCastleId(episodeId)) return null;
+  return ensureCastleMedia(episodeMediaKey(episodeId));
+}
+
+/* Player episode panel: season/episode -> saved catalog picture. The library
+ * key is the lowercased title; the search key ignores punctuation so
+ * "Cyberpunk: Edgerunners" still matches a file named "Cyberpunk Edgerunners". */
+export function castleEpisodeArtForSeries(seriesKey) {
+  let saved = getCastleTitleBySeriesKey(seriesKey);
+  if (!saved) {
+    try {
+      const decoded = Buffer.from(String(seriesKey || ''), 'base64url').toString('utf8');
+      saved = getCastleTitleBySeriesKey(searchKeyFor(decoded));
+    } catch {
+      saved = null;
+    }
+  }
+  if (!saved) return {};
+  const map = {};
+  for (const row of saved.seasons || []) {
+    for (const ep of row.episodes || []) {
+      if (ep.episodeId) map[`${row.season}x${ep.episode}`] = `/api/castle/episode-art/${encodeURIComponent(ep.episodeId)}`;
+    }
+  }
+  for (const ep of saved.episodes || []) {
+    if (ep.episodeId) map[`0x${ep.episode}`] = `/api/castle/episode-art/${encodeURIComponent(ep.episodeId)}`;
+  }
+  return map;
+}
+
+export function castleTrailerItem(title) {
+  const isSeries = title.type === 'series' || title.type === 'anime';
+  return {
+    id: `castle:${title.id}`,
+    title: title.title,
+    seriesTitle: isSeries ? title.title : '',
+    seriesKey: isSeries ? titleKey(title.title) : undefined,
+    isSeries,
+    year: title.year,
+  };
+}
+
+function persistTitle(title) {
+  const saved = {
+    ...title,
+    seriesKey: (title.type === 'series' || title.type === 'anime') ? titleKey(title.title) : null,
+    searchKey: searchKeyFor(title.title),
+  };
+  putCastleTitleSaved(saved);
+  putCastleStat(statsOf(saved));
+  indexTitleMedia(saved);
+  if (!isOffline()) warmCastleMedia(saved).catch(() => {});
+  return saved;
+}
+
+/* Saved titles are the source of truth. A sheet opens from catalog.db without
+ * touching the network; Sync is what refreshes them. */
+export async function getCastleTitle(id, { season, refresh = false } = {}) {
+  if (!isCastleId(id)) throw httpError('invalid castle id', 400);
+  const saved = getCastleTitleSaved(id);
+  if (saved && !refresh) return shapeTitle(saved, season);
+
+  try {
+    const fresh = await fetchTitle(id, season);
+    const merged = mergeTitle(saved, fresh);
+    merged.fetchedAt = Date.now();
+    persistTitle(merged);
+    return shapeTitle(merged, season);
+  } catch (err) {
+    if (saved) return shapeTitle(saved, season);
+    throw err;
+  }
+}
+
+/* Sync: refetch the base row and every season, then merge without dropping
+ * values Castle left empty. Returns the saved payload and the fresh one-side
+ * copy for change detection. */
+export async function refreshCastleTitle(id) {
+  if (!isCastleId(id)) throw httpError('invalid castle id', 400);
+  const before = getCastleTitleSaved(id);
+  const first = await fetchTitle(id);
+  let merged = mergeTitle(before, first);
+  for (const row of first.seasons || []) {
+    if (row.season === first.activeSeason) continue;
+    const detail = await fetchTitle(id, row.season);
+    merged = mergeTitle(merged, detail);
+  }
+  merged.fetchedAt = Date.now();
+  persistTitle(merged);
+  const images = await warmCastleMedia(merged);
+  return { before, title: merged, fresh: first, images };
+}
+
+/* Every season with its full episode list, from the saved row when possible. */
 export async function getCastleSeries(id) {
   if (!isCastleId(id)) throw httpError('invalid castle id', 400);
   const first = await getCastleTitle(id);
   if (!first.seasons?.length) {
     return { id: first.id, title: first.title, seasons: [{ season: 0, episodes: first.episodes || [] }] };
   }
-  const rows = await Promise.all(first.seasons.map(async (row) => {
-    const detail = row.season === first.activeSeason
-      ? first
-      : await getCastleTitle(id, { season: row.season });
-    const active = (detail.seasons || []).find((entry) => entry.season === detail.activeSeason);
-    return { season: row.season, episodes: active?.episodes || [] };
-  }));
+  const rows = [];
+  for (const row of first.seasons) {
+    let episodes = row.episodes || [];
+    if (!episodes.length) {
+      const detail = await getCastleTitle(id, { season: row.season, refresh: true }).catch(() => first);
+      episodes = (detail.seasons || []).find((entry) => entry.season === detail.activeSeason)?.episodes
+        || episodes;
+    }
+    rows.push({ season: row.season, episodes });
+  }
   return { id: first.id, title: first.title, seasons: rows };
 }
 

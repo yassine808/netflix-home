@@ -1,5 +1,6 @@
 import {
   getLibrary, rescanLibrary, quitApp, formatDuration, formatSize, formatClock,
+  syncCastleCatalog, getCastleSyncStatus,
   qualityLabel, thumbUrl, logoUrl, toggleMyList, isInMyList, getMyList, progressFor,
   getRemoteList, isInRemoteList, toggleRemoteList,
   getSeries, getSeriesCatalog, debounce, createEl,
@@ -38,6 +39,7 @@ const state = {
   lastFocus: null,
   bootAt: Date.now(),
   rescanning: false,
+  syncing: false,
   onlineBrowse: [],
   onlineBrowseLoading: false,
   onlineBrowseToken: 0,
@@ -2468,6 +2470,7 @@ async function openCastleModal(item) {
     state.castleCache.set(`${detail.id}:${detail.activeSeason || 0}`, detail);
     populateCastleModal(merged);
     renderCastleDownloads(merged);
+    startCastleTrailer(merged, 'castle');
     if (detail.type === 'series') {
       // "Download all" needs every season, but the sheet must not wait for them.
       getCastleSeriesEpisodes(detail.id).then((full) => {
@@ -2609,10 +2612,6 @@ function buildDeleteButton(local) {
 /* "Delete all" is series-wide: every local episode, whatever the season tab.
  * The first click arms the button, the second one deletes. */
 let castleDeleteArmTimer = 0;
-
-function castleDeleteCount() {
-  return state.castleLocal?.local?.size || 0;
-}
 
 function resetCastleDeleteAll() {
   clearTimeout(castleDeleteArmTimer);
@@ -2791,11 +2790,9 @@ function renderCastleDownloads(detail) {
 
     const local = localFor(detail.activeSeason ?? state.castleSeason, episode.episode);
 
-    // The catalog thumbnail is remote. Offline, reuse the local episode's own
-    // artwork; an episode that is not on disk simply has no picture.
-    const thumbSrc = state.offline
-      ? (local ? thumbUrl(local, 320) : '')
-      : (episode.thumbnail || '');
+    // Saved Castle artwork is served by this app, not a CDN, so it works
+    // offline too; only a missing row falls back to the local file's frame.
+    const thumbSrc = episode.thumbnail || (local ? thumbUrl(local, 320) : '');
     if (thumbSrc) {
       const thumb = document.createElement('img');
       thumb.className = 'episode-thumb';
@@ -3407,9 +3404,15 @@ function scheduleCastleTrailer(url, token) {
   }, wait);
 }
 
-function askCastleTrailer(item, token, deadline) {
+function askCastleTrailer(item, token, deadline, source = 'local') {
   if (token !== state.castleTrailerToken || els.castleModal.hidden) return;
-  fetch(`/api/trailer/${encodeURIComponent(item.id)}`, { cache: 'no-store' })
+  // Library items use the trailer keyed by their local id; a catalog-only
+  // title reads the saved Castle row and shares the trailer with a local copy
+  // of the same show when one exists.
+  const url = source === 'castle'
+    ? `/api/castle/trailer/${encodeURIComponent(item.id)}`
+    : `/api/trailer/${encodeURIComponent(item.id)}`;
+  fetch(url, { cache: 'no-store' })
     .then((res) => (res.ok ? res.json() : null))
     .then((data) => {
       if (token !== state.castleTrailerToken || els.castleModal.hidden) return;
@@ -3419,20 +3422,20 @@ function askCastleTrailer(item, token, deadline) {
       }
       if (!data || data.status === 'failed' || data.status === 'none') return;
       if (Date.now() > deadline) return;
-      state.castleTrailerTimer = setTimeout(() => askCastleTrailer(item, token, deadline), 1500);
+      state.castleTrailerTimer = setTimeout(() => askCastleTrailer(item, token, deadline, source), 1500);
     })
     .catch(() => {
       if (token !== state.castleTrailerToken || els.castleModal.hidden) return;
       if (Date.now() > deadline) return;
-      state.castleTrailerTimer = setTimeout(() => askCastleTrailer(item, token, deadline), 2500);
+      state.castleTrailerTimer = setTimeout(() => askCastleTrailer(item, token, deadline, source), 2500);
     });
 }
 
-function startCastleTrailer(item) {
+function startCastleTrailer(item, source = 'local') {
   stopCastleTrailer();
   state.castleOpenedAt = Date.now();
   if (!item?.id) return;
-  askCastleTrailer(item, state.castleTrailerToken, Date.now() + 120000);
+  askCastleTrailer(item, state.castleTrailerToken, Date.now() + 120000, source);
 }
 
 function bindCastleTrailer() {
@@ -3923,7 +3926,6 @@ function goWatch(id) {
 async function rescan() {
   if (state.rescanning) return;
   state.rescanning = true;
-  els.refreshBtn.classList.add('spinning');
   toast('Scanning library…');
   try {
     const result = await rescanLibrary();
@@ -3934,9 +3936,64 @@ async function rescan() {
     toast('Scan failed. Check the library folder and try again.');
   } finally {
     state.rescanning = false;
-    els.refreshBtn.classList.remove('spinning');
     updateLoadingState();
     schedulePoll();
+  }
+}
+
+/* Top-bar Sync: refreshes the Castle data and pictures already saved in
+ * catalog.db. It never scans the library; that stays on the empty-state
+ * button. Progress is polled until the server worker finishes. */
+async function syncCastle() {
+  if (state.syncing) return;
+  if (state.offline) {
+    toast('Offline mode is on — Sync needs internet.');
+    return;
+  }
+  state.syncing = true;
+  els.refreshBtn.classList.add('spinning');
+  els.refreshBtn.disabled = true;
+  toast('Syncing saved catalog…');
+  try {
+    await syncCastleCatalog();
+    let status = null;
+    const deadline = Date.now() + 10 * 60 * 1000;
+    do {
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      status = await getCastleSyncStatus();
+      if (status.total) {
+        els.refreshBtn.title = `Syncing ${status.done}/${status.total}`;
+      }
+    } while (status.running && Date.now() < deadline);
+
+    if (!status) throw new Error('no progress reported');
+    const parts = [];
+    if (status.updated) parts.push(`${status.updated} updated`);
+    if (status.kept) parts.push(`${status.kept} unchanged`);
+    if (status.images) parts.push(`${status.images} new picture${status.images === 1 ? '' : 's'}`);
+    if (status.trailers) parts.push(`${status.trailers} trailer${status.trailers === 1 ? '' : 's'} queued`);
+    if (status.errors) parts.push(`${status.errors} failed`);
+    toast(parts.length ? `Catalog synced — ${parts.join(', ')}` : 'Catalog synced.');
+    if (state.castleTitle?.provider === 'castle') {
+      // The open sheet still shows the pre-sync copy; reload it from the row.
+      const item = state.castleTitle;
+      const token = state.castleDetailToken;
+      getCastleTitle(item.id).then((detail) => {
+        if (token !== state.castleDetailToken || els.castleModal.hidden) return;
+        const merged = { ...item, ...detail };
+        state.castleTitle = merged;
+        populateCastleModal(merged);
+        renderCastleDownloads(merged);
+      }).catch(() => { /* the saved row is still on screen */ });
+    }
+  } catch (err) {
+    toast(err.offline ? 'Offline mode is on — Sync needs internet.' : `Sync failed: ${err.message}`);
+  } finally {
+    state.syncing = false;
+    els.refreshBtn.classList.remove('spinning');
+    els.refreshBtn.disabled = false;
+    els.refreshBtn.title = 'Sync catalog';
+    els.refreshBtn.setAttribute('aria-label', 'Sync catalog');
   }
 }
 
@@ -4307,8 +4364,8 @@ function bindStaticEvents() {
     renderRows();
   });
 
-  els.refreshBtn.addEventListener('click', rescan);
-  els.menuRescan.addEventListener('click', () => { closeProfile(); rescan(); });
+  els.refreshBtn.addEventListener('click', syncCastle);
+  els.menuRescan.addEventListener('click', () => { closeProfile(); syncCastle(); });
   els.menuQuit?.addEventListener('click', async () => {
     closeProfile();
     try {
