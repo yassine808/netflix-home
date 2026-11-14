@@ -22,6 +22,7 @@ import { initHero, heroStart, heroReady, ensureHero, warmHeroes } from './hero.j
 import { initTrailers, trailerPathFor, trailerStatus, warmTrailer, warmTrailers } from './trailers.js';
 import { resolveImdbId } from './imdb.js';
 import { ensureEnglishSubtitle, fetchEnglishSubtitle } from './subs.js';
+import { initAudio, probeAudioTracks, ensureAudioVariant } from './audio.js';
 
 /* In the single-file build there is no real file on disk, so the bundle passes
  * APP_ROOT (where the exe lives) and PUBLIC_DIR (extracted UI files). */
@@ -76,6 +77,7 @@ initArtwork(cacheDir);
 initFrames(cacheDir);
 initIntro(cacheDir);
 initHero(cacheDir);
+initAudio(cacheDir);
 initTrailers(cacheDir, {
   ytDlpPath: process.env.YTDLP_PATH || path.join(process.env.APP_ROOT || path.join(__dirname, '..'), 'bin', 'yt-dlp.exe'),
 });
@@ -360,11 +362,8 @@ app.get('/api/next/:id', async (req, res) => {
   }
 });
 
-app.get('/api/stream/:id', (req, res) => {
-  const found = resolveItemFile(req.params.id);
-  if (!found) return res.status(404).end();
-  const { item, full } = found;
-
+/* Byte-range file serving, shared by the original file and dub variants. */
+function sendMedia(req, res, full, type) {
   let stat;
   try {
     stat = fs.statSync(full);
@@ -372,8 +371,6 @@ app.get('/api/stream/:id', (req, res) => {
     return res.status(404).end();
   }
 
-  const ext = path.extname(full).toLowerCase();
-  const type = MIME[ext] || 'application/octet-stream';
   const total = stat.size;
   const range = req.headers.range;
 
@@ -402,6 +399,55 @@ app.get('/api/stream/:id', (req, res) => {
   res.setHeader('Content-Length', end - start + 1);
   if (req.method === 'HEAD') return res.end();
   fs.createReadStream(full, { start, end }).pipe(res);
+}
+
+app.get('/api/stream/:id', async (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).end();
+  const { full } = found;
+
+  const type = MIME[path.extname(full).toLowerCase()] || 'application/octet-stream';
+
+  // ?audio=<stream index> serves that dub; the file's own first track needs no work.
+  const wanted = Number(req.query.audio);
+  if (Number.isInteger(wanted) && wanted >= 0) {
+    try {
+      const tracks = await probeAudioTracks(full);
+      const track = tracks.find((entry) => entry.streamIndex === wanted);
+      if (track && tracks[0] && track.streamIndex !== tracks[0].streamIndex) {
+        const variant = await ensureAudioVariant(full, track);
+        if (variant !== full) return sendMedia(req, res, variant, 'video/mp4');
+      }
+    } catch {
+      /* fall back to the original file */
+    }
+  }
+
+  return sendMedia(req, res, full, type);
+});
+
+/* Audio tracks of one file, for the player's dub menu. */
+app.get('/api/audio/:id', async (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).json({ error: 'not found' });
+  let tracks = [];
+  try {
+    tracks = await probeAudioTracks(found.full);
+  } catch {
+    tracks = [];
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    tracks: tracks.map((track) => ({
+      index: track.streamIndex,
+      position: track.position,
+      lang: track.lang,
+      label: track.label,
+      codec: track.codec,
+      channels: track.channels,
+      default: track.default,
+    })),
+  });
 });
 
 app.get('/api/thumb/:id', async (req, res) => {

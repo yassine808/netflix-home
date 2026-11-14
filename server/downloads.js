@@ -800,9 +800,14 @@ async function runHlsJob(job) {
 
   const args = ['-y', '-loglevel', 'error'];
   if (job.referer) args.push('-headers', `Referer: ${job.referer}\r\n`);
+  // Map every audio rendition: dubs are muxed into the same HLS stream and
+  // ffmpeg would otherwise keep only the first one.
   args.push(
     '-i', job.url,
+    '-map', '0:v:0',
+    '-map', '0:a?',
     '-c', 'copy',
+    '-disposition:a:0', 'default',
     '-movflags', '+faststart',
     '-f', 'mp4',
     part,

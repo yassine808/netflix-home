@@ -665,6 +665,20 @@ body.leaving .player {
 .cc-option:hover { background: rgba(255, 255, 255, 0.09); color: #fff; }
 .cc-option.active { background: rgba(255, 255, 255, 0.14); color: #fff; font-weight: 700; }
 
+/* Dub picker sits above the subtitle list, separated by a hairline. */
+.cc-audio { padding-bottom: 10px; margin-bottom: 2px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+.cc-audio-list { max-height: 150px; margin: 6px 0 0; }
+.cc-audio .cc-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.cc-audio .cc-option::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: transparent;
+  flex: 0 0 auto;
+}
+.cc-audio .cc-option.active::after { background: var(--red); }
+
 .cc-timing { margin-top: 10px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.1); }
 .cc-timing-title { font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: #9a9a9a; }
 .cc-timing-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }

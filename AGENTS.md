@@ -34,6 +34,7 @@ Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 - `server/library.js` — folder walk, filename/NFO parsing, ffprobe metadata cache; `ensureThumb` delegates to the picture cache
 - `server/pictures.js` — `pictures.db`: picks a still per title by edge density over several sampled moments, stores the JPEG in `.cache\pictures\`
 - `server/hero.js` — SQLite-indexed hero stills + 12 s preview clips, background warm-up
+- `server/audio.js` — audio-track probe + on-demand dub remux into `.cache\audio\`
 - `public/index.html` + `app.js` + `styles.css` — home UI, search, series/detail sheets
 - `public/watch.html` + `watch.js` + `watch.css` — custom player
 - `public/common.js` — shared formatting, storage, and API helpers
@@ -53,6 +54,7 @@ Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 - Series click opens the catalog sheet (`openSeriesSheet`), which merges local episodes into the Castle episode list: local episodes get **Play** plus their progress bar, the rest keep **Download**. Episode thumbnails are the catalog API's images; never generate frames for that sheet.
 - The player's **Next episode** button asks `GET /api/next/:id`. Local result → `/watch.html?id=<next>`; catalog result → `/?open=<current id>&season=<n>&episode=<n>`, which `boot()` turns into the series sheet with that season open and the row highlighted (`.is-target`).
 - The player has no playback-speed control; the ±10 s jumps are 54 px with 32 px icons.
+- **Dubs/audio tracks**: every HLS download maps all audio renditions (`-map 0:v:0 -map 0:a?`), so the original language and the English dub both land in the file. Browsers can only play the first audio stream, so the player fetches another track as `/api/stream/<id>?audio=<streamIndex>`, which remuxes it once (`-c copy`) into `.cache\audio\` and caches by id + mtime + track. The CC panel's Audio section lists `/api/audio/<id>` and hides itself for single-track files; the pick is stored per series under `netflix-home:audio:series:<key>`.
 - **Skip Intro** windows come from `server/intro.js` in this order: `<name>.intro.json` sidecar → `.cache\intro.json` → ffprobe chapters → IntroDB (`https://api.introdb.app/intro?imdb_id=&season=&episode=`, keyless; the IMDb id is resolved once per series through Cinemeta). Results are cached per episode (`<seriesKey>#s<n>e<n>`). There is no guessed fallback: unknown timing means no button, so the cold open is never skipped.
 
 ## Gotchas

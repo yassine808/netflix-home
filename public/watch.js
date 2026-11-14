@@ -36,6 +36,8 @@ const resumeToast = $('resumeToast');
 const ccBtn = $('ccBtn');
 const ccPanel = $('ccPanel');
 const ccList = $('ccList');
+const ccAudio = $('ccAudio');
+const audioList = $('audioList');
 const ccOffsetEl = $('ccOffset');
 const subSizeDown = $('subSizeDown');
 const subSizeUp = $('subSizeUp');
@@ -82,6 +84,13 @@ let subtitleLang = 'en';
 let subtitleOffset = 0;
 let subtitleRequest = 0;
 
+/* Audio (dub) choice. Browsers play only the first audio stream of a file, so a
+ * different track is fetched from /api/stream/:id?audio=<index>. The choice is
+ * remembered per series, like the subtitle language. */
+let audioTracks = [];
+let audioIndex = null;
+let audioSwitching = false;
+
 /* Subtitle look: text scale and the opacity of the black box behind it.
  * Defaults: English on, 130 % size, no background. Every change is stored per
  * series, so the next episode opens with the same look and language. */
@@ -106,6 +115,10 @@ function subtitleStyleKey() {
 
 function subtitlePrefsKey() {
   return `netflix-home:subtitles:${subtitleScope()}`;
+}
+
+function audioPrefsKey() {
+  return `netflix-home:audio:${subtitleScope()}`;
 }
 
 init();
@@ -140,7 +153,8 @@ async function init() {
   epTag.classList.remove('sk-text');
   document.body.style.background = '#000';
   video.poster = thumbUrl(item);
-  video.src = `/api/stream/${encodeURIComponent(item.id)}`;
+  await initAudioTracks();
+  video.src = streamUrl();
   video.load();
   bindEvents();
   initSeekFx();
@@ -157,14 +171,17 @@ function bindEvents() {
   video.addEventListener('loadedmetadata', () => {
     timeEl.classList.remove('sk-text');
     duration = Number.isFinite(video.duration) ? video.duration : item.durationSec || 0;
+    updateTimeline();
+    loading.hidden = true;
+    // A dub switch reloads the source; the time and play state are restored
+    // separately, so skip the resume/autoplay path for that reload.
+    if (audioSwitching) return;
     if (pendingResume > 0) {
       const startAt = resumeStart();
       try {
         video.currentTime = startAt;
       } catch { /* ignore */ }
     }
-    updateTimeline();
-    loading.hidden = true;
     attemptAutoplay();
     initFrames();
     initIntro();
@@ -714,6 +731,93 @@ async function selectSubtitle(lang) {
     subtitleLayer.hidden = true;
     toastInPlayer('Could not load that subtitle file.');
   }
+}
+
+/* ---------- audio / dub selection ---------- */
+
+function streamUrl() {
+  const base = `/api/stream/${encodeURIComponent(item.id)}`;
+  return audioIndex == null ? base : `${base}?audio=${audioIndex}`;
+}
+
+async function initAudioTracks() {
+  let tracks = [];
+  try {
+    const res = await fetch(`/api/audio/${encodeURIComponent(id)}`, { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json();
+      tracks = Array.isArray(data.tracks)
+        ? data.tracks.filter((track) => Number.isInteger(track.index))
+        : [];
+    }
+  } catch {
+    tracks = [];
+  }
+  audioTracks = tracks;
+
+  const saved = Number(readJson(audioPrefsKey(), null)?.index);
+  const pick = tracks.find((track) => track.index === saved)
+    || tracks.find((track) => track.default)
+    || tracks[0];
+  audioIndex = pick ? pick.index : null;
+  renderAudioTracks();
+}
+
+function renderAudioTracks() {
+  if (!ccAudio) return;
+  // One track means there is no dub to choose; keep the panel as it was.
+  ccAudio.hidden = audioTracks.length < 2;
+  audioList.replaceChildren();
+  if (ccAudio.hidden) return;
+
+  for (const track of audioTracks) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `cc-option${track.index === audioIndex ? ' active' : ''}`;
+    btn.textContent = track.label || `Audio track ${track.position + 1}`;
+    if (track.lang) btn.dataset.lang = track.lang;
+    btn.addEventListener('click', () => selectAudio(track.index));
+    audioList.append(btn);
+  }
+}
+
+async function selectAudio(index) {
+  if (index === audioIndex || audioSwitching) return;
+  const previous = audioIndex;
+  const time = video.currentTime || 0;
+  const wasPlaying = !video.paused && !video.ended;
+  audioIndex = index;
+  audioSwitching = true;
+  renderAudioTracks();
+  writeJson(audioPrefsKey(), { index });
+
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    video.removeEventListener('loadedmetadata', restore);
+    audioSwitching = false;
+    try {
+      if (time > 0) video.currentTime = time;
+    } catch { /* seek can fail on a fresh source */ }
+    if (wasPlaying) video.play().catch(() => {});
+  };
+
+  video.addEventListener('loadedmetadata', restore);
+  video.src = streamUrl();
+  video.load();
+
+  // A remux can take a few seconds; if it never loads, go back to the old track.
+  setTimeout(() => {
+    if (restored) return;
+    restored = true;
+    video.removeEventListener('loadedmetadata', restore);
+    audioSwitching = false;
+    audioIndex = previous;
+    renderAudioTracks();
+    writeJson(audioPrefsKey(), { index: previous });
+    toastInPlayer('That audio track could not be loaded.');
+  }, 20000);
 }
 
 /* WebVTT is simple enough to read directly: a timestamp line, then the cue. */
