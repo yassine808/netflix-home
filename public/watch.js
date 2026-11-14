@@ -20,7 +20,6 @@ const muteBtn = $('muteBtn');
 const fsBtn = $('fsBtn');
 const videoTitle = $('videoTitle');
 const epTag = $('epTag');
-const epName = $('epName');
 const nextWrap = $('nextWrap');
 const nextCard = $('nextCard');
 const nextTag = $('nextTag');
@@ -134,7 +133,6 @@ async function init() {
   videoTitle.textContent = item.seriesTitle
     || (item.isSeries ? full.replace(/\s*[·•-]\s*S\d+E\d+\s*$/i, '') : (item.title || full));
   epTag.textContent = item.isSeries ? `S${item.season}:E${item.episode}` : '';
-  epName.textContent = item.episodeTitle || '';
   document.body.style.background = '#000';
   video.poster = thumbUrl(item);
   video.src = `/api/stream/${encodeURIComponent(item.id)}`;
@@ -424,8 +422,6 @@ async function loadEpisodes() {
   }
   if (!seriesSeasons.length) return;
   epBtn.hidden = false;
-  const current = seriesSeasons.flatMap((s) => s.episodes).find((e) => e.id === item.id);
-  if (current?.title && !epName.textContent) epName.textContent = current.title;
   epSeason.replaceChildren(...seriesSeasons.map((s) => {
     const opt = document.createElement('option');
     opt.value = String(s.season);

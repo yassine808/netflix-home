@@ -71,41 +71,44 @@ body.leaving .player {
   top: 0;
   bottom: 0;
   width: 100%;
-  background: radial-gradient(ellipse at var(--from, 0%) 50%, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.07) 70%);
+  background: rgba(255, 255, 255, 0.16);
   opacity: 0;
+  clip-path: circle(0% at 50% 50%);
 }
-.seek-left .seek-ripple { left: 0; --from: 0%; border-radius: 0 100% 100% 0 / 0 50% 50% 0; transform-origin: left center; }
-.seek-right .seek-ripple { right: 0; --from: 100%; border-radius: 100% 0 0 100% / 50% 0 0 50%; transform-origin: right center; }
+.seek-left .seek-ripple { left: 0; border-radius: 0 100% 100% 0 / 0 50% 50% 0; }
+.seek-right .seek-ripple { right: 0; border-radius: 100% 0 0 100% / 50% 0 0 50%; }
 .seek-label {
   position: relative;
   display: inline-flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
   font-weight: 700;
   color: #fff;
   text-shadow: 0 1px 10px rgba(0, 0, 0, 0.55);
   opacity: 0;
 }
-.seek-label svg { width: 48px; height: 48px; }
-.seek-label b { font-size: 24px; font-variant-numeric: tabular-nums; }
-.seek-unit { font-size: 13px; font-weight: 600; opacity: 0.9; }
-.seek-side.is-on .seek-ripple { animation: seek-ripple 0.5s ease-out; }
-.seek-side.is-on .seek-label { animation: seek-label 0.6s var(--ease); }
-.seek-side.is-on .c1 { animation: chev 0.5s linear; }
-.seek-side.is-on .c2 { animation: chev 0.5s linear 0.1s backwards; }
+.seek-label svg { width: 64px; height: 32px; }
+.seek-label b { font-size: 26px; line-height: 1; font-variant-numeric: tabular-nums; }
+.seek-unit { font-size: 13px; font-weight: 600; opacity: 0.9; margin-top: -4px; }
+.seek-side.is-on .seek-ripple { animation: seek-ripple 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.seek-side.is-on .seek-label { animation: seek-label 0.65s var(--ease) both; }
+.seek-side.is-on .c1 { animation: chev 0.6s ease-out both; }
+.seek-side.is-on .c2 { animation: chev 0.6s ease-out 0.1s both; }
+.seek-side.is-on .c3 { animation: chev 0.6s ease-out 0.2s both; }
 @keyframes seek-ripple {
-  0% { opacity: 0; transform: scaleX(0.55); }
-  30% { opacity: 1; }
-  100% { opacity: 0; transform: scaleX(1); }
+  0% { opacity: 1; clip-path: circle(0% at 50% 50%); }
+  60% { opacity: 1; }
+  100% { opacity: 0; clip-path: circle(110% at 50% 50%); }
 }
 @keyframes seek-label {
-  0% { opacity: 0; transform: scale(0.85); }
-  20% { opacity: 1; transform: scale(1); }
-  75% { opacity: 1; }
+  0% { opacity: 0; transform: scale(0.8); }
+  15% { opacity: 1; transform: scale(1.06); }
+  30% { transform: scale(1); }
+  80% { opacity: 1; }
   100% { opacity: 0; }
 }
-@keyframes chev { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.35; } }
+@keyframes chev { 0% { opacity: 0.15; } 40% { opacity: 1; } 100% { opacity: 0.2; } }
 
 .player-loading {
   position: absolute;
