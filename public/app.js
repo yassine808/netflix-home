@@ -1,6 +1,6 @@
 import {
   getLibrary, rescanLibrary, quitApp, formatDuration, formatSize, formatClock,
-  qualityLabel, thumbUrl, posterUrl, toggleMyList, isInMyList, getMyList, progressFor,
+  qualityLabel, thumbUrl, posterUrl, logoUrl, toggleMyList, isInMyList, getMyList, progressFor,
   getRemoteList, isInRemoteList, toggleRemoteList,
   getSeries, getSeriesCatalog, debounce, createEl,
   searchCatalog, getFallbackCatalog, getCatalogItem,
@@ -84,6 +84,7 @@ const els = {
   heroImg: $('heroImg'),
   heroVideo: $('heroVideo'),
   heroTitle: $('heroTitle'),
+  heroLogo: $('heroLogo'),
   heroMeta: $('heroMeta'),
   heroPlot: $('heroPlot'),
   heroPlay: $('heroPlay'),
@@ -683,6 +684,7 @@ function renderHero() {
   els.heroImg.alt = item.title;
   // The title's main picture: official artwork first, cached hero still as the fallback.
   heroArt(item);
+  heroLogo(item);
   els.heroRating.textContent = item.rating || (item.height >= 1000 ? 'HD' : 'NR');
 
   const progress = progressOfGroup(item);
@@ -718,6 +720,25 @@ function heroArt(item) {
     setImg(img, heroImageUrl(item));
   };
   setImg(img, thumbUrl(item));
+}
+
+/* Hero logo: the catalog wordmark replaces the text title. The heading keeps
+ * its space until the image has actually loaded, so a missing logo simply
+ * leaves the text in place. */
+function heroLogo(item) {
+  const logo = els.heroLogo;
+  logo.classList.remove('loaded');
+  els.heroTitle.classList.remove('has-logo');
+  logo.onload = () => {
+    logo.classList.add('loaded');
+    els.heroTitle.classList.add('has-logo');
+  };
+  logo.onerror = () => {
+    logo.classList.remove('loaded');
+    els.heroTitle.classList.remove('has-logo');
+    logo.removeAttribute('src');
+  };
+  logo.src = logoUrl(item);
 }
 
 function setupPreview(item) {
@@ -997,6 +1018,22 @@ function buildCard(item, { progress, width = 480, episode = '' } = {}) {
   img.addEventListener('error', () => img.remove());
 
   const overlay = createEl('div', 'card-overlay');
+  // The title's official wordmark, when the catalog has one. The text title
+  // stays in the DOM and takes over again if the image 404s or fails to load.
+  if (!remote) {
+    const logo = document.createElement('img');
+    logo.className = 'card-logo';
+    logo.loading = 'lazy';
+    logo.decoding = 'async';
+    logo.alt = '';
+    logo.addEventListener('load', () => {
+      overlay.classList.add('has-logo');
+      logo.classList.add('loaded');
+    });
+    logo.addEventListener('error', () => logo.remove());
+    logo.src = logoUrl(item);
+    overlay.append(logo);
+  }
   overlay.append(createEl('div', 'card-title', item.title));
   const meta = createEl('div', 'card-meta');
   const runtime = remote

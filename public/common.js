@@ -284,6 +284,14 @@ export function posterUrl(item) {
   return `/api/art/${item.id}/poster`;
 }
 
+/* Transparent title wordmark from the catalog. Answers 404 when the title has
+ * none, which the UI treats as "keep the text title". The version tag matters:
+ * browsers still hold the old `/logo` response, which was the backdrop image,
+ * for a day. */
+export function logoUrl(item) {
+  return `/api/art/${encodeURIComponent(item.id)}/logo?v=2`;
+}
+
 export function readJson(key, fallback) {
   try {
     const value = JSON.parse(localStorage.getItem(key));

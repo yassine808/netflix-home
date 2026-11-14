@@ -3,7 +3,7 @@
  *
  * Library folders usually have no sidecar poster/fanart, so a card would fall
  * back to a frame sampled from the video. This module asks Cinemeta for the
- * title's own poster and backdrop, downloads them once into
+ * title's own poster, backdrop, and logo wordmark, downloads them once into
  * `<library>/.cache/art`, and serves that file afterwards. Video frames are
  * only used when the internet is off and nothing was cached yet.
  */
@@ -17,7 +17,7 @@ import { resolveImdbId } from './imdb.js';
 import { isOffline } from './settings.js';
 
 const CINEMETA = 'https://v3-cinemeta.strem.io';
-const FIELDS = { poster: 'poster', backdrop: 'background' };
+const FIELDS = { poster: 'poster', backdrop: 'background', logo: 'logo' };
 
 let artDir = null;
 const inflight = new Map();
@@ -37,18 +37,30 @@ function hashFor(id) {
   return crypto.createHash('sha1').update(String(id)).digest('hex').slice(0, 24);
 }
 
-function cacheFile(id, kind) {
-  return artDir ? path.join(artDir, `${hashFor(id)}-${kind}.jpg`) : null;
+function cacheFile(id, kind, ext) {
+  return artDir ? path.join(artDir, `${hashFor(id)}-${kind}.${ext || (kind === 'logo' ? 'png' : 'jpg')}`) : null;
+}
+
+/* A logo is a transparent wordmark, usually PNG; the extension decides the
+ * content type the route sends back, so remember what was actually stored. */
+function imageExt(buffer) {
+  if (buffer.length > 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return 'png';
+  if (buffer.length > 3 && buffer[0] === 0xff && buffer[1] === 0xd8) return 'jpg';
+  if (buffer.length > 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') return 'webp';
+  return null;
 }
 
 function existing(id, kind) {
-  const file = cacheFile(id, kind);
-  if (!file) return null;
-  try {
-    const stat = fs.statSync(file);
-    if (stat.isFile() && stat.size > 1024) return file;
-  } catch {
-    /* not cached yet */
+  const exts = kind === 'logo' ? ['png', 'jpg', 'webp'] : ['jpg'];
+  for (const ext of exts) {
+    const file = cacheFile(id, kind, ext);
+    if (!file) return null;
+    try {
+      const stat = fs.statSync(file);
+      if (stat.isFile() && stat.size > 1024) return file;
+    } catch {
+      /* not cached yet */
+    }
   }
   return null;
 }
@@ -63,6 +75,9 @@ async function resolveUrl(item, kind) {
   if (!res.ok) return null;
   const data = await res.json();
   const meta = data?.meta || {};
+  // A logo has no substitute: a poster stretched into the title slot looks
+  // like a broken image, so the frontend keeps its text title instead.
+  if (kind === 'logo') return String(meta.logo || '') || null;
   return String(meta[FIELDS[kind]] || meta.poster || meta.background || '') || null;
 }
 
@@ -103,7 +118,7 @@ export async function officialArt(item, kind) {
         failures.set(key, Date.now());
         return null;
       }
-      const file = cacheFile(artId, kind);
+      const file = cacheFile(artId, kind, imageExt(buffer) || (kind === 'logo' ? 'png' : 'jpg'));
       await fsp.writeFile(file, buffer);
       failures.delete(key);
       return file;

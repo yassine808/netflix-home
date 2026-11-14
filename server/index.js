@@ -575,8 +575,10 @@ app.post('/api/intro/:id', (req, res) => {
 });
 
 app.get('/api/art/:id/:kind', async (req, res) => {
-  const kind = req.params.kind === 'poster' ? 'poster' : 'backdrop';
-  const sidecar = artPath(kind, req.params.id);
+  const want = req.params.kind;
+  const kind = want === 'poster' || want === 'logo' ? want : 'backdrop';
+  // Sidecar pictures only exist for poster/backdrop.
+  const sidecar = kind === 'logo' ? null : artPath(kind, req.params.id);
   if (sidecar) return res.sendFile(sidecar);
   const item = getItem(req.params.id);
   if (!item) return res.status(404).end();
