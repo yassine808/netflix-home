@@ -64,6 +64,8 @@ const state = {
   castleBusy: false,
   castleDetailToken: 0,
   castleSeasonToken: 0,
+  castleTrailerToken: 0,
+  castleTrailerTimer: null,
   castleLocal: null,
   castleCatalog: null,
   castleSig: '',
@@ -157,7 +159,9 @@ const els = {
   onlineEpisodes: $('onlineEpisodes'),
   castleModal: $('castleModal'),
   castleBackdrop: $('castleBackdrop'),
+  castleTrailer: $('castleTrailer'),
   castleKicker: $('castleKicker'),
+  castleLogo: $('castleLogo'),
   castleTitle: $('castleTitle'),
   castleMeta: $('castleMeta'),
   castlePlot: $('castlePlot'),
@@ -1009,7 +1013,9 @@ function buildCard(item, { progress, width = 480, episode = '' } = {}) {
   img.decoding = 'async';
   img.fetchPriority = 'low';
   img.alt = '';
-  img.src = remote ? (item.background || item.poster || '') : thumbUrl(item, width);
+  // Catalog snapshots carry absolute CDN URLs. Offline mode must not touch the
+  // network, not even for a picture, so the title fallback stays instead.
+  if (!remote || !state.offline) img.src = remote ? (item.background || item.poster || '') : thumbUrl(item, width);
   img.addEventListener('load', () => img.classList.add('loaded'));
   img.addEventListener('error', () => img.remove());
 
@@ -1713,7 +1719,16 @@ function applyOfflineUi() {
   if (state.offline) {
     resetOnlineSearch();
     resetCastleSearch();
+    // Pictures already handed to the browser stay in the DOM. Drop remote ones
+    // so a lazy image cannot fire a request after the switch flips; local
+    // endpoints and the cached sheet art are untouched.
+    els.onlineModal?.querySelectorAll('img').forEach((img) => img.remove());
+    if (!els.castleModal.hidden && state.castleTitle) renderCastleDownloads(state.castleTitle);
   }
+  // Cards already on screen keep their <img src>, so a remote CDN picture
+  // would still be fetched after the switch flips. Re-render swaps those out
+  // (offline) or back in (online); cached local art is unaffected.
+  if (state.library) renderAll();
 }
 
 async function toggleOffline() {
@@ -2163,7 +2178,8 @@ function renderOnlineSeasons(item) {
     for (const episode of entry.episodes) {
       const row = createEl('article', 'episode-row');
 
-      if (episode.thumbnail) {
+      // Catalog thumbnails are remote CDN pictures; offline mode skips them.
+      if (episode.thumbnail && !state.offline) {
         const thumb = document.createElement('img');
         thumb.className = 'episode-thumb';
         thumb.loading = 'lazy';
@@ -2348,9 +2364,10 @@ function syncCastleSheet() {
 }
 
 function populateCastleModal(item, { loading = false } = {}) {
-  setImg(els.castleBackdrop, item.background || item.poster || '');
-  els.castleBackdrop.hidden = !(item.background || item.poster);
-  els.castleTitle.textContent = item.title;
+  const remoteArt = state.offline ? '' : (item.background || item.poster || '');
+  setImg(els.castleBackdrop, remoteArt);
+  els.castleBackdrop.hidden = !remoteArt;
+  setCastleLogo(item);
   els.castleKicker.textContent = 'DOWNLOAD';
   if (!item.description && loading) els.castlePlot.replaceChildren(skelLines(3));
   else els.castlePlot.textContent = item.description || 'No overview available for this title yet.';
@@ -2378,6 +2395,7 @@ async function openCastleModal(item) {
   if (!els.searchOverlay.hidden) closeSearch();
   if (!els.onlineModal.hidden) closeOnlineModal();
   stopPreview();
+  stopCastleTrailer();
   castleFocusEl = document.activeElement;
   state.castleTitle = item;
   state.castleLocal = null;
@@ -2702,7 +2720,12 @@ function renderCastleDownloads(detail) {
 
     const local = localFor(detail.activeSeason ?? state.castleSeason, episode.episode);
 
-    if (episode.thumbnail) {
+    // The catalog thumbnail is remote. Offline, reuse the local episode's own
+    // artwork; an episode that is not on disk simply has no picture.
+    const thumbSrc = state.offline
+      ? (local ? thumbUrl(local, 320) : '')
+      : (episode.thumbnail || '');
+    if (thumbSrc) {
       const thumb = document.createElement('img');
       thumb.className = 'episode-thumb';
       if (local) {
@@ -2721,7 +2744,7 @@ function renderCastleDownloads(detail) {
       }
       thumb.loading = 'lazy';
       thumb.alt = '';
-      thumb.src = episode.thumbnail;
+      thumb.src = thumbSrc;
       thumb.addEventListener('error', () => thumb.remove());
       row.append(thumb);
     }
@@ -2993,6 +3016,7 @@ async function openCastleForTitle(title) {
 function closeCastleModal() {
   if (els.castleModal.hidden) return;
   els.castleModal.hidden = true;
+  stopCastleTrailer();
   state.castleTitle = null;
   state.castleCatalog = null;
   state.castleSig = '';
@@ -3082,11 +3106,18 @@ function resumeTarget(group) {
   return best;
 }
 
+/* The sheet uses the same picture as the card (the title's backdrop), not the
+ * download catalog's background. The trailer covers it once it is ready. */
 function populateSeriesHero(group, detail) {
-  const image = detail?.background || detail?.poster || '';
-  setImg(els.castleBackdrop, image || heroImageUrl({ id: group.id }));
-  els.castleBackdrop.hidden = false;
-  els.castleTitle.textContent = group.title;
+  const img = els.castleBackdrop;
+  img.onerror = () => {
+    img.onerror = null;
+    img.classList.remove('img-ready');
+    setImg(img, heroImageUrl({ id: group.id }));
+  };
+  setImg(img, thumbUrl(group, 0));
+  img.hidden = false;
+  setCastleLogo(group);
   els.castleKicker.textContent = 'IN YOUR LIBRARY';
   els.castlePlot.textContent = group.plot
     || detail?.description
@@ -3108,6 +3139,99 @@ function populateSeriesHero(group, detail) {
     els.castleMeta.append(createEl('span', index === 0 ? 'year' : '', bit));
   });
   updateCastleListButton(group);
+}
+
+/* Official wordmark for the sheet hero. Remotes fall back to the text title. */
+function setCastleLogo(item) {
+  const logo = els.castleLogo;
+  const title = els.castleTitle;
+  title.textContent = item?.title || '';
+  logo.classList.remove('loaded');
+  title.classList.remove('has-logo');
+  logo.onload = () => {
+    logo.classList.add('loaded');
+    title.classList.add('has-logo');
+  };
+  logo.onerror = () => {
+    logo.classList.remove('loaded');
+    title.classList.remove('has-logo');
+    logo.removeAttribute('src');
+  };
+  const src = item?.id ? logoUrl(item) : '';
+  if (!src) {
+    logo.removeAttribute('src');
+    return;
+  }
+  if (logo.getAttribute('src') === src && logo.complete && logo.naturalWidth) {
+    logo.classList.add('loaded');
+    title.classList.add('has-logo');
+    return;
+  }
+  logo.src = src;
+}
+
+/* The sheet trailer is the same cached file as the billboard. The server
+ * resolves Netflix first, then Cinemeta, and reports when the MP4 is on disk;
+ * until then the card picture stays on screen. */
+function stopCastleTrailer() {
+  state.castleTrailerToken += 1;
+  clearTimeout(state.castleTrailerTimer);
+  state.castleTrailerTimer = null;
+  const video = els.castleTrailer;
+  video.classList.remove('playing');
+  els.castleModal.querySelector('.online-hero')?.classList.remove('is-playing');
+  try {
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+  } catch { /* ignore */ }
+}
+
+function playCastleTrailer(url) {
+  const video = els.castleTrailer;
+  if (!url || video.getAttribute('src') === url) return;
+  video.muted = true;
+  video.src = url;
+  const playing = video.play();
+  if (playing && typeof playing.catch === 'function') playing.catch(() => {});
+}
+
+function askCastleTrailer(item, token, deadline) {
+  if (token !== state.castleTrailerToken || els.castleModal.hidden) return;
+  fetch(`/api/trailer/${encodeURIComponent(item.id)}`, { cache: 'no-store' })
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data) => {
+      if (token !== state.castleTrailerToken || els.castleModal.hidden) return;
+      if (data?.status === 'ready' && data.url) {
+        playCastleTrailer(data.url);
+        return;
+      }
+      if (!data || data.status === 'failed' || data.status === 'none') return;
+      if (Date.now() > deadline) return;
+      state.castleTrailerTimer = setTimeout(() => askCastleTrailer(item, token, deadline), 1500);
+    })
+    .catch(() => {
+      if (token !== state.castleTrailerToken || els.castleModal.hidden) return;
+      if (Date.now() > deadline) return;
+      state.castleTrailerTimer = setTimeout(() => askCastleTrailer(item, token, deadline), 2500);
+    });
+}
+
+function startCastleTrailer(item) {
+  stopCastleTrailer();
+  if (!item?.id) return;
+  askCastleTrailer(item, state.castleTrailerToken, Date.now() + 120000);
+}
+
+function bindCastleTrailer() {
+  els.castleTrailer.addEventListener('playing', () => {
+    els.castleTrailer.classList.add('playing');
+    els.castleModal.querySelector('.online-hero')?.classList.add('is-playing');
+  });
+  els.castleTrailer.addEventListener('error', () => {
+    els.castleTrailer.classList.remove('playing');
+    els.castleModal.querySelector('.online-hero')?.classList.remove('is-playing');
+  });
 }
 
 function highlightSheetTarget() {
@@ -3145,6 +3269,7 @@ async function openSeriesSheet(group, focusId) {
   els.castleModal.hidden = false;
   syncBodyLock();
   populateSeriesHero(group, null);
+  startCastleTrailer(group);
   els.castleDownloadBlock.hidden = false;
   els.castleEpisodes.replaceChildren();
   els.castleQuality.replaceChildren();
@@ -3411,7 +3536,7 @@ function catalogEpisodeRow(entry, group) {
   img.loading = 'lazy';
   img.decoding = 'async';
   img.alt = '';
-  if (entry.thumbnail) {
+  if (entry.thumbnail && !state.offline) {
     img.src = entry.thumbnail;
     img.addEventListener('error', () => img.remove());
   } else {
@@ -3802,6 +3927,7 @@ function toast(message, { type, title } = {}) {
 
 function bindStaticEvents() {
   bindNotifs();
+  bindCastleTrailer();
   document.querySelectorAll('.nav-link').forEach((link) => {
     link.addEventListener('click', (e) => {
       e.preventDefault();

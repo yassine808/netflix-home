@@ -693,6 +693,19 @@ app.get('/api/hero/:id/trailer.mp4', (req, res) => {
   res.sendFile(file);
 });
 
+/* Trailer state for the series sheet: starts the Netflix/Cinemeta lookup when
+ * nothing is cached yet and reports when the file is ready to play. */
+app.get('/api/trailer/:id', (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).json({ error: 'not found' });
+  // Queue the lookup before reading the status: a cold call must report
+  // `pending`, otherwise the client stops polling and never sees the file.
+  warmTrailer(found.item);
+  const status = trailerStatus(found.item);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ ...status, url: status.status === 'ready' ? `/api/hero/${encodeURIComponent(found.item.id)}/trailer.mp4` : '' });
+});
+
 app.get('/api/frames/:id', (req, res) => {
   const found = resolveItemFile(req.params.id);
   if (!found) return res.status(404).json({ error: 'not found' });

@@ -5,14 +5,16 @@ import crypto from 'node:crypto';
 import { resolveImdbId, normalizeTitle } from './imdb.js';
 import { isOffline } from './settings.js';
 import { getDb } from './db.js';
+import { netflixTrailer } from './netflix.js';
 import { run as runProc, playbackActive } from './proc.js';
 
 /**
- * Trailers: Cinemeta (keyless) resolves the official trailer of the season that
- * matches the library; KinoCheck covers titles Cinemeta misses, then a YouTube
- * search. The cut is downloaded once into <cache>\trailers and indexed in the
- * shared catalog database. The home billboard then plays it instead of the
- * generated clip.
+ * Trailers: Netflix's own billboard clip first (see server/netflix.js), then
+ * Cinemeta (keyless) resolves the official trailer of the season that matches
+ * the library; KinoCheck covers titles Cinemeta misses, then a YouTube search.
+ * The cut is downloaded once into <cache>\trailers and indexed in the shared
+ * catalog database. The home billboard and the series sheet then play it from
+ * disk, online or offline.
  */
 
 const CINEMETA = 'https://v3-cinemeta.strem.io';
@@ -45,8 +47,15 @@ export function initTrailers(cacheDir, { ytDlpPath } = {}) {
       size INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL,
       error TEXT,
+      source TEXT,
       fetched_at INTEGER NOT NULL
     )`);
+    // Older databases predate the source column; keep their rows.
+    try {
+      db.exec('ALTER TABLE trailers ADD COLUMN source TEXT');
+    } catch {
+      /* column already there */
+    }
   } catch (err) {
     db = null;
     console.warn('trailer index disabled:', err?.message || String(err));
@@ -65,8 +74,8 @@ function rowFor(id) {
 function writeRow(entry) {
   if (!db) return;
   try {
-    db.prepare(`INSERT INTO trailers (id, imdb_id, youtube_id, title, path, size, status, error, fetched_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    db.prepare(`INSERT INTO trailers (id, imdb_id, youtube_id, title, path, size, status, error, source, fetched_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         imdb_id = excluded.imdb_id,
         youtube_id = excluded.youtube_id,
@@ -75,10 +84,11 @@ function writeRow(entry) {
         size = excluded.size,
         status = excluded.status,
         error = excluded.error,
+        source = excluded.source,
         fetched_at = excluded.fetched_at`)
       .run(entry.id, entry.imdbId || '', entry.youtubeId || '', entry.title || '',
         entry.path || '', Number(entry.size) || 0, entry.status || 'pending',
-        entry.error || null, Date.now());
+        entry.error || null, entry.source || '', Date.now());
   } catch {
     /* index is best effort */
   }
@@ -171,6 +181,29 @@ async function download(item, youtubeId) {
   return { file, size: stat.size };
 }
 
+/* Netflix gives a direct signed MP4, so no yt-dlp step is needed. Download to
+ * the same `.part` name and rename only once the whole file is on disk, so a
+ * broken transfer never replaces a good trailer. */
+async function downloadDirect(item, url) {
+  const file = path.join(trailerDir, `${hashFor(trailerKey(item))}.mp4`);
+  const temp = file.replace(/\.mp4$/, '.part');
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+    signal: AbortSignal.timeout(180000),
+  });
+  if (!res.ok) throw new Error(`netflix clip HTTP ${res.status}`);
+  const type = String(res.headers.get('content-type') || '');
+  if (type && !type.startsWith('video/')) throw new Error(`netflix clip is ${type}`);
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.length < 200 * 1024) throw new Error('netflix clip is too small');
+  await fsp.writeFile(temp, buffer);
+  await fsp.rename(temp, file);
+  return { file, size: buffer.length };
+}
+
 /* One download at a time: trailers are a background nicety, not playback.
  * The queue holds the work itself, so yt-dlp runs for one title at a time. */
 const queue = [];
@@ -189,23 +222,86 @@ export function warmTrailer(item) {
   if (!item || isOffline()) return null;
   const key = trailerKey(item);
   if (queued.has(key)) return queued.get(key);
-  if (trailerReady(item)) return null;
 
+  const existing = trailerReady(item);
+  const row = rowFor(key);
+  // A trailer already known to come from Netflix (or from the fallback chain)
+  // is final. Rows from older builds have no source yet: give Netflix one try,
+  // then keep the file and remember that it is the fallback copy.
+  if (existing && row?.source) return null;
+
+  const title = item.seriesTitle || item.title;
   const work = async () => {
+    if (existing) {
+      const netflix = await netflixTrailer(item);
+      if (netflix?.videoUrl) {
+        try {
+          const { file, size } = await downloadDirect(item, netflix.videoUrl);
+          writeRow({
+            id: key,
+            imdbId: row?.imdb_id || '',
+            youtubeId: '',
+            title,
+            path: file,
+            size,
+            status: 'ready',
+            source: 'netflix',
+          });
+          return file;
+        } catch {
+          /* keep the trailer that already works */
+        }
+      }
+      writeRow({
+        id: key,
+        imdbId: row?.imdb_id || '',
+        youtubeId: row?.youtube_id || '',
+        title,
+        path: existing.path,
+        size: existing.size,
+        status: 'ready',
+        source: 'cache',
+      });
+      return existing.path;
+    }
+
+    // Netflix's own billboard clip first: no YouTube step, one direct MP4.
+    const netflix = await netflixTrailer(item);
+    if (netflix?.videoUrl) {
+      writeRow({ id: key, imdbId: '', youtubeId: '', title, status: 'pending', source: 'netflix' });
+      try {
+        const { file, size } = await downloadDirect(item, netflix.videoUrl);
+        writeRow({
+          id: key,
+          imdbId: '',
+          youtubeId: '',
+          title,
+          path: file,
+          size,
+          status: 'ready',
+          source: 'netflix',
+        });
+        return file;
+      } catch {
+        /* fall through to Cinemeta */
+      }
+    }
+
     const resolved = await resolveTrailer(item);
     const youtubeId = resolved?.youtubeId || null;
     const imdbId = resolved?.imdbId || null;
-    writeRow({ id: key, imdbId, youtubeId, title: item.seriesTitle || item.title, status: 'pending' });
+    writeRow({ id: key, imdbId, youtubeId, title, status: 'pending', source: 'cinemeta' });
     try {
       const { file, size } = await download(item, youtubeId);
       writeRow({
         id: key,
         imdbId,
         youtubeId,
-        title: item.seriesTitle || item.title,
+        title,
         path: file,
         size,
         status: 'ready',
+        source: 'cinemeta',
       });
       return file;
     } catch (err) {
@@ -213,9 +309,10 @@ export function warmTrailer(item) {
         id: key,
         imdbId,
         youtubeId,
-        title: item.seriesTitle || item.title,
+        title,
         status: 'failed',
         error: err?.message || String(err),
+        source: 'cinemeta',
       });
       return null;
     }
@@ -249,11 +346,14 @@ export function trailerPathFor(item) {
 
 export function trailerStatus(item) {
   const ready = trailerReady(item);
-  if (ready) return { ...ready, status: 'ready' };
+  if (ready) {
+    const row = rowFor(trailerKey(item));
+    return { ...ready, status: 'ready', source: row?.source || '' };
+  }
   const key = trailerKey(item);
   const row = rowFor(key);
   if (!row) return { status: queued.has(key) ? 'pending' : 'none' };
-  return { status: row.status, youtubeId: row.youtube_id, error: row.error };
+  return { status: row.status, youtubeId: row.youtube_id, error: row.error, source: row.source || '' };
 }
 
 /* Warm the billboard trailer for one item per series, newest titles first. */

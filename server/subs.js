@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { resolveImdbId, isImdbId } from './imdb.js';
+import { isOffline } from './settings.js';
 import { getDb, transaction, hash32 } from './db.js';
 
 /**
@@ -152,6 +153,7 @@ export function vttFromSubtitle(text) {
 }
 
 export async function fetchEnglishSubtitle({ imdbId, season = 0, episode = 0, lang = 'en' } = {}) {
+  if (isOffline()) return null;
   const id = isImdbId(imdbId) ? String(imdbId).replace(/^tt/, '') : '';
   if (!id) return null;
   const parts = [`imdbid-${id}`];
@@ -196,7 +198,7 @@ export async function fetchEnglishSubtitle({ imdbId, season = 0, episode = 0, la
 }
 
 export async function ensureEnglishSubtitle(full, item = {}) {
-  if (!full || !item) return false;
+  if (!full || !item || isOffline()) return false;
   const stem = full.slice(0, full.length - path.extname(full).length);
   const target = `${stem}.en.vtt`;
   try {

@@ -1,4 +1,5 @@
 import { searchOnline } from './online.js';
+import { isOffline } from './settings.js';
 
 /* The library rarely carries an IMDb id, so resolve one per series/movie once
  * through Cinemeta and keep it for the rest of the process. */
@@ -15,6 +16,9 @@ export function isImdbId(value) {
 export async function resolveImdbId(item) {
   const direct = String(item.tmdbId || '');
   if (isImdbId(direct)) return direct;
+  // Offline means no lookup and no cached negative: once the switch is back on
+  // the same title can still resolve.
+  if (isOffline()) return '';
 
   const key = item.seriesKey || item.id;
   if (cache.has(key)) return cache.get(key);
