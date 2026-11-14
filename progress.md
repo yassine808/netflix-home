@@ -161,3 +161,15 @@
 - Done: `watch.html` got `#playerTag` between the left and right control groups, `watch.css` centers it absolutely (`max-width: min(42%, 520px)`, ellipsis, hidden under 900 px), and `watch.js` fills it with `SxxExx` for series or the title for movies.
 - Verified: CDP in the player: Cyberpunk episode showed `S01E08` centred at 50 % of the bar, Night of the Living Dead showed its title at 50 %; 1024 px and 1440 px have no overlap with the time or the right-side buttons, and it is hidden at 800 px. No console errors.
 - Next: none.
+
+### 2026-11-14 - large play button
+- Goal: make the play button on the billboard and in the download sheet much bigger, matching the large white pill Yassine pointed at.
+- Done: `public/styles.css` gives `.hero-actions .btn-play` and `.modal-actions .btn-play` a 64 px height, 40-44 px side padding, 16 px gap, 10 px radius, 24 px label and a 30 px triangle; the <= 900 px rule drops them to 54 px / 19 px / 24 px icon. No markup or JS changed.
+- Verified: CDP at 1440 px: hero button 229x64, sheet `Resume S02E02` 316x64, both `24px` font, `10px` radius, `30x30` icon, white background; at 800 px both 54 px tall with a `24x24` icon. Screenshots `hero-play-1440.png` / `sheet-play-1440.png` match the reference shape. No console errors.
+- Next: none.
+
+### 2026-11-14 - Resume button back to normal size
+- Goal: Yassine wanted the sheet's Resume button at its old size; only the play triangle should grow.
+- Done: removed the `.modal-actions .btn-play` size overrides so the sheet button is back to the standard 50 px / 16 px / 12 px radius (42 px under 520 px), and kept a larger triangle: 28 px on desktop, 26 px on narrow screens. The billboard button keeps its 64 px pill.
+- Verified: against the deployed EXE (build 9a141dc4b8620e84, 253.6 MB, hashes equal): sheet `Resume S02E02` measured 225x50 at 1440 px with a `28x28` icon and 223x50 at 800 px with a `26x26` icon; billboard still 229x64 / 30 px icon. Screenshot `sheet-play-1440.png` shows the original pill with the bigger triangle. No console errors.
+- Next: none.

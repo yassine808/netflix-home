@@ -1694,6 +1694,16 @@ body::before {
 .btn-play:hover { background: #fff; box-shadow: 0 12px 38px rgba(255,255,255,.26); }
 .btn-play::after { content: ""; position: absolute; inset: 0; background: linear-gradient(110deg, transparent 30%, rgba(255,42,54,.28) 50%, transparent 70%); transform: translateX(-120%); transition: transform .7s var(--ease); }
 .btn-play:hover::after { transform: translateX(120%); }
+/* The hero play button is the main action: large white pill, big triangle. */
+.hero-actions .btn-play { height: 64px; padding: 0 44px; gap: 16px; border-radius: 10px; font-size: 24px; }
+.hero-actions .btn-play svg { width: 30px; height: 30px; }
+/* The sheet's Play/Resume button keeps its normal size; only the triangle grows. */
+.modal-actions .btn-play svg { width: 28px; height: 28px; }
+@media (max-width: 900px) {
+  .hero-actions .btn-play { height: 54px; padding: 0 30px; gap: 12px; font-size: 19px; }
+  .hero-actions .btn-play svg { width: 24px; height: 24px; }
+  .modal-actions .btn-play svg { width: 26px; height: 26px; }
+}
 .btn-info { background: var(--glass); border: 1px solid var(--glass-line); backdrop-filter: blur(14px); }
 .btn-info:hover { background: rgba(255,255,255,.14); }
 .btn-round { border-radius: 50%; background: var(--glass); backdrop-filter: blur(12px); border: 1.5px solid rgba(255,255,255,.4); width: 50px; height: 50px; min-width: 50px; padding: 0; flex: 0 0 auto; }

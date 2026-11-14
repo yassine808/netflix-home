@@ -84,12 +84,13 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 - Series in your library open a catalog-style sheet: hero art, **+ My List**, **Resume**, **Download all**, quality chips and season tabs; episodes already on disk get **Play** with their watched progress bar, the rest get **Download**. The library's own episodes draw immediately, so a local series opens without a loading wait (the catalog merge and skeleton only cover remote titles). Episode art is the catalog's own thumbnail — no frames are generated
 - **Download all** queues every episode of every season, skips what is already on disk, and only turns into **Everything downloaded** when the whole series is local
 - **Next episode** in the player: a downloaded episode plays straight away; one that is not on disk opens the series sheet on that season with the episode highlighted, ready to download
-- One picture per title in `.cache\pictures.db`, picked by sampling the film so a card never shows a black frame or the film's own title text
+- One picture per title drawn from the official catalog artwork (resolved through Cinemeta and cached in `.cache\art`), so a card never shows a frame sampled from the video
 - Rows: Continue Watching, Recently Added, Top 10, collections, My List. Continue Watching lists a show once — the latest episode of the season watched last — even when it lives in two folders
 - My List saves library titles and downloadable catalog titles alike; catalog entries are stored as small snapshots and reopen their download sheet
 - Skeleton placeholders while a series sheet loads its seasons and episodes
 - Notifications (download started, finished, failed) show the title's picture, not just an icon
 - Hover cards with play shortcut, detail modal with technical metadata
+- The billboard's main action is a large white pill (64 px tall, 24 px label, 30 px triangle, dropping to 54 px on phones); sheets keep their normal **Play**/**Resume** button with a larger triangle inside
 - Search across your library and the online movie/series catalog, split into local results first and online results second
 - Local search tolerates typos ("cyberpunck" finds Cyberpunk) and keeps the last searches as removable chips
 - Offline switch in the header: the server stops all internet traffic and pauses downloads until it is off again
