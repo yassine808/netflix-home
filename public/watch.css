@@ -68,15 +68,13 @@ body.leaving .player {
 .seek-side { position: relative; flex: 1 1 0; display: grid; place-items: center; }
 .seek-ripple {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 100%;
+  width: min(72vh, 94%);
+  aspect-ratio: 1;
+  border-radius: 50%;
   background: rgba(255, 255, 255, 0.16);
   opacity: 0;
-  clip-path: circle(0% at 50% 50%);
+  transform: scale(0.35);
 }
-.seek-left .seek-ripple { left: 0; border-radius: 0 100% 100% 0 / 0 50% 50% 0; }
-.seek-right .seek-ripple { right: 0; border-radius: 100% 0 0 100% / 50% 0 0 50%; }
 .seek-label {
   position: relative;
   display: inline-flex;
@@ -97,9 +95,9 @@ body.leaving .player {
 .seek-side.is-on .c2 { animation: chev 0.6s ease-out 0.1s both; }
 .seek-side.is-on .c3 { animation: chev 0.6s ease-out 0.2s both; }
 @keyframes seek-ripple {
-  0% { opacity: 1; clip-path: circle(0% at 50% 50%); }
-  60% { opacity: 1; }
-  100% { opacity: 0; clip-path: circle(110% at 50% 50%); }
+  0% { opacity: 0; transform: scale(0.35); }
+  25% { opacity: 1; }
+  100% { opacity: 0; transform: scale(1); }
 }
 @keyframes seek-label {
   0% { opacity: 0; transform: scale(0.8); }
