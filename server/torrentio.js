@@ -303,7 +303,9 @@ function languageCode(value) {
  * Rank releases for playback in this app. Deterministic: the same list always
  * produces the same order.
  *
- *   1. Drop anything under 3 seeders (a dead torrent never finishes).
+ *   1. Drop releases with no seeders at all; 1-2 seeder releases stay as
+ *      last-resort fallbacks behind every healthy one (a niche episode often
+ *      has one slow peer and nothing else).
  *   2. Drop CAM/TS rips and anything under 1080p: 1080p or 2160p only.
  *   3. Quality: 1080p and 2160p score the same +300.
  *   4. Codec is ignored: the remux re-encodes HEVC/AV1 to H.264 anyway.
@@ -322,7 +324,8 @@ export function rankReleases(releases, { originalLanguage = '' } = {}) {
 
   for (const release of releases) {
     if (!release) continue;
-    if (num(release.seeders) < 3) continue;
+    const health = num(release.seeders);
+    if (!health) continue;
     if (!ACCEPTED_QUALITY.has(release.quality)) continue;
 
     let score = 0;
@@ -330,6 +333,15 @@ export function rankReleases(releases, { originalLanguage = '' } = {}) {
 
     score += QUALITY_POINTS[release.quality] ?? 0;
     reasons.push(release.quality);
+
+    /* A 1-2 seeder release can still finish when that peer is the uploader,
+     * and for niche episodes it is the only copy left. It just never wins
+     * against a healthy swarm: -300 is more than any size band or audio bonus
+     * can recover. */
+    if (health < 3) {
+      score -= 300;
+      reasons.push('few seeders');
+    }
 
     const languages = Array.isArray(release.languages) ? release.languages : [];
     if (release.dualAudio) {

@@ -980,6 +980,7 @@ export function retryDownload(id) {
   job.completedAt = null;
   job.progressValue = job.kind === 'torrent' ? 0 : undefined;
   job.attempt = 0;
+  job.refreshCandidates = job.kind === 'torrent';
   if (Array.isArray(job.failures)) job.failures.length = 0;
   job.resumed = false;
   queue.push(job);
@@ -1356,6 +1357,23 @@ async function runTorrentJob(job) {
   scheduleSave(0);
   const dir = torrentTempDir(job);
   await fsp.mkdir(dir, { recursive: true }).catch(() => {});
+
+  /* Retry asks the ranking again: a release that was outside the old candidate
+   * list (or a swarm that recovered since) deserves another look. */
+  if (job.refreshCandidates) {
+    job.refreshCandidates = false;
+    const plan = await planTorrentRelease({
+      imdbId: job.identifier,
+      season: job.season,
+      episode: job.episode,
+      originalLanguage: job.originalLanguage,
+    }).catch(() => null);
+    if (plan?.candidates?.length) {
+      job.candidates = plan.candidates;
+      job.attempt = 0;
+    }
+  }
+
   const failures = Array.isArray(job.failures) ? job.failures : (job.failures = []);
   const candidates = Array.isArray(job.candidates) ? job.candidates : [];
   /* A transfer restored after a crash is attempted once with its old pieces.

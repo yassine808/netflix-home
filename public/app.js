@@ -2664,9 +2664,11 @@ function applyCastlePlan(detail, episodes) {
   const fallback = entry.fallback !== false;
   els.castleSource.textContent = entry.source === 'torrentio'
     ? 'Video + subtitles from Torrentio'
-    : fallback
-      ? `Castle fallback · ${qualityName(CASTLE_RESOLUTION)}`
-      : 'Torrentio only · no release found';
+    : entry.partial
+      ? 'Torrentio did not answer - tap an episode to retry'
+      : fallback
+        ? `Castle fallback · ${qualityName(CASTLE_RESOLUTION)}`
+        : 'Torrentio only · no release found';
 
   const localMap = state.castleLocal?.local || null;
   els.castleEpisodes.querySelectorAll('.castle-episode').forEach((row) => {
@@ -2677,6 +2679,21 @@ function applyCastlePlan(detail, episodes) {
     const meta = row.querySelector('.episode-date');
     if (!meta) return;
     const episode = episodes.find((item) => Number(item.episode) === number);
+
+    /* A failed Torrentio call is not "no release": keep the button usable so a
+     * tap asks again, and say what happened instead of greying the episode out
+     * for the whole session. */
+    if (entry.failed?.has(number) && !plan?.quality) {
+      meta.textContent = [formatDuration(episode?.duration), 'Torrentio unreachable - tap to retry'].filter(Boolean).join(' · ');
+      const btn = row.querySelector('.castle-dl-btn');
+      if (btn && !btn.classList.contains('is-play') && !btn.classList.contains('queued')
+        && !btn.classList.contains('is-active') && !btn.classList.contains('is-paused')) {
+        btn.disabled = false;
+        btn.title = 'Torrentio did not answer; try the download again';
+      }
+      return;
+    }
+
     if (!plan?.quality) {
       /* Torrentio has nothing here and the fallback is off: say so on the row
        * and take the Download button away instead of offering a 409. */
@@ -2708,7 +2725,7 @@ function loadCastlePlan(detail, episodes) {
   const season = detail.activeSeason ?? state.castleSeason ?? 0;
   const key = castlePlanKey(detail, season);
   const cached = state.castlePlanCache.get(key);
-  if (cached && Date.now() - cached.at < CASTLE_PLAN_TTL) return;
+  if (cached && !cached.partial && Date.now() - cached.at < CASTLE_PLAN_TTL) return;
   if (castlePlanInFlight === key) return;
   castlePlanInFlight = key;
 
@@ -2732,6 +2749,8 @@ function loadCastlePlan(detail, episodes) {
         at: Date.now(),
         source: data.source,
         fallback: data.fallback !== false,
+        partial: Boolean(data.partial),
+        failed: new Set((data.failedEpisodes || []).map(Number)),
         episodes: new Map((data.episodes || []).map((row) => [Number(row.episode), row])),
       });
       applyCastlePlan(detail, episodes);

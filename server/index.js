@@ -1279,13 +1279,47 @@ app.get('/api/castle/plan', async (req, res) => {
 
     const rows = await eachLimit(episodes, 4, async (episode) => {
       const key = `${imdbId}:${season}:${episode}:${original}`;
-      let plan = cachedPlan(key);
-      if (!plan) {
-        plan = await planTorrentRelease({ imdbId, season, episode, originalLanguage: original });
-        releasePlans.set(key, { at: Date.now(), value: plan });
+      const plan = cachedPlan(key);
+      if (plan) {
+        const { release } = plan;
+        return {
+          episode,
+          quality: release.quality,
+          codec: release.codec,
+          sizeBytes: release.sizeBytes,
+          seeders: release.seeders,
+          release: release.name,
+          fileName: release.fileName,
+        };
       }
-      if (!plan) return { episode, quality: '' };
-      const { release } = plan;
+
+      /* Torrentio sometimes times out for a single episode while the rest of
+       * the season answers. One retry turns that into either a real plan or a
+       * clear "unreachable" marker, which the sheet must not paint as "no
+       * release". A null answer is a real "no release" and is not retried. */
+      let fetched = null;
+      let failure = null;
+      try {
+        fetched = await planTorrentRelease({ imdbId, season, episode, originalLanguage: original });
+      } catch (err) {
+        failure = err;
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        try {
+          fetched = await planTorrentRelease({ imdbId, season, episode, originalLanguage: original });
+          failure = null;
+        } catch (err2) {
+          failure = err2;
+        }
+      }
+
+      if (!fetched) {
+        if (failure) return { episode, failed: true, reason: failure?.message || String(failure) };
+        releasePlans.set(key, { at: Date.now(), value: null });
+        return { episode, quality: '' };
+      }
+
+      releasePlans.set(key, { at: Date.now(), value: fetched });
+      const { release } = fetched;
       return {
         episode,
         quality: release.quality,
@@ -1301,6 +1335,8 @@ app.get('/api/castle/plan', async (req, res) => {
     res.json({
       source: rows.some((row) => row?.quality) ? 'torrentio' : 'castle',
       fallback: isCastleFallback(),
+      partial: rows.some((row) => row?.failed),
+      failedEpisodes: rows.filter((row) => row?.failed).map((row) => row.episode),
       imdbId,
       original,
       episodes: rows.filter(Boolean),
@@ -1351,17 +1387,30 @@ app.post('/api/castle/download', async (req, res) => {
           seriesKey: `castle:${movieId}`,
         });
         if (imdbId) {
-          const torrent = await addTorrentDownload({
-            imdbId,
-            season,
-            episode,
-            seriesTitle: title,
-            year: Number(body.year) || 0,
-            originalLanguage: originalAudio,
-            collection: 'Downloads',
-            folder: isSeries ? title : '',
-            poster: String(body.poster || ''),
-          });
+          /* Torrentio can fail once with a timeout while the next call answers
+           * normally; a single retry keeps one slow request from turning into
+           * "Unavailable" (or a silent 720p fallback). A null result is a real
+           * "no release" answer and is not retried. */
+          let torrent = null;
+          for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+              torrent = await addTorrentDownload({
+                imdbId,
+                season,
+                episode,
+                seriesTitle: title,
+                year: Number(body.year) || 0,
+                originalLanguage: originalAudio,
+                collection: 'Downloads',
+                folder: isSeries ? title : '',
+                poster: String(body.poster || ''),
+              });
+              break;
+            } catch (err) {
+              if (attempt > 0) throw err;
+              await new Promise((resolve) => setTimeout(resolve, 800));
+            }
+          }
           if (torrent?.skipped) {
             return res.status(200).json({ ...torrent, source: 'torrentio', originalAudio });
           }
