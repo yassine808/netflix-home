@@ -144,6 +144,14 @@ CREATE TABLE IF NOT EXISTS intro (
   updated_at INTEGER NOT NULL
 );
 
+/* Castle rating / watch-count snapshots. Persisted so a restart or a Castle
+ * outage still shows the last known score. */
+CREATE TABLE IF NOT EXISTS castle_stats (
+  id TEXT PRIMARY KEY,
+  payload TEXT NOT NULL,
+  fetched_at INTEGER NOT NULL
+);
+
 /* Directory index: the scanner trusts a directory whose mtime is unchanged
  * instead of stat-ing every file inside it again on each launch. */
 CREATE TABLE IF NOT EXISTS dirs (
@@ -251,6 +259,35 @@ export function transaction(fn) {
 
 export function hash32(value) {
   return crypto.createHash('sha1').update(String(value)).digest('hex').slice(0, 32);
+}
+
+/* Last saved Castle rating for one id. The row never expires; callers decide
+ * when to refresh and fall back to it when the network fails. */
+export function getCastleStat(id) {
+  if (!db) return null;
+  try {
+    const row = db.prepare('SELECT payload, fetched_at FROM castle_stats WHERE id = ?')
+      .get(String(id));
+    if (!row) return null;
+    return { ...JSON.parse(row.payload), fetchedAt: Number(row.fetched_at) || 0 };
+  } catch {
+    return null;
+  }
+}
+
+export function putCastleStat(stats) {
+  if (!db || !stats || !stats.id) return null;
+  try {
+    db.prepare(`INSERT INTO castle_stats (id, payload, fetched_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        payload = excluded.payload,
+        fetched_at = excluded.fetched_at`)
+      .run(String(stats.id), JSON.stringify(stats), Date.now());
+    return stats;
+  } catch {
+    return null;
+  }
 }
 
 export function getAsset(id, kind) {

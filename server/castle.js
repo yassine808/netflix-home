@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { getCastleStat, putCastleStat } from './db.js';
 
 /**
  * Castle (api.hlowb.com) catalog client.
@@ -27,6 +28,9 @@ const HEADERS = {
 const KEY_TTL = 10 * 60 * 1000;
 const CACHE_TTL = 5 * 60 * 1000;
 const CACHE_MAX = 120;
+/* Saved ratings are served immediately; after this age one refresh is tried
+ * and the saved copy remains the fallback when Castle cannot be reached. */
+const STATS_TTL = 24 * 60 * 60 * 1000;
 
 /* Country -> language the service names its tracks with. Only the first
  * country with a known language is used; anime falls back to Japanese. */
@@ -352,27 +356,42 @@ async function mapLimit(items, limit, mapper) {
   return output;
 }
 
-/* Rating and watch counts for one title. Cached separately from the full
- * detail payload because the ratings API and "most watched" need only these. */
+/* Rating and watch counts for one title. Saved in catalog.db so the value
+ * survives restarts and Castle outages; refreshed once a day. */
 export async function getCastleStats(id) {
   if (!isCastleId(id)) throw httpError('invalid castle id', 400);
-  return cached(`stats:${id}`, CACHE_TTL, async () => {
-    const data = await request(
-      `/film-api/v1.9.9/movie?channel=${CHANNEL}&clientType=${CLIENT}&lang=${LANG}`
-      + `&movieId=${encodeURIComponent(id)}&packageName=${PKG}`,
-    );
-    return {
-      id: String(data?.id || id),
-      title: String(data?.title || '').trim(),
-      type: typeOf(data || {}),
-      year: yearOf(data || {}),
-      rating: Number(data?.score) || 0,
-      watchCount: Number(data?.watchCount) || 0,
-      commentTotal: Number(data?.commentTotal) || 0,
-      genres: Array.isArray(data?.tags) ? data.tags.filter(Boolean).slice(0, 6) : [],
-      poster: data?.coverVerticalImage || '',
-    };
-  });
+  const saved = getCastleStat(id);
+  if (saved && Date.now() - saved.fetchedAt < STATS_TTL) {
+    const { fetchedAt, ...stats } = saved;
+    return stats;
+  }
+  try {
+    return await cached(`stats:${id}`, STATS_TTL, async () => {
+      const data = await request(
+        `/film-api/v1.9.9/movie?channel=${CHANNEL}&clientType=${CLIENT}&lang=${LANG}`
+        + `&movieId=${encodeURIComponent(id)}&packageName=${PKG}`,
+      );
+      const stats = {
+        id: String(data?.id || id),
+        title: String(data?.title || '').trim(),
+        type: typeOf(data || {}),
+        year: yearOf(data || {}),
+        rating: Number(data?.score) || 0,
+        watchCount: Number(data?.watchCount) || 0,
+        commentTotal: Number(data?.commentTotal) || 0,
+        genres: Array.isArray(data?.tags) ? data.tags.filter(Boolean).slice(0, 6) : [],
+        poster: data?.coverVerticalImage || '',
+      };
+      putCastleStat(stats);
+      return stats;
+    });
+  } catch (err) {
+    if (saved) {
+      const { fetchedAt, ...stats } = saved;
+      return stats;
+    }
+    throw err;
+  }
 }
 
 /**
@@ -495,6 +514,19 @@ export async function getCastleTitle(id, { season } = {}) {
       seasons: [],
       downloadable: true,
     };
+
+    // Opening a sheet also refreshes the saved rating snapshot.
+    putCastleStat({
+      id: base.id,
+      title: base.title,
+      type: base.type,
+      year: base.year,
+      rating: base.rating,
+      watchCount: base.watchCount,
+      commentTotal: base.commentTotal,
+      genres: base.genres,
+      poster: base.poster,
+    });
 
     if (!seasons.length) {
       const episodes = (Array.isArray(data.episodes) ? data.episodes : [])
