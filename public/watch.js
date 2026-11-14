@@ -20,6 +20,7 @@ const volume = $('volume');
 const muteBtn = $('muteBtn');
 const fsBtn = $('fsBtn');
 const qualityTag = $('qualityTag');
+const playerTag = $('playerTag');
 const resumeToast = $('resumeToast');
 const topKicker = $('topKicker');
 const ccBtn = $('ccBtn');
@@ -117,6 +118,10 @@ async function init() {
   $('videoTitle').textContent = item.displayTitle || item.title;
   topKicker.textContent = item.collection && item.collection !== 'Movies' ? item.collection.toUpperCase() : 'NETFLIX HOME';
   qualityTag.textContent = qualityLabel(item) || '';
+  // Series: season and episode. Movie: just its name.
+  playerTag.textContent = item.isSeries
+    ? `S${String(item.season).padStart(2, '0')}E${String(item.episode).padStart(2, '0')}`
+    : (item.title || '');
   document.body.style.background = '#000';
   video.poster = thumbUrl(item);
   video.src = `/api/stream/${encodeURIComponent(item.id)}`;

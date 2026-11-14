@@ -97,7 +97,7 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 - New & Popular page: search archive.org, pick a film or multi-file item, and download it into the library
 - Downloads drawer with live progress, speed, cancel/retry, and automatic library refresh
 - Free-download search for public-domain films when the online catalog has no local copy
-- Custom player: resume, seek preview, buffered bar, volume, large ±10 s skips, fullscreen, keyboard shortcuts
+- Custom player: resume, seek preview, buffered bar, volume, large ±10 s skips, fullscreen, keyboard shortcuts; the control bar shows `SxxExx` in the middle (the title for a movie)
 - Player subtitles from the `.vtt` sidecars, with language switching, a per-title timing offset, plus subtitle size and background-opacity controls. Defaults are English on, 100 % size, 0 % background, and the choice is stored once per series so every episode opens the same way
 - **Skip Intro** appears only during the real intro window, taken from a local marker, the file's chapters, or the free IntroDB API (cached to `.cache\intro.json`); episodes with no known timing get no button instead of a guessed window
 - Progress and My List saved in the browser
