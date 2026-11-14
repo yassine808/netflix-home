@@ -2708,10 +2708,9 @@ function appendCastleAction(row, detail, episode, local, quality) {
     btn.classList.add('queued');
     btn.title = 'Open downloads';
     paint(EP_DOWNLOAD_ICON, 'Queued');
-    showProgress(0);
     btn.addEventListener('click', openDownloads);
   } else if (job && job.status === 'paused') {
-    btn.classList.add('queued');
+    btn.classList.add('is-paused');
     btn.title = 'Open downloads';
     paint(EP_DOWNLOAD_ICON, 'Paused');
     btn.addEventListener('click', openDownloads);

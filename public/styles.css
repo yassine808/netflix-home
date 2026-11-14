@@ -1093,7 +1093,7 @@ code { font-family: Consolas, "Courier New", monospace; }
   height: 100%;
   width: 0;
   border-radius: inherit;
-  background: #e50914;
+  background: #46d369;
   transition: width 0.4s var(--ease);
 }
 .castle-episode .castle-dl-btn {
@@ -1113,17 +1113,29 @@ code { font-family: Consolas, "Courier New", monospace; }
 }
 .castle-episode .castle-dl-btn:hover:not(:disabled) { background: #fff; border-color: #fff; color: #000; }
 .castle-episode .castle-dl-btn:disabled { opacity: 0.55; cursor: default; }
-.castle-episode .castle-dl-btn.queued { border-color: rgba(70, 211, 105, 0.55); background: rgba(70, 211, 105, 0.12); color: #7ee2a0; }
-/* Episodes already on disk: white Play, like the rest of the app. */
-.castle-episode .castle-dl-btn.is-play { background: #fff; border-color: #fff; color: #000; }
-.castle-episode .castle-dl-btn.is-play:hover { background: rgba(255, 255, 255, 0.86); transform: translateY(-1px); }
-/* Downloading: red accent, percent label, progress bar underneath. */
-.castle-episode .castle-dl-btn.is-active {
+/* Queued: red accent, waiting for a download slot. No progress bar. */
+.castle-episode .castle-dl-btn.queued {
   border-color: rgba(229, 9, 20, 0.55);
   background: rgba(229, 9, 20, 0.14);
   color: #ff8489;
 }
-.castle-episode .castle-dl-btn.is-active:hover { background: rgba(229, 9, 20, 0.24); border-color: rgba(229, 9, 20, 0.8); color: #fff; }
+.castle-episode .castle-dl-btn.queued:hover { background: rgba(229, 9, 20, 0.24); border-color: rgba(229, 9, 20, 0.8); color: #fff; }
+/* Paused: neutral, no colour claim. */
+.castle-episode .castle-dl-btn.is-paused {
+  border-color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.78);
+}
+/* Episodes already on disk: white Play, like the rest of the app. */
+.castle-episode .castle-dl-btn.is-play { background: #fff; border-color: #fff; color: #000; }
+.castle-episode .castle-dl-btn.is-play:hover { background: rgba(255, 255, 255, 0.86); transform: translateY(-1px); }
+/* Downloading: green accent, percent label, progress bar underneath. */
+.castle-episode .castle-dl-btn.is-active {
+  border-color: rgba(70, 211, 105, 0.6);
+  background: rgba(70, 211, 105, 0.14);
+  color: #7ee2a0;
+}
+.castle-episode .castle-dl-btn.is-active:hover { background: rgba(70, 211, 105, 0.24); border-color: rgba(70, 211, 105, 0.85); color: #fff; }
 .castle-episode.is-local .episode-main { min-width: 0; }
 .castle-episode.is-target {
   background: rgba(229, 9, 20, 0.14);
