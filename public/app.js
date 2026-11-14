@@ -3,12 +3,12 @@ import {
   qualityLabel, thumbUrl, posterUrl, logoUrl, toggleMyList, isInMyList, getMyList, progressFor,
   getRemoteList, isInRemoteList, toggleRemoteList,
   getSeries, getSeriesCatalog, debounce, createEl,
-  searchCatalog, getFallbackCatalog, getCatalogItem,
+  browseCastle,
   searchOnline, getOnlineTitle, searchCastle, getCastleTitle, getCastleSeriesEpisodes, startCastleDownload,
-  deleteLibraryItem, startDownload, startSeriesDownload, getDownloads, cancelDownload, retryDownload, reorderDownloads,
+  deleteLibraryItem, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   getSettings, setOfflineMode,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
-  setImg, skel, skelLines, skelMeta, skelCards, skelPoster, skelCatalogCard, skelEpisodes, skelFileRow, skelDownload,
+  setImg, skel, skelLines, skelMeta, skelCards, skelPoster, skelEpisodes, skelDownload,
 } from './common.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'downloading', 'cancelling']);
@@ -37,12 +37,9 @@ const state = {
   lastFocus: null,
   bootAt: Date.now(),
   rescanning: false,
-  catalog: [],
-  catalogQuery: '',
-  catalogSource: '',
-  catalogLoading: false,
-  pickerItem: null,
-  pickerFiles: [],
+  onlineBrowse: [],
+  onlineBrowseLoading: false,
+  onlineBrowseToken: 0,
   downloads: [],
   downloadsSynced: false,
   downloadsLoaded: false,
@@ -154,7 +151,6 @@ const els = {
   onlineWatchLink: $('onlineWatchLink'),
   onlineImdbLink: $('onlineImdbLink'),
   onlineCastleBtn: $('onlineCastleBtn'),
-  onlineFreeBtn: $('onlineFreeBtn'),
   onlineSeasonBlock: $('onlineSeasonBlock'),
   onlineSeasonTabs: $('onlineSeasonTabs'),
   onlineEpisodes: $('onlineEpisodes'),
@@ -183,28 +179,12 @@ const els = {
   avatar: $('avatar'),
   avatarMenu: $('avatarMenu'),
   profileName: $('profileName'),
-  discoverView: $('discoverView'),
-  discoverForm: $('discoverForm'),
-  discoverInput: $('discoverInput'),
-  discoverChips: $('discoverChips'),
-  discoverNote: $('discoverNote'),
-  catalogGrid: $('catalogGrid'),
-  catalogEmpty: $('catalogEmpty'),
-  catalogEmptyTitle: $('catalogEmptyTitle'),
-  catalogEmptyText: $('catalogEmptyText'),
-  catalogLoading: $('catalogLoading'),
-  searchArchiveBtn: $('searchArchiveBtn'),
-  searchArchiveLabel: $('searchArchiveLabel'),
-  picker: $('picker'),
-  pickerImg: $('pickerImg'),
-  pickerTitle: $('pickerTitle'),
-  pickerMeta: $('pickerMeta'),
-  pickerDesc: $('pickerDesc'),
-  pickerFiles: $('pickerFiles'),
-  pickerDownload: $('pickerDownload'),
-  pickerDownloadLabel: $('pickerDownloadLabel'),
-  pickerSeries: $('pickerSeries'),
-  pickerStatus: $('pickerStatus'),
+  onlineView: $('onlineView'),
+  onlineGrid: $('onlineGrid'),
+  onlineEmpty: $('onlineEmpty'),
+  onlineLoading: $('onlineLoading'),
+  onlineNote: $('onlineNote'),
+  onlineShuffle: $('onlineShuffle'),
   downloadsBtn: $('downloadsBtn'),
   downloadsBadge: $('downloadsBadge'),
   downloadsPanel: $('downloadsPanel'),
@@ -918,10 +898,10 @@ function renderRows() {
   }
 
   if (listGroups.length || remoteList.length) {
-    rows.push({ title: 'My List', items: [...listGroups, ...remoteList], seeAll: 'mylist' });
+    rows.push({ title: 'Favourite', items: [...listGroups, ...remoteList], seeAll: 'favourite' });
   }
 
-  rows.push({ title: 'Movies in Your Library', items: groups, seeAll: 'movies' });
+  rows.push({ title: 'In Your Library', items: groups, seeAll: 'local' });
 
   for (const row of rows) {
     els.rows.append(buildRow(row));
@@ -951,8 +931,8 @@ function buildRow({ title, items, progressMap, episodeMap, type, sub, seeAll }) 
   if (seeAll) {
     const link = createEl('button', 'row-see-all', 'Explore all');
     link.addEventListener('click', () => {
-      if (seeAll === 'mylist') showMyList();
-      else showMovies();
+      if (seeAll === 'favourite') showFavourite();
+      else showLocal();
     });
     head.append(link);
   }
@@ -1125,10 +1105,10 @@ function setView(view) {
   const changed = state.view !== view;
   state.view = view;
   const isHome = view === 'home';
-  const isDiscover = view === 'discover';
+  const isOnline = view === 'online';
   els.homeView.hidden = !isHome;
-  els.gridView.hidden = isHome || isDiscover;
-  els.discoverView.hidden = !isDiscover;
+  els.gridView.hidden = isHome || isOnline;
+  els.onlineView.hidden = !isOnline;
   if (isHome) {
     stopPreview();
     if (changed || !els.rows.childElementCount) {
@@ -1137,11 +1117,11 @@ function setView(view) {
       renderRows();
     }
   }
-  if (isDiscover) stopPreview();
+  if (isOnline) stopPreview();
   document.querySelectorAll('.nav-link').forEach((link) => {
     link.classList.toggle('active', link.dataset.view === view);
   });
-  setMobileActive(['home', 'discover', 'movies', 'mylist'].includes(view) ? view : null);
+  setMobileActive(['home', 'local', 'favourite', 'online'].includes(view) ? view : null);
   window.scrollTo(0, 0);
   if (changed && els.main && !prefersReducedMotion()) {
     els.main.classList.remove('view-in');
@@ -1174,11 +1154,11 @@ function gridLoading(title) {
   els.gridEmpty.hidden = true;
 }
 
-function showMovies() {
-  setView('movies');
-  if (!state.library) return gridLoading('Movies');
+function showLocal() {
+  setView('local');
+  if (!state.library) return gridLoading('Local');
   const groups = groupLibrary();
-  els.gridTitle.textContent = 'Movies';
+  els.gridTitle.textContent = 'Local';
   els.gridSub.textContent = `${groups.length} title${groups.length === 1 ? '' : 's'} in ${state.library?.root || 'your library'}`;
   fillGrid(els.grid, groups, els.gridEmpty, 'Nothing in your library yet.');
 }
@@ -1191,12 +1171,12 @@ function remoteListCards() {
   }));
 }
 
-function showMyList() {
-  setView('mylist');
-  if (!state.library) return gridLoading('My List');
+function showFavourite() {
+  setView('favourite');
+  if (!state.library) return gridLoading('Favourite');
   const groups = groupLibrary();
   const items = [...groupItems(groups, getMyList()), ...remoteListCards()];
-  els.gridTitle.textContent = 'My List';
+  els.gridTitle.textContent = 'Favourite';
   els.gridSub.textContent = `${items.length} saved title${items.length === 1 ? '' : 's'}`;
   fillGrid(els.grid, items, els.gridEmpty, 'Add titles with the + button on any detail page.');
 }
@@ -1210,9 +1190,68 @@ function showCollection(name, items) {
   fillGrid(els.grid, list, els.gridEmpty, 'No titles here yet.');
 }
 
-/* ---------- discover: archive.org catalog ---------- */
+/* ---------- online: random castle catalog ---------- */
 
-let catalogRequest = 0;
+function showOnline() {
+  setView('online');
+  if (state.offline) {
+    els.onlineGrid.replaceChildren();
+    els.onlineEmpty.hidden = true;
+    els.onlineLoading.hidden = true;
+    showOnlineNote('Offline mode is on — Online needs internet. Switch it off in the header to browse the catalog.');
+    return;
+  }
+  if (!state.onlineBrowse.length && !state.onlineBrowseLoading) loadOnlineBrowse();
+}
+
+function showOnlineNote(message) {
+  if (!message) {
+    els.onlineNote.hidden = true;
+    els.onlineNote.textContent = '';
+    return;
+  }
+  els.onlineNote.textContent = message;
+  els.onlineNote.hidden = false;
+}
+
+function setOnlineBusy(busy) {
+  state.onlineBrowseLoading = busy;
+  els.onlineLoading.hidden = !busy;
+  els.onlineGrid.setAttribute('aria-busy', String(busy));
+  if (busy && !state.onlineBrowse.length) els.onlineGrid.replaceChildren();
+}
+
+async function loadOnlineBrowse({ fresh = false } = {}) {
+  const token = ++state.onlineBrowseToken;
+  setOnlineBusy(true);
+  els.onlineEmpty.hidden = true;
+  showOnlineNote('');
+  try {
+    const data = await browseCastle({ fresh });
+    if (token !== state.onlineBrowseToken) return;
+    const results = Array.isArray(data.results) ? data.results : [];
+    state.onlineBrowse = results;
+    renderOnlineGrid();
+    if (!results.length) {
+      els.onlineEmpty.hidden = false;
+      showOnlineNote('The catalog returned nothing — press Shuffle to try again.');
+    }
+  } catch (err) {
+    if (token !== state.onlineBrowseToken) return;
+    state.onlineBrowse = [];
+    els.onlineGrid.replaceChildren();
+    els.onlineEmpty.hidden = false;
+    showOnlineNote(`Could not load the catalog (${err.message}). Check your connection and press Shuffle.`);
+  } finally {
+    if (token === state.onlineBrowseToken) setOnlineBusy(false);
+  }
+}
+
+function renderOnlineGrid() {
+  els.onlineGrid.replaceChildren(
+    ...state.onlineBrowse.map((item) => buildOnlineCard(item, { castle: true })),
+  );
+}
 
 const STATUS_LABELS = {
   queued: 'Queued',
@@ -1223,303 +1262,6 @@ const STATUS_LABELS = {
   failed: 'Failed',
   completed: 'Completed',
 };
-
-function showDiscover(query = '') {
-  setView('discover');
-  const q = String(query || '').trim();
-  if (state.offline) {
-    state.catalog = [];
-    state.catalogQuery = '';
-    state.catalogSource = '';
-    setCatalogBusy(false);
-    els.catalogGrid.replaceChildren();
-    els.catalogEmpty.hidden = true;
-    els.discoverInput.value = q;
-    showCatalogNote('Offline mode is on — New & Popular needs internet. Switch it off in the header to search archive.org.');
-    return;
-  }
-  if (q) {
-    els.discoverInput.value = q;
-    runCatalogSearch(q);
-  } else if (!state.catalog.length && !state.catalogLoading) {
-    loadDiscoverPicks();
-  }
-}
-
-function setCatalogBusy(busy) {
-  state.catalogLoading = busy;
-  els.catalogLoading.hidden = true; // the spinner is replaced by skeleton cards
-  els.catalogGrid.hidden = false;
-  els.catalogGrid.setAttribute('aria-busy', String(busy));
-  if (busy) {
-    els.catalogGrid.replaceChildren(...Array.from({ length: 12 }, skelCatalogCard));
-    els.catalogEmpty.hidden = true;
-    els.discoverNote.hidden = false;
-    els.discoverNote.replaceChildren(skel('sk-line'));
-  }
-}
-
-function showCatalogNote(message) {
-  els.discoverNote.textContent = message;
-  els.discoverNote.hidden = false;
-}
-
-async function loadDiscoverPicks() {
-  const token = ++catalogRequest;
-  state.catalogQuery = '';
-  els.discoverInput.value = '';
-  setCatalogBusy(true);
-  try {
-    const data = await getFallbackCatalog();
-    if (token !== catalogRequest) return;
-    state.catalog = data.results || [];
-    state.catalogSource = 'fallback';
-    showCatalogNote('Editor’s picks — public-domain films you can download right now.');
-  } catch {
-    if (token !== catalogRequest) return;
-    state.catalog = [];
-    state.catalogSource = '';
-    showCatalogNote('Could not load the catalog. Check that the server is running and try again.');
-  } finally {
-    if (token === catalogRequest) {
-      setCatalogBusy(false);
-      renderCatalog();
-    }
-  }
-}
-
-async function runCatalogSearch(query) {
-  const q = String(query || '').trim();
-  if (state.offline) {
-    showCatalogNote('Offline mode is on — archive.org search is disabled.');
-    return;
-  }
-  if (!q) return loadDiscoverPicks();
-  const token = ++catalogRequest;
-  state.catalogQuery = q;
-  setCatalogBusy(true);
-  try {
-    const data = await searchCatalog(q);
-    if (token !== catalogRequest) return;
-    state.catalog = data.results || [];
-    state.catalogSource = data.source || '';
-    if (data.fallback) {
-      showCatalogNote('Archive.org search is unavailable right now — showing the curated catalog instead.');
-    } else {
-      showCatalogNote(`${state.catalog.length} result${state.catalog.length === 1 ? '' : 's'} for “${q}” on archive.org`);
-    }
-  } catch (err) {
-    if (token !== catalogRequest) return;
-    state.catalog = [];
-    state.catalogSource = '';
-    showCatalogNote(`Could not search archive.org (${err.message}). Try again in a moment.`);
-  } finally {
-    if (token === catalogRequest) {
-      setCatalogBusy(false);
-      renderCatalog();
-    }
-  }
-}
-
-function renderCatalog() {
-  els.catalogGrid.replaceChildren();
-  state.catalog.forEach((item) => els.catalogGrid.append(buildCatalogCard(item)));
-  const empty = state.catalog.length === 0;
-  els.catalogEmpty.hidden = !empty;
-  if (empty) {
-    els.catalogEmptyTitle.textContent = state.catalogQuery
-      ? `No films found for “${state.catalogQuery}”`
-      : 'No films found';
-    els.catalogEmptyText.textContent = 'Try a different search, or browse the editor’s picks.';
-  }
-}
-
-function buildCatalogCard(item) {
-  const card = createEl('article', 'catalog-card');
-  card.tabIndex = 0;
-  card.setAttribute('role', 'button');
-  card.setAttribute('aria-label', `View download options for ${item.title}`);
-
-  const art = createEl('div', 'catalog-art');
-  const fallback = createEl('div', 'catalog-fallback');
-  fallback.innerHTML = '<svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m10 9 5 3-5 3z"/></svg>';
-
-  const img = document.createElement('img');
-  img.loading = 'lazy';
-  img.alt = '';
-  if (item.thumb) img.src = item.thumb;
-  img.addEventListener('load', () => img.classList.add('loaded'));
-  img.addEventListener('error', () => img.remove());
-
-  const overlay = createEl('div', 'catalog-overlay');
-  overlay.append(createEl('div', 'catalog-title', item.title));
-  const bits = [item.year, item.creator].filter(Boolean).join(' • ');
-  overlay.append(createEl('div', 'catalog-meta', bits || 'Public domain'));
-
-  const action = createEl('button', 'catalog-download');
-  action.setAttribute('aria-label', `Download ${item.title}`);
-  action.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg><span>Download</span>';
-  action.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openPicker(item);
-  });
-
-  art.append(fallback, img, overlay, action);
-  card.append(art);
-
-  const open = () => openPicker(item);
-  card.addEventListener('click', open);
-  card.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      open();
-    }
-  });
-  return card;
-}
-
-/* ---------- catalog picker ---------- */
-
-async function openPicker(result) {
-  state.pickerItem = result;
-  state.pickerFiles = [];
-  els.picker.hidden = false;
-  syncBodyLock();
-  setImg(els.pickerImg, result.thumb || '');
-  els.pickerImg.alt = result.title || '';
-  els.pickerImg.hidden = !result.thumb;
-  els.pickerTitle.textContent = result.title || result.identifier;
-  els.pickerMeta.textContent = [result.year, result.creator].filter(Boolean).join(' • ') || 'archive.org';
-  els.pickerDesc.replaceChildren(skelLines(3));
-  els.pickerFiles.replaceChildren(...Array.from({ length: 3 }, skelFileRow));
-  els.pickerStatus.textContent = '';
-  els.pickerDownload.disabled = true;
-  els.pickerDownload.classList.add('is-skeleton');
-  els.pickerDownloadLabel.textContent = 'Download';
-  els.pickerSeries.hidden = true;
-  els.pickerSeries.disabled = false;
-  setTimeout(() => els.picker.querySelector('.modal-close')?.focus(), 40);
-
-  try {
-    const item = await getCatalogItem(result.identifier);
-    if (state.pickerItem !== result) return;
-    state.pickerItem = { ...result, ...item };
-    renderPickerFiles(item);
-  } catch (err) {
-    if (state.pickerItem !== result) return;
-    els.pickerDownload.classList.remove('is-skeleton');
-    els.pickerFiles.replaceChildren();
-    els.pickerDesc.textContent = `Could not load this title: ${err.message}`;
-    els.pickerStatus.textContent = 'Close this window and try again in a moment.';
-  }
-}
-
-function renderPickerFiles(item) {
-  const extRank = (name) => {
-    const ext = String(name).split('.').pop().toLowerCase();
-    const order = { mp4: 0, m4v: 1, webm: 2, mkv: 3, ogv: 4, avi: 5, mov: 6 };
-    return order[ext] ?? 9;
-  };
-  const files = [...(item.files || [])].sort((a, b) => extRank(a.name) - extRank(b.name) || b.size - a.size);
-  state.pickerFiles = files;
-  els.pickerDownload.classList.remove('is-skeleton');
-  els.pickerDesc.textContent = item.description
-    || 'A public-domain title from archive.org. Pick a file to download into your library.';
-  els.pickerFiles.replaceChildren();
-
-  if (!files.length) {
-    els.pickerStatus.textContent = 'This item has no downloadable video files.';
-    return;
-  }
-
-  files.forEach((file, index) => {
-    const label = createEl('label', 'picker-file');
-    const radio = document.createElement('input');
-    radio.type = 'radio';
-    radio.name = 'picker-file';
-    radio.value = file.name;
-    radio.checked = index === 0;
-
-    const main = createEl('span', 'picker-file-main');
-    main.append(createEl('strong', '', file.name.replace(/\.[^.]+$/, '')));
-    const sub = [file.format, formatSize(file.size)].filter(Boolean).join(' · ');
-    if (sub) main.append(createEl('span', 'picker-file-sub', sub));
-
-    const check = createEl('span', 'picker-check');
-    label.append(radio, main, check);
-    els.pickerFiles.append(label);
-  });
-
-  els.pickerDownload.disabled = false;
-  els.pickerDownloadLabel.textContent = files.length > 1 ? 'Download selected' : 'Download film';
-  els.pickerSeries.hidden = files.length < 2;
-  els.pickerSeries.textContent = `Download all ${files.length} file${files.length === 1 ? '' : 's'}`;
-}
-
-function setPickerBusy(busy) {
-  els.pickerDownload.disabled = busy || !state.pickerFiles.length;
-  els.pickerSeries.disabled = busy;
-}
-
-function closePicker() {
-  state.pickerItem = null;
-  state.pickerFiles = [];
-  els.picker.hidden = true;
-  syncBodyLock();
-}
-
-async function queueDownload(item, fileName) {
-  setPickerBusy(true);
-  els.pickerStatus.textContent = 'Starting download…';
-  try {
-    const result = await startDownload({
-      identifier: item.identifier,
-      file: fileName,
-      title: item.title,
-      year: item.year || undefined,
-      collection: 'Downloads',
-    });
-    closePicker();
-    if (!result.count) {
-      // The server skips a file that is already on disk instead of copying it.
-      toast(`Already in your library — ${result.skipped?.[0]?.title || item.title}`);
-      return;
-    }
-    openDownloads();
-    toast(`Download started — ${item.title}`);
-    notify('start', item.title, 'Download started');
-  } catch (err) {
-    els.pickerStatus.textContent = `Could not start download: ${err.message}`;
-  } finally {
-    setPickerBusy(false);
-  }
-}
-
-async function queueSeriesDownload(item) {
-  setPickerBusy(true);
-  els.pickerStatus.textContent = 'Queueing every file…';
-  try {
-    const result = await startSeriesDownload({
-      identifier: item.identifier,
-      title: item.title,
-      collection: 'Series',
-      folder: item.title,
-    });
-    closePicker();
-    if (!result.count) {
-      toast(`Already in your library — ${item.title}`);
-      return;
-    }
-    openDownloads();
-    const skipped = Array.isArray(result.skipped) ? result.skipped.length : 0;
-    toast(`${result.count} download${result.count === 1 ? '' : 's'} started — ${item.title}${skipped ? ` (${skipped} already here)` : ''}`);
-    notify('start', item.title, `${result.count} download${result.count === 1 ? '' : 's'} queued`);
-  } catch (err) {
-    els.pickerStatus.textContent = `Could not queue the series: ${err.message}`;
-  } finally {
-    setPickerBusy(false);
-  }
-}
 
 /* ---------- download manager ---------- */
 
@@ -1857,21 +1599,13 @@ function syncBodyLock() {
     || isModalOpen()
     || !els.onlineModal.hidden
     || !els.castleModal.hidden
-    || !els.picker.hidden
     || !els.downloadsPanel.hidden;
   document.body.classList.toggle('modal-open', open);
 }
 
-function updateSearchArchive(query) {
-  const q = String(query || '').trim();
-  els.searchArchiveBtn.hidden = !q || state.offline;
-  els.searchArchiveBtn.dataset.q = q;
-  if (q) els.searchArchiveLabel.textContent = `Search archive.org for “${q}”`;
-}
-
 function renderGridForCurrentView() {
-  if (state.view === 'movies') showMovies();
-  else if (state.view === 'mylist') showMyList();
+  if (state.view === 'local') showLocal();
+  else if (state.view === 'favourite') showFavourite();
   else if (state.view === 'collection') {
     const name = els.gridTitle.textContent;
     const col = state.library.collections.find((c) => c.name === name);
@@ -1972,7 +1706,6 @@ function applyOfflineUi() {
   if (state.offline) {
     resetOnlineSearch();
     resetCastleSearch();
-    updateSearchArchive(els.searchInput.value);
   }
 }
 
@@ -1987,9 +1720,10 @@ async function toggleOffline() {
       : 'Offline mode off — internet access restored');
     if (state.offline) {
       if (!els.searchOverlay.hidden) runSearch(els.searchInput.value);
-      if (state.view === 'discover') showDiscover();
-    } else if (state.view === 'discover') {
-      loadDiscoverPicks();
+    }
+    if (state.view === 'online') {
+      if (state.offline) showOnline();
+      else loadOnlineBrowse();
     }
     refreshDownloads();
   } catch (err) {
@@ -2010,7 +1744,6 @@ function openSearch() {
   els.searchLocalCount.textContent = '';
   resetOnlineSearch();
   resetCastleSearch();
-  updateSearchArchive('');
   renderSearchHistory();
   els.searchHint.textContent = state.offline
     ? `Offline mode — searching ${state.items.length} local title${state.items.length === 1 ? '' : 's'} only`
@@ -2025,7 +1758,7 @@ function closeSearch() {
   syncBodyLock();
   rememberSearch(els.searchInput.value);
   els.searchInput.blur();
-  setMobileActive(['home', 'discover', 'movies', 'mylist'].includes(state.view) ? state.view : null);
+  setMobileActive(['home', 'local', 'favourite', 'online'].includes(state.view) ? state.view : null);
   if (state.view === 'home' && !isModalOpen() && els.onlineModal.hidden && els.castleModal.hidden) {
     setupPreview(state.byId.get(state.heroId));
   }
@@ -2039,8 +1772,7 @@ const runSearch = debounce((raw) => {
     els.searchResults.replaceChildren();
     els.searchLocalEmpty.hidden = true;
     els.searchLocalCount.textContent = '';
-    updateSearchArchive('');
-    resetOnlineSearch();
+      resetOnlineSearch();
     resetCastleSearch();
     renderSearchHistory();
     els.searchHint.textContent = state.offline
@@ -2054,7 +1786,6 @@ const runSearch = debounce((raw) => {
   els.searchHistory.hidden = true;
   els.searchHint.textContent = `Results for “${query}”`;
   renderLocalResults(query, q);
-  updateSearchArchive(query);
 
   if (state.offline) {
     resetOnlineSearch();
@@ -2534,8 +2265,8 @@ function updateCastleListButton(detail) {
   const inList = info.local ? isInMyList(info.id) : isInRemoteList(info.entry.key);
   els.castleList.hidden = false;
   els.castleList.classList.toggle('in-list', inList);
-  els.castleList.innerHTML = `${inList ? LIST_CHECK_ICON : LIST_PLUS_ICON}<span>${inList ? 'In My List' : 'My List'}</span>`;
-  els.castleList.title = inList ? 'Remove from My List' : 'Add to My List';
+  els.castleList.innerHTML = `${inList ? LIST_CHECK_ICON : LIST_PLUS_ICON}<span>${inList ? 'In Favourite' : 'Favourite'}</span>`;
+  els.castleList.title = inList ? 'Remove from Favourite' : 'Add to Favourite';
 }
 
 function toggleCastleList() {
@@ -2544,9 +2275,9 @@ function toggleCastleList() {
   if (!info) return;
   const added = info.local ? toggleMyList(info.id) : toggleRemoteList(info.entry);
   updateCastleListButton(detail);
-  toast(added ? 'Added to My List' : 'Removed from My List');
+  toast(added ? 'Added to Favourite' : 'Removed from Favourite');
   renderRows();
-  if (state.view === 'mylist') showMyList();
+  if (state.view === 'favourite') showFavourite();
 }
 
 /* Shimmer placeholders while a catalogue sheet loads its seasons/episodes. */
@@ -3788,7 +3519,7 @@ function updateModalListButton(item) {
   // SVGElement has no hidden IDL property, so toggle the attribute itself.
   els.modalList.querySelector('.i-plus').toggleAttribute('hidden', inList);
   els.modalList.querySelector('.i-check').toggleAttribute('hidden', !inList);
-  els.modalList.title = inList ? 'Remove from My List' : 'Add to My List';
+  els.modalList.title = inList ? 'Remove from Favourite' : 'Add to Favourite';
   els.modalList.classList.toggle('in-list', inList);
 }
 
@@ -4061,9 +3792,9 @@ function bindStaticEvents() {
       e.preventDefault();
       const view = link.dataset.view;
       if (view === 'home') showHome();
-      else if (view === 'movies') showMovies();
-      else if (view === 'discover') showDiscover();
-      else if (view === 'mylist') showMyList();
+      else if (view === 'local') showLocal();
+      else if (view === 'favourite') showFavourite();
+      else if (view === 'online') showOnline();
     });
   });
 
@@ -4071,9 +3802,9 @@ function bindStaticEvents() {
     btn.addEventListener('click', () => {
       const view = btn.dataset.mview;
       if (view === 'home') showHome();
-      else if (view === 'discover') showDiscover();
-      else if (view === 'movies') showMovies();
-      else if (view === 'mylist') showMyList();
+      else if (view === 'online') showOnline();
+      else if (view === 'local') showLocal();
+      else if (view === 'favourite') showFavourite();
       else if (view === 'search') openSearch();
     });
   });
@@ -4139,34 +3870,10 @@ function bindStaticEvents() {
   els.searchResults.addEventListener('click', () => closeSearch());
   els.searchCastleResults.addEventListener('click', () => closeSearch());
   els.searchOnlineResults.addEventListener('click', () => closeSearch());
-  els.searchArchiveBtn.addEventListener('click', () => {
-    const q = els.searchArchiveBtn.dataset.q || els.searchInput.value.trim();
-    closeSearch();
-    if (q) showDiscover(q);
-    else showDiscover();
-  });
 
-  els.discoverForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    runCatalogSearch(els.discoverInput.value);
-  });
-  els.discoverChips.addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-q]');
-    if (!btn) return;
-    const q = btn.dataset.q;
-    els.discoverInput.value = q;
-    if (q) runCatalogSearch(q);
-    else loadDiscoverPicks();
-  });
-
-  els.picker.querySelectorAll('[data-close-picker]').forEach((el) => el.addEventListener('click', closePicker));
-  els.pickerDownload.addEventListener('click', () => {
-    const item = state.pickerItem;
-    const selected = els.pickerFiles.querySelector('input[name="picker-file"]:checked');
-    if (item && selected) queueDownload(item, selected.value);
-  });
-  els.pickerSeries.addEventListener('click', () => {
-    if (state.pickerItem) queueSeriesDownload(state.pickerItem);
+  els.onlineShuffle.addEventListener('click', () => {
+    if (state.onlineBrowseLoading) return;
+    loadOnlineBrowse({ fresh: true });
   });
 
   els.downloadsBtn.addEventListener('click', openDownloads);
@@ -4184,14 +3891,9 @@ function bindStaticEvents() {
     if (target) goWatch(target.id);
   });
   els.onlineCastleBtn.addEventListener('click', () => openCastleForTitle(state.onlineTitle?.title));
-  els.onlineFreeBtn.addEventListener('click', () => {
-    const title = state.onlineTitle?.title;
-    closeOnlineModal();
-    showDiscover(title || '');
-  });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      if (!els.picker.hidden) closePicker();
+      if (!els.downloadsPanel.hidden) closeDownloads();
       else if (!els.downloadsPanel.hidden) closeDownloads();
       else if (!els.castleModal.hidden) closeCastleModal();
       else if (!els.onlineModal.hidden) closeOnlineModal();
@@ -4203,7 +3905,6 @@ function bindStaticEvents() {
       if (isModalOpen()) trapFocus(e, els.modal);
       else if (!els.castleModal.hidden) trapFocus(e, els.castleModal);
       else if (!els.onlineModal.hidden) trapFocus(e, els.onlineModal);
-      else if (!els.picker.hidden) trapFocus(e, els.picker);
     }
   });
 
@@ -4226,7 +3927,7 @@ function bindStaticEvents() {
     const added = toggleMyList(modalItemId);
     const item = state.byId.get(modalItemId);
     if (item) updateModalListButton(item);
-    toast(added ? 'Added to My List' : 'Removed from My List');
+    toast(added ? 'Added to Favourite' : 'Removed from Favourite');
     renderRows();
   });
 

@@ -177,6 +177,45 @@ export async function searchCastle(query, page = 1) {
   });
 }
 
+/* A random-looking shelf for the Online page. Castle only exposes keyword
+ * search, so this asks a handful of broad genres and shuffles the union. */
+const BROWSE_KEYWORDS = [
+  'action', 'comedy', 'drama', 'horror', 'thriller', 'romance', 'sci-fi',
+  'animation', 'crime', 'adventure', 'family', 'mystery', 'war', 'fantasy',
+];
+
+function shuffled(rows) {
+  const copy = [...rows];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+export async function browseCastle({ fresh = false, limit = 30 } = {}) {
+  const key = fresh ? `browse:${Date.now()}:${Math.random()}` : 'browse:picks';
+  return cached(key, fresh ? 0 : CACHE_TTL, async () => {
+    const picks = shuffled(BROWSE_KEYWORDS).slice(0, 6);
+    const settled = await Promise.allSettled(picks.map((query) => searchCastle(query)));
+    const seen = new Set();
+    const rows = [];
+    for (const entry of settled) {
+      if (entry.status !== 'fulfilled') continue;
+      for (const item of entry.value.results) {
+        if (!item.id || !item.title || !item.poster || seen.has(item.id)) continue;
+        seen.add(item.id);
+        rows.push(item);
+      }
+    }
+    if (!rows.length) {
+      const failure = settled.find((entry) => entry.status === 'rejected');
+      throw failure?.reason || httpError('castle returned no titles');
+    }
+    return shuffled(rows).slice(0, Math.max(1, Number(limit) || 30));
+  });
+}
+
 function episodeOf(entry, movieId) {
   return {
     episode: Number(entry.number) || 0,

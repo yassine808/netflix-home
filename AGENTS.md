@@ -2,7 +2,7 @@
 
 ## What this is
 
-A local, Netflix-style streaming app. Node/Express backend scans a movie folder (default `G:\NETFLIX`), probes files with ffmpeg/ffprobe, keeps a picture database (one chosen still per title), builds cached hero previews, streams video with HTTP range support, and downloads public-domain and catalog films. Vanilla JS frontend in `public/`.
+A local, Netflix-style streaming app. Node/Express backend scans a movie folder (default `G:\NETFLIX`), probes files with ffmpeg/ffprobe, keeps a picture database (one chosen still per title), builds cached hero previews, streams video with HTTP range support, and downloads films and episodes from the Castle catalog. Vanilla JS frontend in `public/`.
 
 The shipped artifact is a **single self-contained EXE**: server, UI, ffmpeg and ffprobe are bundled with Node SEA (`bundle/`), so the deployment folder holds only the EXE, the videos and `.cache/`.
 
@@ -46,6 +46,7 @@ Invoke-WebRequest "http://localhost:3000/api/thumb/<id>" -SkipHttpErrorCheck
 ## Conventions
 
 - Vanilla ES modules, no framework. The bundler is only for the single-file EXE.
+- **Top nav is Home / Local / Favourite / Online.** `Local` lists the library, `Favourite` lists My List entries (local + Castle snapshots), and `Online` draws 30 random catalog titles from `GET /api/castle/browse` (merged genre searches, cached until **Shuffle** sends `?fresh=1`). archive.org is gone: no `/api/catalog/*` routes, no picker sheet.
 - Build user-facing DOM with `textContent` or `createEl`, never interpolate filenames into `innerHTML` (local files can contain arbitrary characters).
 - Keep the Netflix look: black/near-black surfaces, `#e50914` red, white play buttons, 16:9 cards.
 - Progress and My List live in `localStorage`; don't move them server-side without a reason.

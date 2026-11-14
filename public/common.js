@@ -22,16 +22,17 @@ export async function quitApp() {
   return res.json();
 }
 
-export async function searchCatalog(query, page = 1) {
-  const params = new URLSearchParams({ q: query, page: String(page) });
-  const res = await fetch(`/api/catalog/search?${params}`, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`catalog search ${res.status}`);
-  return res.json();
-}
-
-export async function getFallbackCatalog() {
-  const res = await fetch('/api/catalog/fallback', { cache: 'no-store' });
-  if (!res.ok) throw new Error(`catalog fallback ${res.status}`);
+/* Random shelf for the Online page: genre searches merged and shuffled. */
+export async function browseCastle({ fresh = false, signal } = {}) {
+  const params = new URLSearchParams();
+  if (fresh) params.set('fresh', '1');
+  const query = params.toString();
+  const res = await fetch(`/api/castle/browse${query ? `?${query}` : ''}`, { cache: 'no-store', signal });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    throw new Error(payload?.error || `download catalog browse ${res.status}`);
+  }
   return res.json();
 }
 
@@ -105,47 +106,6 @@ export async function startCastleDownload(body) {
     let payload = null;
     try { payload = await res.json(); } catch { /* non-JSON error */ }
     throw new Error(payload?.error || `download failed (${res.status})`);
-  }
-  return res.json();
-}
-
-export async function getCatalogItem(identifier) {
-  const res = await fetch(`/api/catalog/item/${encodeURIComponent(identifier)}`, { cache: 'no-store' });
-  if (!res.ok) {
-    let payload = null;
-    try { payload = await res.json(); } catch { /* non-JSON error */ }
-    const err = new Error(payload?.error || `catalog item ${res.status}`);
-    err.status = res.status;
-    err.files = payload?.files;
-    throw err;
-  }
-  return res.json();
-}
-
-export async function startDownload(body) {
-  const res = await fetch('/api/downloads', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    let payload = null;
-    try { payload = await res.json(); } catch { /* non-JSON error */ }
-    throw new Error(payload?.error || `download failed (${res.status})`);
-  }
-  return res.json();
-}
-
-export async function startSeriesDownload(body) {
-  const res = await fetch('/api/downloads/series', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    let payload = null;
-    try { payload = await res.json(); } catch { /* non-JSON error */ }
-    throw new Error(payload?.error || `series download failed (${res.status})`);
   }
   return res.json();
 }
@@ -480,15 +440,6 @@ export function skelPoster() {
   card.className = 'online-card sk-poster';
   card.setAttribute('aria-hidden', 'true');
   card.append(skel('sk-art'), skel('sk-line', '78%', '12px'), skel('sk-line', '44%', '10px'));
-  return card;
-}
-
-/* 16:10 catalog card (archive.org) with its title line. */
-export function skelCatalogCard() {
-  const card = document.createElement('div');
-  card.className = 'catalog-card sk-catalog';
-  card.setAttribute('aria-hidden', 'true');
-  card.append(skel('sk-art'), skel('sk-line', '70%', '12px'));
   return card;
 }
 

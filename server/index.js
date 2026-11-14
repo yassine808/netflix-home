@@ -8,13 +8,13 @@ import {
 } from './library.js';
 import { initArtwork, officialArt, cachedArt } from './artwork.js';
 import {
-  initDownloads, searchCatalog, getCatalogItem, fallbackCatalog,
+  initDownloads,
   addDownload, addSeriesDownload, addHlsDownload,
   listDownloads, getDownload, cancelDownload, retryDownload,
   pauseDownloads, resumeDownloads,
 } from './downloads.js';
 import { searchOnline, getOnlineTitle } from './online.js';
-import { searchCastle, getCastleTitle, getCastleSeries, getCastleStream, isCastleId } from './castle.js';
+import { searchCastle, browseCastle, getCastleTitle, getCastleSeries, getCastleStream, isCastleId } from './castle.js';
 import { initSettings, getSettings, isOffline, setOffline } from './settings.js';
 import { initFrames, frameMeta, ensureSprite, spriteFile } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
@@ -110,8 +110,6 @@ app.use('/api', (req, res, next) => {
   const method = req.method;
   const blocked = p.startsWith('/online/')
     || p.startsWith('/castle/')
-    || p === '/catalog/search'
-    || p.startsWith('/catalog/item/')
     || (method === 'POST' && (p === '/downloads'
       || p === '/downloads/series'
       || /^\/downloads\/[^/]+\/retry$/.test(p)));
@@ -670,47 +668,6 @@ app.get('/api/subtitle/:id/:lang', (req, res) => {
   res.sendFile(path.join(path.dirname(found.full), track.file));
 });
 
-/* ---------- public-domain catalog ---------- */
-
-app.get('/api/catalog/search', async (req, res) => {
-  const q = String(req.query.q || '').trim();
-  const page = Math.max(1, Number(req.query.page) || 1);
-  if (!q) return res.status(400).json({ error: 'q is required' });
-
-  try {
-    const results = await searchCatalog(q, page);
-    res.json({ source: 'archive.org', query: q, page, count: results.length, results });
-  } catch (err) {
-    const results = fallbackCatalog();
-    res.json({
-      source: 'fallback',
-      query: q,
-      page,
-      count: results.length,
-      fallback: true,
-      error: err?.message || String(err),
-      results,
-    });
-  }
-});
-
-app.get('/api/catalog/fallback', (req, res) => {
-  const results = fallbackCatalog();
-  res.json({ source: 'fallback', count: results.length, results });
-});
-
-app.get('/api/catalog/item/:identifier', async (req, res) => {
-  try {
-    const item = await getCatalogItem(req.params.identifier);
-    res.json(item);
-  } catch (err) {
-    res.status(err?.status || 502).json({
-      error: err?.message || String(err),
-      ...(err?.files ? { files: err.files } : {}),
-    });
-  }
-});
-
 /* ---------- online catalog (metadata only) ---------- */
 
 /* Cinemeta artwork is served from live.metahub.space, which now answers 404.
@@ -776,6 +733,16 @@ app.get('/api/online/title/:type/:id', async (req, res) => {
 });
 
 /* ---------- castle catalog (search + real downloads) ---------- */
+
+app.get('/api/castle/browse', async (req, res) => {
+  try {
+    const results = await browseCastle({ fresh: req.query.fresh === '1' });
+    res.set('Cache-Control', 'no-store');
+    res.json({ provider: 'castle', count: results.length, results });
+  } catch (err) {
+    res.status(err?.status || 502).json({ error: err?.message || String(err) });
+  }
+});
 
 app.get('/api/castle/search', async (req, res) => {
   const q = String(req.query.q || '').trim();
