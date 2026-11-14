@@ -167,6 +167,7 @@ function bindEvents() {
   });
 
   video.addEventListener('canplay', () => { loading.hidden = true; });
+  video.addEventListener('play', () => setPlayIcon(true));
   video.addEventListener('waiting', () => { loading.hidden = false; });
   video.addEventListener('playing', () => {
     loading.hidden = true;
@@ -289,8 +290,8 @@ function bindEvents() {
     const fs = Boolean(document.fullscreenElement);
     fsBtn.setAttribute('aria-label', fs ? 'Exit fullscreen' : 'Fullscreen');
     player.classList.toggle('is-fs', fs);
-    fsBtn.querySelector('.i-fs-in').hidden = fs;
-    fsBtn.querySelector('.i-fs-out').hidden = !fs;
+    fsBtn.querySelector('.i-fs-in').toggleAttribute('hidden', fs);
+    fsBtn.querySelector('.i-fs-out').toggleAttribute('hidden', !fs);
   });
 }
 
@@ -335,16 +336,7 @@ function initSeekFx() {
 /* Keep the ripples over the picture, not over the black bars around it. */
 function syncSeekFxBounds() {
   const layer = $('seekFx');
-  const { videoWidth: vw, videoHeight: vh } = video;
-  if (!layer) return;
-  if (!vw || !vh) {
-    layer.style.inset = '0';
-    return;
-  }
-  const scale = Math.min(window.innerWidth / vw, window.innerHeight / vh);
-  const x = Math.max(0, (window.innerWidth - vw * scale) / 2);
-  const y = Math.max(0, (window.innerHeight - vh * scale) / 2);
-  layer.style.inset = `${y}px ${x}px`;
+  if (layer) layer.style.inset = '0';
 }
 
 function flashSeek(sideKey) {
@@ -987,8 +979,9 @@ function rememberIntroSkip() {
 }
 
 function setPlayIcon(playing) {
-  playBtn.querySelector('.i-play').hidden = playing;
-  playBtn.querySelector('.i-pause').hidden = !playing;
+  /* SVG elements have no hidden property: toggle the attribute */
+  playBtn.querySelector('.i-play').toggleAttribute('hidden', playing);
+  playBtn.querySelector('.i-pause').toggleAttribute('hidden', !playing);
   playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
 }
 

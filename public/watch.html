@@ -77,18 +77,18 @@
         </div>
         <div class="controls">
           <div class="controls-left">
-            <button class="ctrl play-btn" id="playBtn" aria-label="Pause">
-              <svg class="i-play" viewBox="0 0 24 24" fill="currentColor" hidden aria-hidden="true"><path d="M6 4.2v15.6a.6.6 0 0 0 .9.5l13-7.8a.6.6 0 0 0 0-1L6.9 3.7a.6.6 0 0 0-.9.5z"/></svg>
-              <svg class="i-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5.5 4h4.2v16H5.5zm8.8 0h4.2v16h-4.2z"/></svg>
+            <button class="ctrl play-btn" id="playBtn" aria-label="Play">
+              <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 3.2 20.5 12 5.5 20.8z" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+              <svg class="i-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" hidden><rect x="4.2" y="3" width="5.4" height="18" rx="0.8"/><rect x="14.4" y="3" width="5.4" height="18" rx="0.8"/></svg>
             </button>
             <button class="ctrl skip-btn" id="back10" aria-label="Back 10 seconds">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><g class="rot"><path d="M12 4.8a7.2 7.2 0 1 0 7.2 7.2"/><path d="M12 2.4 12 7.2 7.2 4.8Z" fill="currentColor" stroke="none"/></g><text x="12" y="15.2" text-anchor="middle" font-size="8.8" font-family="Arial" font-weight="bold" fill="currentColor" stroke="none">10</text></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><g class="rot"><path d="M6.3 7.3A8.2 8.2 0 1 0 12 4.8"/><path d="M7.6 4.8 12.8 1.6v6.4z" fill="currentColor" stroke="none"/></g><text x="12" y="16" text-anchor="middle" font-size="8.6" font-family="Arial, sans-serif" font-weight="700" fill="currentColor" stroke="none">10</text></svg>
             </button>
             <button class="ctrl skip-btn" id="fwd10" aria-label="Forward 10 seconds">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><g class="rot"><path d="M12 4.8a7.2 7.2 0 1 1-7.2 7.2"/><path d="M12 2.4 12 7.2 16.8 4.8Z" fill="currentColor" stroke="none"/></g><text x="12" y="15.2" text-anchor="middle" font-size="8.8" font-family="Arial" font-weight="bold" fill="currentColor" stroke="none">10</text></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><g class="rot"><path d="M17.7 7.3A8.2 8.2 0 1 1 12 4.8"/><path d="M16.4 4.8 11.2 1.6v6.4z" fill="currentColor" stroke="none"/></g><text x="12" y="16" text-anchor="middle" font-size="8.6" font-family="Arial, sans-serif" font-weight="700" fill="currentColor" stroke="none">10</text></svg>
             </button>
             <div class="volume-wrap">
-              <button class="ctrl" id="muteBtn" aria-label="Mute"><svg class="vol-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5z" fill="currentColor" stroke="none"/><path class="wave w1" d="M15.5 9a4 4 0 0 1 0 6"/><path class="wave w2" d="M18 6.5a8 8 0 0 1 0 11"/><path class="xmark" d="m16 9.5 5 5m0-5-5 5"/></svg></button>
+              <button class="ctrl" id="muteBtn" aria-label="Mute"><svg class="vol-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 9.2v5.6h4.2l6 4.9V4.3l-6 4.9z" fill="currentColor" stroke="none"/><path class="wave w1" d="M16.2 8.6a4.6 4.6 0 0 1 0 6.8"/><path class="wave w2" d="M19 5.6a8.8 8.8 0 0 1 0 12.8"/><path class="xmark" d="m16.5 9.5 5 5m0-5-5 5"/></svg></button>
               <input type="range" class="vol-slider" id="volume" min="0" max="1" step="0.01" value="1" aria-label="Volume">
             </div>
             <div class="player-tag" id="playerTag">
@@ -100,7 +100,7 @@
           <div class="controls-right">
             <div class="next-wrap" id="nextWrap" hidden>
               <button class="ctrl" id="nextEp" type="button" aria-label="Next episode">
-                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 4.6v14.8a.5.5 0 0 0 .8.4l10.4-7.4a.5.5 0 0 0 0-.8L5.8 4.2a.5.5 0 0 0-.8.4z"/><path d="M18 5h2.6v14H18z"/></svg>
+                <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 3.8 16 12 3.5 20.2z"/><path d="M18.4 3.5h2.8v17h-2.8z" stroke="none"/></svg>
               </button>
               <div class="next-pop" role="tooltip">
                 <button class="next-card" id="nextCard" type="button">
@@ -116,10 +116,10 @@
               </div>
             </div>
             <button class="ctrl" id="epBtn" type="button" aria-label="Episodes" aria-expanded="false" aria-controls="epPanel" hidden>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5h13v9H8z"/><path d="M3.5 7.5v9h13"/><path d="M6 20.5h12"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><rect x="2.5" y="8" width="15" height="12.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M6.5 4.8h15v12.7"/><path d="M10.5 1.8h11"/></svg>
             </button>
             <button class="ctrl cc-btn" id="ccBtn" aria-label="Subtitles" aria-expanded="false" aria-controls="ccPanel">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5h18v12.5h-6.5L12 20l-2.5-3H3z"/><path d="M7 9.5h10M7 13h6"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M2.5 3.5h19v13.2h-7.4L12 20.4l-2.1-3.7H2.5z"/><path d="M6.5 8h11M6.5 12h6.5"/></svg>
             </button>
             <button class="ctrl" id="fsBtn" aria-label="Fullscreen">
               <svg class="i-fs-in" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>

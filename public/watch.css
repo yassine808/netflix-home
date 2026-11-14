@@ -68,40 +68,41 @@ body.leaving .player {
 .seek-side { position: relative; flex: 1 1 0; display: grid; place-items: center; }
 .seek-ripple {
   position: absolute;
-  width: min(42vh, 260px);
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.14);
+  top: 0;
+  bottom: 0;
+  width: 100%;
+  background: radial-gradient(ellipse at var(--from, 0%) 50%, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.07) 70%);
   opacity: 0;
-  transform: scale(0.3);
 }
+.seek-left .seek-ripple { left: 0; --from: 0%; border-radius: 0 100% 100% 0 / 0 50% 50% 0; transform-origin: left center; }
+.seek-right .seek-ripple { right: 0; --from: 100%; border-radius: 100% 0 0 100% / 50% 0 0 50%; transform-origin: right center; }
 .seek-label {
   position: relative;
   display: inline-flex;
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  font-size: 15px;
   font-weight: 700;
   color: #fff;
-  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.7);
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.55);
   opacity: 0;
 }
-.seek-label svg { width: 30px; height: 30px; }
-.seek-label b { font-size: 20px; font-variant-numeric: tabular-nums; }
-.seek-unit { font-size: 12px; font-weight: 600; opacity: 0.9; }
-.seek-side.is-on .seek-ripple { animation: seek-ripple 0.6s var(--ease); }
-.seek-side.is-on .seek-label { animation: seek-label 0.7s var(--ease); }
-.seek-side.is-on .c1 { animation: chev 0.6s linear; }
-.seek-side.is-on .c2 { animation: chev 0.6s linear 0.12s backwards; }
+.seek-label svg { width: 48px; height: 48px; }
+.seek-label b { font-size: 24px; font-variant-numeric: tabular-nums; }
+.seek-unit { font-size: 13px; font-weight: 600; opacity: 0.9; }
+.seek-side.is-on .seek-ripple { animation: seek-ripple 0.5s ease-out; }
+.seek-side.is-on .seek-label { animation: seek-label 0.6s var(--ease); }
+.seek-side.is-on .c1 { animation: chev 0.5s linear; }
+.seek-side.is-on .c2 { animation: chev 0.5s linear 0.1s backwards; }
 @keyframes seek-ripple {
-  from { opacity: 1; transform: scale(0.3); }
-  to { opacity: 0; transform: scale(1.05); }
+  0% { opacity: 0; transform: scaleX(0.55); }
+  30% { opacity: 1; }
+  100% { opacity: 0; transform: scaleX(1); }
 }
 @keyframes seek-label {
-  0% { opacity: 0; transform: scale(0.8); }
-  18% { opacity: 1; transform: scale(1); }
-  80% { opacity: 1; }
+  0% { opacity: 0; transform: scale(0.85); }
+  20% { opacity: 1; transform: scale(1); }
+  75% { opacity: 1; }
   100% { opacity: 0; }
 }
 @keyframes chev { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.35; } }
@@ -211,7 +212,7 @@ body.leaving .player {
   flex: 0 0 auto;
   min-width: 52px;
   text-align: right;
-  font-size: 15px;
+  font-size: clamp(14px, 1vw, 19px);
   font-weight: 500;
   color: #fff;
   font-variant-numeric: tabular-nums;
@@ -314,18 +315,17 @@ body.leaving .player {
 .controls-right { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
 
 .ctrl {
-  width: 52px;
-  height: 52px;
+  width: clamp(48px, 3.6vw, 68px);
+  height: clamp(48px, 3.6vw, 68px);
   display: grid;
   place-items: center;
   border-radius: 50%;
   color: #fff;
   transition: transform 0.16s var(--ease), opacity 0.15s;
 }
-.ctrl svg { width: 30px; height: 30px; overflow: visible; }
+.ctrl svg { width: clamp(30px, 2.4vw, 46px); height: clamp(30px, 2.4vw, 46px); overflow: visible; }
 .ctrl:hover { transform: scale(1.15); }
 .ctrl:active { transform: scale(0.92); }
-.skip-btn svg { width: 36px; height: 36px; }
 
 /* +10 / -10: the arrow ring spins on click */
 .skip-btn .rot { transform-origin: 12px 12px; }
@@ -344,8 +344,8 @@ body.leaving .player {
   white-space: nowrap;
   pointer-events: none;
 }
-.player-tag b { font-size: 16px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
-.tag-ep, .tag-name { font-size: 14px; font-weight: 400; color: rgba(255, 255, 255, 0.85); }
+.player-tag b { font-size: clamp(15px, 1.25vw, 24px); font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+.tag-ep, .tag-name { font-size: clamp(13px, 1vw, 19px); font-weight: 400; color: rgba(255, 255, 255, 0.85); }
 .tag-name { overflow: hidden; text-overflow: ellipsis; }
 
 .volume-wrap { display: flex; align-items: center; }
