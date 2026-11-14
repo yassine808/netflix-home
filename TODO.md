@@ -8,6 +8,6 @@
 - [ ] add delete all button close to doanload all button
 - [ ] when an episode is deleted, keep progress viewed, dont remove it, but update the button from"play" to "download" 
 - [ ] In catalogue , only show " > resume" no season or episode
-- [ ] 
+- [ ] Fix video prioritizing + seeds etc (best score)
 - [ ] 
 - [ ] 
