@@ -57,7 +57,6 @@ let duration = 0;
 let lastSaved = 0;
 let hideTimer = null;
 let idleTimer = null;
-let idleLast = null;
 let dragging = false;
 let pendingResume = 0;
 let lastVolume = 1;
@@ -1276,7 +1275,6 @@ function showIdle() {
   $('idleProgress').setAttribute('aria-valuenow', String(pct));
   idleFill.style.transform = 'scaleX(0)';
   idleEl.hidden = false;
-  idleLast = null;
   requestAnimationFrame(() => requestAnimationFrame(() => { idleFill.style.transform = `scaleX(${r})`; }));
   $('idleResume').focus({ preventScroll: true });
 }
@@ -1304,16 +1302,12 @@ function bindIdle() {
     e.preventDefault();
     leaveToHome();
   });
-  /* tapping the backdrop wakes the player; the buttons keep their own action */
+  /* tapping the backdrop closes the screen; the buttons keep their own action */
   idleEl.addEventListener('pointerdown', (e) => {
     if (!e.target.closest('.idle-resume, .idle-home')) wakeIdle();
   });
-  player.addEventListener('pointermove', (e) => {
-    if (idleLast && Math.hypot(e.clientX - idleLast.x, e.clientY - idleLast.y) < 8) return;
-    const settling = !idleLast && !idleEl.hidden;
-    idleLast = { x: e.clientX, y: e.clientY };
-    if (!settling) wakeIdle();
-  });
+  /* Hovering must not dismiss the screen: a passing cursor would otherwise
+   * wake the player, and only the Resume button should start playback again. */
 }
 
 function showError(message) {
