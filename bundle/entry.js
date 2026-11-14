@@ -149,6 +149,7 @@ async function main() {
   process.env.FFMPEG_PATH = path.join(appDir, 'bin', 'ffmpeg.exe');
   process.env.FFPROBE_PATH = path.join(appDir, 'bin', 'ffprobe.exe');
   process.env.YTDLP_PATH = path.join(appDir, 'bin', 'yt-dlp.exe');
+  process.env.ARIA2C_PATH = path.join(appDir, 'bin', 'aria2c.exe');
   log(`unpacked app files into ${appDir}`);
 
   await import('../server/index.js');

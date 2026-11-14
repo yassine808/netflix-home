@@ -15,9 +15,11 @@ import { initArtwork, officialArt, cachedArt, artWidth, sizedArt, warmArtwork } 
 import {
   initDownloads,
   addHlsDownload,
+  addTorrentDownload,
   listDownloads, cancelDownload, retryDownload,
   pauseDownloads, resumeDownloads,
 } from './downloads.js';
+import { findReleases, rankReleases, releaseLabel } from './torrentio.js';
 import { searchOnline, getOnlineTitle } from './online.js';
 import {
   searchCastle, browseCastle, getCastleTitle, getCastleSeries, getCastleStream,
@@ -258,6 +260,7 @@ app.use('/api', (req, res, next) => {
   );
   const blocked = (p.startsWith('/online/')
     || (p.startsWith('/castle/') && !savedCastleRead)
+    || p === '/releases'
     || (method === 'POST' && (p === '/downloads'
       || p === '/downloads/series'
       || /^\/downloads\/[^/]+\/retry$/.test(p))));
@@ -1163,6 +1166,41 @@ function pad2(value) {
   return String(Math.max(0, Number(value) || 0)).padStart(2, '0');
 }
 
+/* Ranked Torrentio releases for one episode/movie, for debugging the picker:
+ * /api/releases?imdbId=tt12590266&season=1&episode=1&original=Japanese */
+app.get('/api/releases', async (req, res) => {
+  const imdbId = String(req.query.imdbId || '');
+  if (!/^tt\d{4,10}$/.test(imdbId)) return res.status(400).json({ error: 'imdbId is required' });
+  const isSeries = req.query.type !== 'movie';
+  const season = Number(req.query.season) || 0;
+  const episode = Number(req.query.episode) || 0;
+  try {
+    const streams = await findReleases({ imdbId, isSeries, season, episode });
+    const ranked = rankReleases(streams, { originalLanguage: String(req.query.original || '') });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      imdbId,
+      streams: streams.length,
+      count: ranked.length,
+      releases: ranked.slice(0, 15).map((release) => ({
+        label: releaseLabel(release),
+        name: release.name,
+        fileName: release.fileName,
+        quality: release.quality,
+        codec: release.codec,
+        seeders: release.seeders,
+        sizeBytes: release.sizeBytes,
+        dualAudio: release.dualAudio,
+        languages: release.languages,
+        score: release.score,
+        infoHash: release.infoHash,
+      })),
+    });
+  } catch (err) {
+    res.status(502).json({ error: err?.message || String(err) });
+  }
+});
+
 app.post('/api/castle/download', async (req, res) => {
   const body = req.body;
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -1186,14 +1224,48 @@ app.post('/api/castle/download', async (req, res) => {
     : `${title}${body.year ? ` (${body.year})` : ''} ${quality}.mp4`;
 
   try {
-    const [stream, audio] = await Promise.all([
-      getCastleStream({ movieId, episodeId, resolution }),
-      getCastleEpisodeTracks({ movieId, episodeId }).catch(() => null),
-    ]);
+    const audio = await getCastleEpisodeTracks({ movieId, episodeId }).catch(() => null);
+    const originalAudio = audio?.original || '';
+
+    /* Torrentio first when it has a healthy H.264 release with the original
+     * audio and English; Castle stays the fallback (HLS 720p) and the source of
+     * every piece of metadata the UI shows. */
+    if (body.source !== 'castle') {
+      try {
+        const imdbId = await resolveImdbId({
+          title,
+          seriesTitle: title,
+          isSeries,
+          tmdbId: body.imdbId,
+          id: `castle:${movieId}`,
+          seriesKey: `castle:${movieId}`,
+        });
+        if (imdbId) {
+          const torrent = await addTorrentDownload({
+            imdbId,
+            season,
+            episode,
+            seriesTitle: title,
+            year: Number(body.year) || 0,
+            originalLanguage: originalAudio,
+            collection: 'Downloads',
+            folder: isSeries ? title : '',
+            poster: String(body.poster || ''),
+          });
+          if (torrent?.skipped) {
+            return res.status(200).json({ ...torrent, source: 'torrentio', originalAudio });
+          }
+          if (torrent) return res.status(201).json({ ...torrent, originalAudio });
+        }
+      } catch (err) {
+        console.warn(`[download] torrentio unavailable (${err?.message || err}); falling back to castle`);
+      }
+    }
+
+    const stream = await getCastleStream({ movieId, episodeId, resolution });
     if (stream.preview) {
       return res.status(409).json({ error: 'this quality is only available as a preview' });
     }
-
     // Original language + English only; the rest are dubs we do not keep.
     const audioTracks = audio ? selectCastleAudioTracks(audio.tracks, audio.original) : [];
 
@@ -1241,6 +1313,8 @@ app.post('/api/castle/download', async (req, res) => {
     res.status(201).json({
       count: jobs.length,
       jobs,
+      source: 'castle',
+      quality,
       subtitleCount: stream.subtitles.length,
       subtitles: subtitles.map((track) => track.language),
       audio: audioTracks.map((track) => track.language),

@@ -5,7 +5,11 @@ import { spawn } from 'node:child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { spawnNice } from './proc.js';
 import { ensureEnglishSubtitle, vttFromSubtitle } from './subs.js';
-
+import { findReleases, rankReleases, magnetFor, releaseLabel } from './torrentio.js';
+import {
+  fetchTorrentFiles, matchEpisodeFile, downloadTorrentFile,
+  probeMedia, pickTracks, remuxToMp4, extractSubtitles,
+} from './torrent.js';
 const USER_AGENT = 'netflix-home/1.0 (local library downloader)';
 
 const VIDEO_EXTS = new Set([
@@ -64,6 +68,11 @@ function isVideoName(name) {
 }
 
 function publicJob(job) {
+  /* A torrent job runs in phases (fetch, download, verify, remux, subtitles),
+   * so it reports its own 0..1 value; an HLS job keeps the byte ratio. */
+  const progress = Number.isFinite(job.progressValue)
+    ? Math.max(0, Math.min(1, job.progressValue))
+    : (job.total ? Math.min(1, job.bytes / job.total) : 0);
   return {
     id: job.id,
     kind: job.kind || 'http',
@@ -72,13 +81,18 @@ function publicJob(job) {
     collection: job.collection,
     identifier: job.identifier,
     source: job.source || null,
+    sourceLabel: job.sourceLabel || '',
+    quality: job.quality || '',
+    seeders: Number(job.seeders) || 0,
+    stage: job.stage || '',
+    release: job.release?.name || '',
     url: job.url,
     status: job.status,
     bytes: job.bytes,
     total: job.total,
     season: Number(job.season) || 0,
     episode: Number(job.episode) || 0,
-    progress: job.total ? Math.min(1, job.bytes / job.total) : 0,
+    progress,
     speed: job.speed,
     error: job.error,
     createdAt: job.createdAt,
@@ -207,6 +221,156 @@ export async function addHlsDownload(body = {}) {
   return [publicJob(job)];
 }
 
+/* ---------- Torrentio releases (Castle metadata, BitTorrent video) ---------- */
+
+const MAX_CANDIDATES = 4;
+
+/* Torrentio tags most releases with the audio languages they ship. When the
+ * indexer lists languages for this title but English is never among them, the
+ * show simply has no English audio there (Thai-only rips, for example) and
+ * Castle's HLS dub is the better answer. Releases with no tag at all stay in
+ * the pool and are verified by ffprobe after the download. */
+function hasEnglish(release) {
+  const declared = Array.isArray(release.languages) ? release.languages : [];
+  return declared.includes('en');
+}
+
+function declaresLanguages(release) {
+  return Array.isArray(release.languages) && release.languages.length > 0;
+}
+
+function pad2(value) {
+  return String(Math.max(0, Number(value) || 0)).padStart(2, '0');
+}
+
+/* Same naming pattern the Castle download uses, so one series never ends up
+ * with two files for the same episode. */
+function torrentFileName(job, quality) {
+  if (job.season > 0) {
+    return `${job.seriesTitle} S${pad2(job.season)}E${pad2(job.episode)} ${quality}.mp4`;
+  }
+  return `${job.seriesTitle}${job.year ? ` (${job.year})` : ''} ${quality}.mp4`;
+}
+
+function qualityFromHeight(height) {
+  const h = Number(height) || 0;
+  if (h >= 2000) return '2160p';
+  if (h >= 1000) return '1080p';
+  if (h >= 700) return '720p';
+  if (h >= 400) return '480p';
+  return 'sd';
+}
+
+/**
+ * Queue a torrent download: Torrentio lists the releases, the healthiest H.264
+ * 1080p one is fetched with aria2c, then remuxed to a browser-friendly MP4 with
+ * the original audio + English and every embedded subtitle as a .vtt sidecar.
+ *
+ * Returns null when Torrentio has nothing usable, so the caller can fall back
+ * to the Castle HLS download. Returns { skipped } when the file is already in
+ * the library.
+ */
+export async function addTorrentDownload(body = {}) {
+  if (!libraryRoot) throw new Error('downloads are not initialized');
+
+  const imdbId = String(body.imdbId || '').trim();
+  if (!/^tt\d{4,10}$/.test(imdbId)) return null;
+
+  const season = Number(body.season) || 0;
+  const episode = Number(body.episode) || 0;
+  const isSeries = season > 0;
+  const seriesTitle = text(body.seriesTitle) || text(body.title) || 'video';
+  const title = isSeries ? `${seriesTitle} S${pad2(season)}E${pad2(episode)}` : seriesTitle;
+
+  const streams = await findReleases({ imdbId, isSeries, season, episode });
+  if (!streams.length) return null;
+  const ranked = rankReleases(streams, { originalLanguage: text(body.originalLanguage) });
+  if (!ranked.length) return null;
+
+  /* Prefer releases that ship English; untagged ones stay as fallbacks, in the
+   * ranked order. When every tagged release is a different language (Thai-only,
+   * Polish lektor), hand the episode to Castle instead of downloading a guess. */
+  if (!ranked.some(hasEnglish) && ranked.some(declaresLanguages)) return null;
+  const pool = ranked.filter((release) => hasEnglish(release) || !declaresLanguages(release));
+  const candidates = pool.slice(0, MAX_CANDIDATES);
+  if (!candidates.length) return null;
+  if (!candidates.length) return null;
+
+  const collection = sanitizeSegment(body.collection || 'Downloads', 'Downloads');
+  const folder = body.folder ? sanitizeSegment(body.folder, '') : '';
+  const targetDir = folder
+    ? path.join(libraryRoot, collection, folder)
+    : path.join(libraryRoot, collection);
+  await fsp.mkdir(targetDir, { recursive: true });
+
+  const top = candidates[0];
+  const fileName = sanitizeFileName(torrentFileName({ seriesTitle, season, episode, year: body.year }, top.quality));
+  const known = findExisting(fileName);
+  if (known) {
+    const already = [];
+    already.skipped = [{ fileName, id: known.id, title: known.displayTitle || known.title }];
+    return already;
+  }
+
+  // The file name carries the final height, which is only known after probing;
+  // reserve the download-library path lazily in the job.
+  const job = {
+    id: crypto.randomUUID(),
+    kind: 'torrent',
+    title,
+    seriesTitle,
+    fileName,
+    collection,
+    folder,
+    identifier: imdbId,
+    source: 'torrentio',
+    url: '',
+    season,
+    episode,
+    year: Number(body.year) || 0,
+    originalLanguage: text(body.originalLanguage),
+    poster: text(body.poster),
+    targetDir,
+    dest: '',
+    status: 'queued',
+    stage: 'searching',
+    bytes: 0,
+    total: Number(top.sizeBytes) || 0,
+    speed: 0,
+    error: null,
+    progressValue: 0,
+    quality: top.quality,
+    seeders: top.seeders,
+    sourceLabel: releaseLabel(top),
+    release: top,
+    candidates,
+    attempt: 0,
+    failures: [],
+    createdAt: Date.now(),
+    startedAt: null,
+    completedAt: null,
+    controller: null,
+    ffmpeg: null,
+    subtitles: [],
+  };
+  jobs.set(job.id, job);
+  queue.push(job);
+  pump();
+  return {
+    count: 1,
+    jobs: [publicJob(job)],
+    source: 'torrentio',
+    quality: top.quality,
+    seeders: top.seeders,
+    release: top.name,
+    candidates: candidates.map((entry) => releaseLabel(entry)),
+  };
+}
+
+function torrentTempDir(job) {
+  return path.join(libraryRoot, '.cache', 'torrent', job.id);
+}
+
 export function listDownloads() {
   return [...jobs.values()]
     .sort((a, b) => b.createdAt - a.createdAt)
@@ -216,7 +380,11 @@ export function listDownloads() {
 export async function cancelDownload(id) {
   const job = jobs.get(String(id));
   if (!job) return null;
-  const part = `${job.dest}.part`;
+  const part = job.dest ? `${job.dest}.part` : '';
+  const removePart = async () => {
+    if (part) await fsp.rm(part, { force: true }).catch(() => {});
+    if (job.kind === 'torrent') await fsp.rm(torrentTempDir(job), { recursive: true, force: true }).catch(() => {});
+  };
 
   // A cancelled job is gone for good: drop it from the list right away and
   // delete the partial file so nothing is left behind.
@@ -224,7 +392,7 @@ export async function cancelDownload(id) {
     const index = queue.indexOf(job);
     if (index >= 0) queue.splice(index, 1);
     jobs.delete(job.id);
-    await fsp.rm(part, { force: true }).catch(() => {});
+    await removePart();
     return { id: job.id, status: 'cancelled', removed: true };
   }
 
@@ -236,7 +404,7 @@ export async function cancelDownload(id) {
     if (job.ffmpeg) killTree(job.ffmpeg);
     // The writer may still hold the file open on Windows; the abort handler
     // retries the delete once the stream closes.
-    await fsp.rm(part, { force: true }).catch(() => {});
+    await removePart();
     return { id: job.id, status: 'cancelled', removed: true };
   }
 
@@ -289,6 +457,9 @@ export function retryDownload(id) {
   job.speed = 0;
   job.startedAt = null;
   job.completedAt = null;
+  job.progressValue = job.kind === 'torrent' ? 0 : undefined;
+  job.attempt = 0;
+  if (Array.isArray(job.failures)) job.failures.length = 0;
   queue.push(job);
   pump();
   return publicJob(job);
@@ -298,7 +469,8 @@ function pump() {
   while (activeCount < MAX_ACTIVE && queue.length) {
     const job = queue.shift();
     activeCount++;
-    runHlsJob(job)
+    const task = job.kind === 'torrent' ? runTorrentJob(job) : runHlsJob(job);
+    task
       .catch(() => {})
       .finally(() => {
         activeCount--;
@@ -482,6 +654,174 @@ async function runHlsJob(job) {
     if (timer) clearInterval(timer);
     job.controller = null;
     job.ffmpeg = null;
+  }
+}
+
+async function resetTorrentDir(dir) {
+  await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+  await fsp.mkdir(dir, { recursive: true }).catch(() => {});
+}
+
+/**
+ * One candidate release, start to finish. Returns 'done' when the episode is
+ * installed, 'aborted' when the job was paused or cancelled, or a short failure
+ * string so the caller can try the next release.
+ */
+async function attemptRelease(job, release, dir, controller) {
+  job.release = release;
+  job.quality = release.quality;
+  job.seeders = release.seeders;
+  job.sourceLabel = releaseLabel(release);
+  job.stage = 'metadata';
+  job.progressValue = 0.01;
+  job.bytes = 0;
+  job.total = Number(release.sizeBytes) || 0;
+  job.speed = 0;
+
+  const magnet = magnetFor(release);
+  let file = null;
+  try {
+    const files = await fetchTorrentFiles(magnet, { dir });
+    file = matchEpisodeFile(files, release.fileName, { season: job.season, episode: job.episode });
+  } catch (err) {
+    if (controller.signal.aborted) return 'aborted';
+    return `${release.name}: ${err?.message || err}`;
+  }
+  if (!file) return `${release.name}: episode file is not in this torrent`;
+
+  job.stage = 'downloading';
+  job.total = Number(file.size) || job.total;
+  const startedAt = Date.now();
+  let downloaded;
+  try {
+    downloaded = await downloadTorrentFile({
+      magnet,
+      file,
+      dir,
+      total: Number(file.size) || 0,
+      signal: controller.signal,
+      onProgress: ({ bytes, total }) => {
+        job.bytes = bytes;
+        if (total) job.total = total;
+        const seconds = (Date.now() - startedAt) / 1000;
+        job.speed = seconds > 0.5 ? Math.round(bytes / seconds) : 0;
+        job.progressValue = job.total ? Math.min(0.8, (bytes / job.total) * 0.8) : 0;
+      },
+    });
+  } catch (err) {
+    if (controller.signal.aborted || job.status === 'paused') return 'aborted';
+    return `${release.name}: ${err?.message || err}`;
+  }
+  job.speed = 0;
+  job.bytes = downloaded.bytes;
+  job.total = downloaded.bytes;
+
+  job.stage = 'verifying';
+  job.progressValue = 0.82;
+  const probe = await probeMedia(downloaded.path);
+  const picked = pickTracks(probe, { originalLanguage: job.originalLanguage });
+  if (picked.error) return `${release.name}: ${picked.reason || picked.error}`;
+
+  const quality = qualityFromHeight(probe.video?.height) || release.quality;
+  job.quality = quality;
+  job.fileName = sanitizeFileName(torrentFileName(job, quality));
+  const dest = await uniquePath(job.targetDir, job.fileName);
+  const part = `${dest}.part`;
+  const stem = dest.slice(0, dest.length - path.extname(dest).length);
+  const durationSec = Number(probe.durationSec) || 0;
+
+  job.stage = 'remuxing';
+  job.progressValue = 0.84;
+  await fsp.rm(part, { force: true }).catch(() => {});
+  try {
+    await remuxToMp4({
+      input: downloaded.path,
+      output: part,
+      video: picked.video,
+      audio: picked.audio,
+      onProgress: ({ sec } = {}) => {
+        if (!durationSec || !Number.isFinite(sec)) return;
+        job.progressValue = 0.84 + Math.min(0.12, (sec / durationSec) * 0.12);
+      },
+    });
+  } catch (err) {
+    await fsp.rm(part, { force: true }).catch(() => {});
+    if (controller.signal.aborted) return 'aborted';
+    return `${release.name}: remux failed (${err?.message || err})`;
+  }
+
+  job.stage = 'subtitles';
+  job.progressValue = 0.97;
+  const tracks = await extractSubtitles({
+    input: downloaded.path,
+    outStem: stem,
+    subtitles: picked.subtitles,
+  }).catch(() => []);
+  job.subtitles = tracks.map((track) => track.lang);
+
+  if (controller.signal.aborted) {
+    await fsp.rm(part, { force: true }).catch(() => {});
+    for (const track of tracks) await fsp.rm(track.path, { force: true }).catch(() => {});
+    return 'aborted';
+  }
+
+  await fsp.rename(part, dest);
+  const stat = await fsp.stat(dest);
+  job.dest = dest;
+  job.fileName = path.basename(dest);
+  job.bytes = stat.size;
+  job.total = stat.size;
+  job.speed = 0;
+  job.progressValue = 1;
+  job.stage = 'done';
+  job.status = 'completed';
+  job.completedAt = Date.now();
+
+  if (!tracks.some((track) => track.lang === 'en')) {
+    await ensureEnglishSubtitle(dest, {
+      seriesTitle: job.seriesTitle || job.title,
+      title: job.title,
+      season: job.season,
+      episode: job.episode,
+      isSeries: job.season > 0,
+    }).catch(() => {});
+  }
+  await onComplete(job).catch(() => {});
+  return 'done';
+}
+
+async function runTorrentJob(job) {
+  job.status = 'downloading';
+  job.startedAt = Date.now();
+  const controller = new AbortController();
+  job.controller = controller;
+  const dir = torrentTempDir(job);
+  await fsp.mkdir(dir, { recursive: true }).catch(() => {});
+  const failures = job.failures;
+
+  try {
+    for (let index = job.attempt || 0; index < job.candidates.length; index++) {
+      if (controller.signal.aborted) return;
+      job.attempt = index;
+      const outcome = await attemptRelease(job, job.candidates[index], dir, controller);
+      if (outcome === 'done') return;
+      if (outcome === 'aborted') return;
+      failures.push(outcome);
+      await resetTorrentDir(dir);
+    }
+    const detail = failures.length ? `: ${failures[0]}` : '';
+    throw new Error(`no Torrentio release had the original audio, English audio and subtitles${detail}`);
+  } catch (err) {
+    job.status = 'failed';
+    job.stage = '';
+    job.speed = 0;
+    job.completedAt = Date.now();
+    job.error = err?.message || String(err);
+    if (job.dest) await fsp.rm(`${job.dest}.part`, { force: true }).catch(() => {});
+  } finally {
+    job.controller = null;
+    /* A paused job keeps its partial torrent so aria2c can resume it. */
+    if (job.status !== 'paused') await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 

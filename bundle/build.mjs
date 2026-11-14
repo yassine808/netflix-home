@@ -63,7 +63,8 @@ function assetFingerprint(files) {
 const ffmpeg = path.join(root, 'node_modules', 'ffmpeg-static', 'ffmpeg.exe');
 const ffprobe = path.join(root, 'node_modules', 'ffprobe-static', 'bin', 'win32', 'x64', 'ffprobe.exe');
 const ytdlp = path.join(root, 'bin', 'yt-dlp.exe');
-for (const file of [ffmpeg, ffprobe, ytdlp]) {
+const aria2 = path.join(root, 'bin', 'aria2c.exe');
+for (const file of [ffmpeg, ffprobe, ytdlp, aria2]) {
   if (!fs.existsSync(file)) throw new Error(`missing ${file} — run npm install first`);
 }
 
@@ -76,6 +77,7 @@ const assets = [
   { key: 'bin/ffmpeg.exe', source: ffmpeg },
   { key: 'bin/ffprobe.exe', source: ffprobe },
   { key: 'bin/yt-dlp.exe', source: ytdlp },
+  { key: 'bin/aria2c.exe', source: aria2 },
 ];
 
 fs.mkdirSync(buildDir, { recursive: true });

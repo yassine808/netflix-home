@@ -1318,6 +1318,15 @@ const STATUS_LABELS = {
   completed: 'Completed',
 };
 
+/* Queued jobs report progress in stages before the byte count has any meaning. */
+const STAGE_LABELS = {
+  searching: 'Picking release…',
+  metadata: 'Fetching torrent…',
+  verifying: 'Checking tracks…',
+  remuxing: 'Remuxing to MP4…',
+  subtitles: 'Extracting subtitles…',
+};
+
 /* ---------- download manager ---------- */
 
 function scheduleDownloadPoll() {
@@ -1517,6 +1526,10 @@ function updateDownloadRow(row, job) {
 
   r.meta.replaceChildren();
   r.meta.append(createEl('span', `download-status ${job.status}`, STATUS_LABELS[job.status] || job.status));
+  if (job.sourceLabel) r.meta.append(createEl('span', 'download-source', job.sourceLabel));
+  if (job.stage && job.stage !== 'downloading' && job.status !== 'completed' && STAGE_LABELS[job.stage]) {
+    r.meta.append(createEl('span', 'download-stage', STAGE_LABELS[job.stage]));
+  }
   if (job.total && job.status !== 'queued') r.meta.append(createEl('span', '', `${formatSize(job.bytes)} of ${formatSize(job.total)}`));
   else if (job.status === 'completed') r.meta.append(createEl('span', '', formatSize(job.bytes)));
   if (job.status === 'downloading') {
@@ -2924,7 +2937,7 @@ async function queueCastleEpisode(episode, btn) {
   els.castleStatus.textContent = '';
 
   try {
-    await startCastleDownload({
+    const result = await startCastleDownload({
       movieId: episode.movieId,
       episodeId: episode.episodeId,
       resolution: CASTLE_RESOLUTION,
@@ -2935,10 +2948,11 @@ async function queueCastleEpisode(episode, btn) {
       size: quality?.size || 0,
       poster: detail.poster,
     });
+    const quality = result?.quality || qualityName(CASTLE_RESOLUTION);
     btn.classList.add('queued');
     btn.querySelector('span').textContent = 'Queued';
-    toast(`${label} queued — ${qualityName(CASTLE_RESOLUTION)}`);
-    notify('start', label, `Queued — ${qualityName(CASTLE_RESOLUTION)}`);
+    toast(`${label} queued — ${quality}`);
+    notify('start', label, `Queued — ${quality}${result?.source === 'torrentio' ? ' · Torrentio' : ''}`);
     openDownloads();
     refreshDownloads();
   } catch (err) {
@@ -2993,6 +3007,8 @@ async function queueCastleSeason() {
   els.castleStatus.textContent = '';
   let queued = 0;
   let skipped = 0;
+  let torrentio = 0;
+  let lastQuality = '';
   const localMap = seriesLocalEpisodes(detail);
   const localGroupMap = state.castleLocal?.local || null;
 
@@ -3020,7 +3036,7 @@ async function queueCastleSeason() {
       continue;
     }
     try {
-      await startCastleDownload({
+      const result = await startCastleDownload({
         movieId: episode.movieId,
         episodeId: episode.episodeId,
         resolution: CASTLE_RESOLUTION,
@@ -3032,6 +3048,8 @@ async function queueCastleSeason() {
         poster: detail.poster,
       });
       queued += 1;
+      if (result?.source === 'torrentio') torrentio += 1;
+      if (result?.quality) lastQuality = result.quality;
     } catch {
       skipped += 1;
     }
@@ -3046,8 +3064,10 @@ async function queueCastleSeason() {
   els.castleStatus.textContent = summary;
 
   if (queued) {
-    toast(`${queued} episode${queued === 1 ? '' : 's'} queued — ${detail.title}`);
-    notify('start', detail.title, `${queued} episode${queued === 1 ? '' : 's'} queued`);
+    const quality = lastQuality || qualityName(CASTLE_RESOLUTION);
+    const mix = torrentio ? ` (${torrentio} Torrentio, ${queued - torrentio} Castle)` : '';
+    toast(`${queued} episode${queued === 1 ? '' : 's'} queued${mix} — ${quality}`);
+    notify('start', detail.title, `${queued} episode${queued === 1 ? '' : 's'} queued${mix} — ${quality}`);
     openDownloads();
   }
   await refreshDownloads();
@@ -3799,7 +3819,7 @@ async function queueSeriesEpisode(group, entry, season, btn) {
   btn.disabled = true;
   btn.querySelector('span').textContent = 'Starting…';
   try {
-    await startCastleDownload({
+    const result = await startCastleDownload({
       movieId: entry.movieId,
       episodeId: entry.episodeId,
       resolution: entry.quality.resolution,
@@ -3813,7 +3833,9 @@ async function queueSeriesEpisode(group, entry, season, btn) {
     state.queuedEpisodes.add(`${group.seriesKey}:${season}x${entry.episode}`);
     btn.classList.add('queued');
     btn.querySelector('span').textContent = 'Queued';
-    toast(`${title} ${label} queued${entry.quality.label ? ` — ${entry.quality.label}` : ''}`);
+    const quality = result?.quality || entry.quality.label;
+    const sourceNote = result?.source === 'torrentio' ? ' · Torrentio' : '';
+    toast(`${title} ${label} queued${quality ? ` — ${quality}${sourceNote}` : ''}`);
     notify('start', `${title} ${label}`, 'Queued for download');
     openDownloads();
     refreshDownloads();
