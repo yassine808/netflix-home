@@ -3272,8 +3272,10 @@ function applyCastlePlan(detail, episodes) {
         && !btn.classList.contains('is-retry');
       if (idle) {
         btn.disabled = true;
-        btn.title = 'Torrentio has no release with English audio and Castle fallback is off';
-        btn.querySelector('span').textContent = 'Unavailable';
+        btn.title = state.offline
+          ? 'Offline mode — go online to download'
+          : 'Torrentio has no release with English audio and Castle fallback is off';
+        btn.querySelector('span').textContent = state.offline ? 'Download' : 'Unavailable';
       }
       return;
     }
@@ -3565,8 +3567,11 @@ function appendCastleAction(row, detail, episode, local, quality, plan) {
     btn.disabled = !available || state.offline;
     btn.addEventListener('click', () => queueCastleEpisode(episode, btn));
   } else {
-    paint(EP_DOWNLOAD_ICON, available ? 'Download' : 'Unavailable');
-    btn.disabled = !available || state.offline;
+    // Offline the plan is unknowable, and the requirement is one greyed
+    // "Download" per episode, not "Unavailable" for a row that simply cannot
+    // ask Torrentio right now.
+    paint(EP_DOWNLOAD_ICON, state.offline || available ? 'Download' : 'Unavailable');
+    btn.disabled = state.offline || !available;
     btn.title = state.offline
       ? 'Offline mode — go online to download'
       : available && plan?.quality ? `${plan.quality} · Torrentio` : '';
@@ -3676,7 +3681,10 @@ function renderCastleDownloads(detail) {
   }
 
   if (!episodes.length) {
-    els.castleStatus.textContent = 'No downloadable episodes are listed for this title.';
+    const seasonNo = detail.activeSeason ?? state.castleSeason ?? 0;
+    els.castleStatus.textContent = state.offline
+      ? `Season ${seasonNo} has no saved episodes yet. Go online once so the whole catalogue is stored.`
+      : 'No downloadable episodes are listed for this title.';
     return;
   }
 

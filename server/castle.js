@@ -833,6 +833,24 @@ function fillAllSeasons(id) {
   if (seasonFills.has(key)) return seasonFills.get(key);
   const task = (async () => {
     let saved = getCastleTitleSaved(id);
+    if (!saved || isOffline()) return saved;
+
+    /* A row saved before the whole series was stored can list fewer seasons
+     * than the title has. The base fetch names the missing ones, so the loop
+     * below can fill them instead of leaving them invisible offline. */
+    const isSeries = saved.type === 'series' || saved.type === 'anime';
+    const declared = Number(saved.seasonCount) || 0;
+    const known = Array.isArray(saved.seasons) ? saved.seasons.length : 0;
+    if (isSeries && declared > known) {
+      try {
+        const fresh = await fetchTitle(id);
+        const merged = mergeTitle(getCastleTitleSaved(id) || saved, fresh);
+        merged.fetchedAt = Date.now();
+        saved = persistTitle(merged);
+      } catch {
+        /* Network gone: keep exactly what is saved. */
+      }
+    }
     if (!saved?.seasons?.length) return saved;
     for (const row of saved.seasons) {
       if (row.filled || row.episodes?.length) continue;
@@ -953,6 +971,26 @@ export function savedCastleTitles(limit = 500) {
     });
   }
   return cards;
+}
+
+/* One quiet pass over the saved catalogue at boot (online only): every series
+ * gets the seasons it is still missing and every picture is cached, so a later
+ * offline session shows the whole thing even for a title nobody opened since the
+ * fix. Sequential on purpose; the app is usable while it runs. */
+export async function backfillSavedCastle(limit = 200) {
+  if (isOffline()) return 0;
+  let done = 0;
+  for (const row of listCastleTitles(limit)) {
+    if (isOffline()) break;
+    if (!row?.id) continue;
+    if (row.type === 'series' || row.type === 'anime') {
+      await fillAllSeasons(row.id).catch(() => null);
+    }
+    const saved = getCastleTitleSaved(row.id);
+    if (saved) await warmCastleMedia(saved).catch(() => {});
+    done += 1;
+  }
+  return done;
 }
 
 export async function getCastleStream({ movieId, episodeId, resolution = 2, languageId } = {}) {

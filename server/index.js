@@ -28,7 +28,7 @@ import {
   searchCastle, browseCastle, getCastleTitle, getCastleSeries, getCastleStream,
   getCastleEpisodeTracks, selectCastleAudioTracks, getCastleStats, CASTLE_GENRES,
   isCastleId, castleArt, castleEpisodeArt, castleEpisodeArtForSeries, castleTrailerItem,
-  savedCastleTitles,
+  savedCastleTitles, backfillSavedCastle,
 } from './castle.js';
 import { castleSyncStatus, startCastleSync } from './castle-sync.js';
 import { initSettings, getSettings, isOffline, setOffline, isCastleFallback, setCastleFallback,
@@ -335,7 +335,11 @@ app.post('/api/settings/offline', (req, res) => {
   }
   const settings = setOffline(req.body.offline);
   if (settings.offline) pauseDownloads();
-  else resumeDownloads();
+  else {
+    resumeDownloads();
+    // Going back online is the moment to complete the saved catalogue.
+    void backfillSavedCastle().catch(() => {});
+  }
   res.json(settings);
 });
 
@@ -1736,6 +1740,10 @@ function listen(port, attempt = 0) {
     // Serve the saved index immediately; verify folder mtimes in the background
     // and let the watcher take it from there.
     setTimeout(() => refreshLibrary('startup'), 1200).unref?.();
+    // Fill any season or picture the saved catalogue is still missing, so a
+    // later offline run shows every episode for every title, not only the ones
+    // opened since the fix. Quiet and sequential; boot does not wait for it.
+    if (!isOffline()) setTimeout(() => backfillSavedCastle().catch(() => {}), 8000).unref?.();
     watchLibrary();
   });
 
