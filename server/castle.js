@@ -3,6 +3,7 @@ import {
   getCastleStat, putCastleStat,
   getCastleTitleSaved, getCastleTitleBySeriesKey, putCastleTitleSaved,
   indexCastleMedia, getCastleMedia, putCastleMediaBlob, castleMediaReady,
+  listCastleTitles,
 } from './db.js';
 import { isOffline } from './settings.js';
 
@@ -545,7 +546,8 @@ function mergeTitle(saved, fresh) {
       // An empty fresh list means the season was not fetched in this pass;
       // keep the episodes already saved instead of erasing them.
       const episodes = row.episodes?.length ? row.episodes : (old?.episodes || []);
-      bySeason.set(row.season, { season: row.season, movieId: row.movieId || old?.movieId, episodes });
+      const filled = Boolean(row.episodes?.length || old?.filled);
+      bySeason.set(row.season, { season: row.season, movieId: row.movieId || old?.movieId, episodes, filled });
     }
     merged.seasons = [...bySeason.values()].sort((a, b) => a.season - b.season);
     if (fresh.activeSeason != null) merged.activeSeason = fresh.activeSeason;
@@ -820,18 +822,63 @@ function persistTitle(title) {
   return saved;
 }
 
+/* The sheet persists only the season it showed, so opening a series must also
+ * pull every other season. One fetch per missing season, merged into the saved
+ * row, ensures the offline catalogue has the whole episode list and artwork
+ * before the viewer ever scrolls to that tab. */
+const seasonFills = new Map();
+
+function fillAllSeasons(id) {
+  const key = String(id);
+  if (seasonFills.has(key)) return seasonFills.get(key);
+  const task = (async () => {
+    let saved = getCastleTitleSaved(id);
+    if (!saved?.seasons?.length) return saved;
+    for (const row of saved.seasons) {
+      if (row.filled || row.episodes?.length) continue;
+      try {
+        const fresh = await fetchTitle(id, row.season);
+        saved = mergeTitle(getCastleTitleSaved(id) || saved, fresh);
+        saved.seasons = (saved.seasons || []).map((entry) => (
+          entry.season === row.season ? { ...entry, filled: true } : entry
+        ));
+        saved.fetchedAt = Date.now();
+        persistTitle(saved);
+      } catch {
+        /* Offline or a Castle error: keep what is saved and try next time. */
+      }
+    }
+    return getCastleTitleSaved(id) || saved;
+  })().finally(() => seasonFills.delete(key));
+  seasonFills.set(key, task);
+  return task;
+}
+
 /* Saved titles are the source of truth. A sheet opens from catalog.db without
  * touching the network; Sync is what refreshes them. */
 export async function getCastleTitle(id, { season, refresh = false } = {}) {
   if (!isCastleId(id)) throw httpError('invalid castle id', 400);
   const saved = getCastleTitleSaved(id);
-  if (saved && !refresh) return shapeTitle(saved, season);
+  if (saved && !refresh) {
+    // Complete the rest of the series in the background: the open tab answers
+    // at once, every other season is saved before the viewer can click it.
+    if (!isOffline()) {
+      void fillAllSeasons(id).catch(() => {});
+      // A row saved while offline may still be missing posters or episode
+      // pictures. Opening it online fills those in for the next offline run.
+      void warmCastleMedia(saved).catch(() => {});
+    }
+    return shapeTitle(saved, season);
+  }
 
   try {
     const fresh = await fetchTitle(id, season);
     const merged = mergeTitle(saved, fresh);
     merged.fetchedAt = Date.now();
     persistTitle(merged);
+    if (!isOffline() && merged.seasons?.some((row) => !row.filled && !row.episodes?.length)) {
+      void fillAllSeasons(id).catch(() => {});
+    }
     return shapeTitle(merged, season);
   } catch (err) {
     if (saved) return shapeTitle(saved, season);
@@ -858,24 +905,54 @@ export async function refreshCastleTitle(id) {
   return { before, title: merged, fresh: first, images };
 }
 
-/* Every season with its full episode list, from the saved row when possible. */
+/* Every season with its full episode list, from the saved row when possible.
+ * Fills and persists any season that was never opened, so the answer is the
+ * complete catalogue even when the network has gone away since. */
 export async function getCastleSeries(id) {
   if (!isCastleId(id)) throw httpError('invalid castle id', 400);
   const first = await getCastleTitle(id);
   if (!first.seasons?.length) {
     return { id: first.id, title: first.title, seasons: [{ season: 0, episodes: first.episodes || [] }] };
   }
-  const rows = [];
-  for (const row of first.seasons) {
-    let episodes = row.episodes || [];
-    if (!episodes.length) {
-      const detail = await getCastleTitle(id, { season: row.season, refresh: true }).catch(() => first);
-      episodes = (detail.seasons || []).find((entry) => entry.season === detail.activeSeason)?.episodes
-        || episodes;
-    }
-    rows.push({ season: row.season, episodes });
-  }
+  if (!isOffline()) await fillAllSeasons(id).catch(() => null);
+  const saved = getCastleTitleSaved(id);
+  const rows = (saved?.seasons || first.seasons).map((row) => ({
+    season: row.season,
+    episodes: row.episodes || [],
+  }));
   return { id: first.id, title: first.title, seasons: rows };
+}
+
+/* The whole saved catalogue, newest first, for offline browsing. Cards point at
+ * the app's own art routes, so opening one never touches the CDN. */
+export function savedCastleTitles(limit = 500) {
+  const rows = listCastleTitles(limit);
+  const cards = [];
+  for (const row of rows) {
+    if (!row?.id || !row?.title) continue;
+    const seasons = Array.isArray(row.seasons) ? row.seasons : [];
+    const episodeCount = seasons.length
+      ? seasons.reduce((sum, entry) => sum + (entry.episodes?.length || 0), 0)
+      : (row.episodes?.length || Number(row.episodeCount) || 0);
+    cards.push({
+      provider: 'castle',
+      id: String(row.id),
+      title: row.title,
+      type: row.type === 'anime' ? 'anime' : row.type === 'series' ? 'series' : 'movie',
+      year: row.year || null,
+      rating: Number(row.rating) || 0,
+      description: row.description || '',
+      genres: Array.isArray(row.genres) ? row.genres.slice(0, 6) : [],
+      languages: Array.isArray(row.languages) ? row.languages : [],
+      seasonCount: seasons.length || Number(row.seasonCount) || 0,
+      episodeCount,
+      poster: row.poster ? `/api/castle/art/${encodeURIComponent(row.id)}/poster` : '',
+      background: row.background ? `/api/castle/art/${encodeURIComponent(row.id)}/backdrop` : '',
+      downloadable: true,
+      saved: true,
+    });
+  }
+  return cards;
 }
 
 export async function getCastleStream({ movieId, episodeId, resolution = 2, languageId } = {}) {

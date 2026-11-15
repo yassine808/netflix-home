@@ -28,6 +28,7 @@ import {
   searchCastle, browseCastle, getCastleTitle, getCastleSeries, getCastleStream,
   getCastleEpisodeTracks, selectCastleAudioTracks, getCastleStats, CASTLE_GENRES,
   isCastleId, castleArt, castleEpisodeArt, castleEpisodeArtForSeries, castleTrailerItem,
+  savedCastleTitles,
 } from './castle.js';
 import { castleSyncStatus, startCastleSync } from './castle-sync.js';
 import { initSettings, getSettings, isOffline, setOffline, isCastleFallback, setCastleFallback,
@@ -279,6 +280,7 @@ app.use('/api', (req, res, next) => {
     || p.startsWith('/castle/art/')
     || p.startsWith('/castle/episode-art/')
     || p.startsWith('/castle/trailer/')
+    || p === '/castle/saved'
     || p === '/castle/sync'
   );
   const blocked = (p.startsWith('/online/')
@@ -1176,6 +1178,18 @@ app.get('/api/castle/title/:id', async (req, res) => {
     res.json(data);
   } catch (err) {
     res.status(err?.status || 502).json({ error: err?.message || String(err) });
+  }
+});
+
+/* Offline catalogue: every title opened at least once, with its saved seasons
+ * and pictures. No network call, so this answers with offline mode on. */
+app.get('/api/castle/saved', (req, res) => {
+  try {
+    const results = savedCastleTitles(1000);
+    res.set('Cache-Control', 'no-store');
+    res.json({ provider: 'castle', offline: isOffline(), count: results.length, results });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
   }
 });
 

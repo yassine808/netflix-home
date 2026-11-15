@@ -383,6 +383,21 @@ export function putCastleTitleSaved(title) {
   }
 }
 
+/* Every saved title, newest first. The offline catalogue reads this instead of
+ * asking Castle, so it works with the network switched off. */
+export function listCastleTitles(limit = 500) {
+  if (!db) return [];
+  try {
+    const capped = Math.min(2000, Math.max(1, Number(limit) || 500));
+    return db.prepare(`SELECT payload, fetched_at FROM castle_titles
+      ORDER BY fetched_at DESC LIMIT ?`)
+      .all(capped)
+      .map((row) => ({ ...JSON.parse(row.payload), fetchedAt: Number(row.fetched_at) || 0 }));
+  } catch {
+    return [];
+  }
+}
+
 export function listCastleTitleIds() {
   if (!db) return [];
   try {
