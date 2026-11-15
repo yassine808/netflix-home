@@ -8,8 +8,7 @@ import {
   searchOnline, getOnlineTitle, searchCastle, getCastleTitle, getCastleSeriesEpisodes, startCastleDownload,
   deleteLibraryItem, deleteLibraryItems, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   pauseDownload, resumeDownload,
-  getSettings, setOfflineMode, setCastleFallback, setAutoplaySound,
-  setLibraryRoot, restartApp,
+  getSettings, setOfflineMode, setCastleFallback,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
   setImg, skel, skelLines, skelMeta, skelCards, skelPoster, skelEpisodes, skelDownload,
   decodesHevc,
@@ -38,13 +37,6 @@ const state = {
   offline: false,
   // Mirrors the server's Castle fallback setting: false = Torrentio only.
   castleFallback: true,
-  // Mirrors the server's sound setting: false = preview and player start muted.
-  autoplaySound: true,
-  // Library folder this tab is scanning, and the one config.json holds. They
-  // differ until the app restarts.
-  libraryRoot: '',
-  libraryRootSetting: '',
-  libraryRestartPending: false,
   searchHistory: readJson(SEARCH_HISTORY_KEY, []),
   toastTimer: null,
   toastExitTimer: null,
@@ -198,14 +190,6 @@ const els = {
   settingsModal: $('settingsModal'),
   castleFallbackBtn: $('castleFallbackBtn'),
   castleFallbackLabel: $('castleFallbackLabel'),
-  autoplaySoundBtn: $('autoplaySoundBtn'),
-  autoplaySoundLabel: $('autoplaySoundLabel'),
-  libraryRootInput: $('libraryRootInput'),
-  libraryRootSave: $('libraryRootSave'),
-  libraryRootHint: $('libraryRootHint'),
-  libraryRootError: $('libraryRootError'),
-  libraryRestartRow: $('libraryRestartRow'),
-  libraryRestartBtn: $('libraryRestartBtn'),
   castleSeasonTabs: $('castleSeasonTabs'),
   castleEpisodes: $('castleEpisodes'),
   castleStatus: $('castleStatus'),
@@ -335,12 +319,6 @@ async function boot() {
       applyOfflineUi();
       state.castleFallback = settings.castleFallback !== false;
       applyCastleFallbackUi();
-      state.autoplaySound = settings.autoplaySound !== false;
-      applyAutoplaySoundUi();
-      state.libraryRoot = settings.libraryRoot || '';
-      state.libraryRootSetting = settings.libraryRootSetting || state.libraryRoot;
-      state.libraryRestartPending = Boolean(settings.libraryRootPending);
-      applyLibraryRootUi();
     })
     .catch(() => { /* older server: leave the switch online */ });
   await loadLibrary({ first: true });
@@ -800,9 +778,7 @@ function playPreview(item) {
   const video = els.heroVideo;
   const id = item.playId || item.id;
   video.volume = 0.65;
-  /* The sound setting is the default; the speaker button overrides it for this
-   * visit (state.previewMuted). */
-  video.muted = state.previewMuted || state.autoplaySound === false;
+  video.muted = state.previewMuted;
   // Keep the title's own artwork on screen while the trailer buffers.
   video.poster = thumbUrl(item, 960);
   syncHeroMute();
@@ -885,13 +861,6 @@ function stopPreview() {
     video.load();
   } catch { /* ignore */ }
   video.classList.remove('playing');
-}
-
-/* Clicking the preview skips it and goes back to the still frame. */
-function skipPreview() {
-  if (!els.heroVideo.classList.contains('playing')) return;
-  stopPreview();
-  syncHeroMute(false);
 }
 
 function renderRows() {
@@ -2184,25 +2153,9 @@ function applyCastleFallbackUi() {
 function openSettings() {
   closeProfile();
   applyCastleFallbackUi();
-  applyAutoplaySoundUi();
-  applyLibraryRootUi();
-  showLibraryError('');
   els.settingsModal.hidden = false;
   syncBodyLock();
   setTimeout(() => els.settingsModal.querySelector('.modal-close')?.focus(), 40);
-  /* The app itself (after a restart) or another tab may have changed these. */
-  getSettings()
-    .then((settings) => {
-      state.castleFallback = settings.castleFallback !== false;
-      state.autoplaySound = settings.autoplaySound !== false;
-      state.libraryRoot = settings.libraryRoot || state.libraryRoot;
-      state.libraryRootSetting = settings.libraryRootSetting || state.libraryRoot;
-      state.libraryRestartPending = Boolean(settings.libraryRootPending);
-      applyCastleFallbackUi();
-      applyAutoplaySoundUi();
-      applyLibraryRootUi();
-    })
-    .catch(() => { /* keep what boot found */ });
 }
 
 function closeSettings() {
@@ -2226,82 +2179,6 @@ async function toggleCastleFallback() {
     toast(`Could not change the download source: ${err.message}`);
   } finally {
     els.castleFallbackBtn.disabled = false;
-  }
-}
-
-function applyAutoplaySoundUi() {
-  const on = state.autoplaySound !== false;
-  els.autoplaySoundBtn.setAttribute('aria-checked', String(on));
-  els.autoplaySoundBtn.classList.toggle('is-off', !on);
-  els.autoplaySoundLabel.textContent = on ? 'On' : 'Off';
-  els.autoplaySoundBtn.title = on
-    ? 'Preview and player start with sound'
-    : 'Preview and player start muted';
-}
-
-async function toggleAutoplaySound() {
-  els.autoplaySoundBtn.disabled = true;
-  try {
-    const settings = await setAutoplaySound(!(state.autoplaySound !== false));
-    state.autoplaySound = settings.autoplaySound !== false;
-    applyAutoplaySoundUi();
-    // A running preview has to follow the new default straight away.
-    if (!state.autoplaySound) {
-      els.heroVideo.muted = true;
-      syncHeroMute(false);
-    }
-    toast(state.autoplaySound
-      ? 'Auto-play sound on'
-      : 'Auto-play sound off — videos start muted');
-  } catch (err) {
-    toast(`Could not change the sound setting: ${err.message}`, { type: 'warn' });
-  } finally {
-    els.autoplaySoundBtn.disabled = false;
-  }
-}
-
-function applyLibraryRootUi() {
-  const current = state.libraryRoot || 'G:\\NETFLIX';
-  if (document.activeElement !== els.libraryRootInput) {
-    els.libraryRootInput.value = state.libraryRootSetting || current;
-  }
-  els.libraryRootHint.textContent = `Scanning ${current}. Films and the .cache folder (catalog, artwork, downloads) live here.`;
-  els.libraryRestartRow.hidden = !state.libraryRestartPending;
-}
-
-function showLibraryError(message) {
-  els.libraryRootError.textContent = message || '';
-  els.libraryRootError.hidden = !message;
-}
-
-async function saveLibraryRoot() {
-  const wanted = els.libraryRootInput.value.trim();
-  showLibraryError('');
-  els.libraryRootSave.disabled = true;
-  try {
-    const settings = await setLibraryRoot(wanted);
-    state.libraryRoot = settings.libraryRoot || state.libraryRoot;
-    state.libraryRootSetting = settings.libraryRootSetting || wanted;
-    state.libraryRestartPending = Boolean(settings.libraryRootPending);
-    applyLibraryRootUi();
-    toast(state.libraryRestartPending
-      ? 'Folder saved — restart the app to scan it'
-      : 'That folder is already the library');
-  } catch (err) {
-    showLibraryError(err.message);
-  } finally {
-    els.libraryRootSave.disabled = false;
-  }
-}
-
-async function restartLibraryApp() {
-  els.libraryRestartBtn.disabled = true;
-  try {
-    await restartApp();
-    toast('Restarting the app — this page reconnects in a moment', { type: 'info' });
-  } catch (err) {
-    els.libraryRestartBtn.disabled = false;
-    toast(`Could not restart: ${err.message}`, { type: 'warn' });
   }
 }
 
@@ -2845,7 +2722,8 @@ function updateCastleListButton(detail) {
   const inList = info.local ? isInMyList(info.id) : isInRemoteList(info.entry.key);
   els.castleList.hidden = false;
   els.castleList.classList.toggle('in-list', inList);
-  els.castleList.innerHTML = `${inList ? LIST_CHECK_ICON : LIST_PLUS_ICON}<span>${inList ? 'In Favourite' : 'Favourite'}</span>`;
+  els.castleList.innerHTML = inList ? LIST_CHECK_ICON : LIST_PLUS_ICON;
+  els.castleList.setAttribute('aria-label', inList ? 'Remove from Favourite' : 'Add to Favourite');
   els.castleList.title = inList ? 'Remove from Favourite' : 'Add to Favourite';
 }
 
@@ -3412,6 +3290,54 @@ function appendCastleAction(row, detail, episode, local, quality) {
   row.append(action);
 }
 
+const SEASON_CHEV = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+const SEASON_TICK = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>';
+document.addEventListener('pointerdown', (e) => {
+  document.querySelectorAll('.season-menu.is-open').forEach((m) => { if (!m.contains(e.target)) m.classList.remove('is-open'); });
+});
+
+function buildSeasonMenu(seasons, active, onPick) {
+  const menu = createEl('div', 'season-menu');
+  const trigger = createEl('button', 'season-trigger');
+  trigger.type = 'button';
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.innerHTML = `<span>Season ${active}</span>${SEASON_CHEV}`;
+  const pop = createEl('div', 'season-pop');
+  pop.setAttribute('role', 'listbox');
+  const opts = seasons.map((entry) => {
+    const o = createEl('button', `season-opt${entry.season === active ? ' is-active' : ''}`);
+    o.type = 'button';
+    o.setAttribute('role', 'option');
+    o.setAttribute('aria-selected', String(entry.season === active));
+    o.innerHTML = `<span>Season ${entry.season}</span>${SEASON_TICK}`;
+    o.addEventListener('click', () => {
+      menu.classList.remove('is-open');
+      if (entry.season !== active) onPick(Number(entry.season));
+    });
+    pop.append(o);
+    return o;
+  });
+  const setOpen = (open) => {
+    menu.classList.toggle('is-open', open);
+    trigger.setAttribute('aria-expanded', String(open));
+    if (open) setTimeout(() => (pop.querySelector('.is-active') || opts[0])?.focus({ preventScroll: true }), 30);
+  };
+  trigger.addEventListener('click', () => setOpen(!menu.classList.contains('is-open')));
+  menu.addEventListener('keydown', (e) => {
+    const open = menu.classList.contains('is-open');
+    if (e.key === 'Escape' && open) { e.stopPropagation(); setOpen(false); trigger.focus(); }
+    else if (e.key === 'ArrowDown' && !open && e.target === trigger) { e.preventDefault(); setOpen(true); }
+    else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && open) {
+      e.preventDefault();
+      const i = opts.indexOf(document.activeElement);
+      opts[Math.max(0, Math.min(opts.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))]?.focus();
+    }
+  });
+  menu.append(trigger, pop);
+  return menu;
+}
+
 function renderCastleDownloads(detail) {
   clearCastleSkeleton();
   const episodes = castleEpisodesOf(detail);
@@ -3427,8 +3353,12 @@ function renderCastleDownloads(detail) {
   const localFor = (season, episode) => (localMap ? localMap.get(`${season}x${episode}`) || null : null);
 
   const playTarget = castlePlayTarget();
-  els.castleResume.hidden = !playTarget;
-  els.castleResume.innerHTML = `${EP_PLAY_ICON}<span>${playTarget ? playTarget.label : 'Play'}</span>`;
+  const isSeries = detail.type === 'series';
+  els.castleResume.hidden = false;
+  els.castleResume.dataset.mode = playTarget ? 'play' : 'download';
+  els.castleResume.innerHTML = playTarget
+    ? `${EP_PLAY_ICON}<span>${playTarget.label}</span>`
+    : `${EP_DOWNLOAD_ICON}<span>${isSeries ? `Download Season ${detail.activeSeason || 1}` : 'Download'}</span>`;
 
   const selected = renderCastleSizes(detail, episodes);
 
@@ -3436,18 +3366,7 @@ function renderCastleDownloads(detail) {
   const canPickSeason = detail.type === 'series' && seasons.length > 1;
   els.castleSeasonTabs.hidden = !canPickSeason;
   if (canPickSeason) {
-    const select = document.createElement('select');
-    select.className = 'season-select';
-    select.setAttribute('aria-label', 'Season');
-    seasons.forEach((entry) => {
-      const opt = document.createElement('option');
-      opt.value = String(entry.season);
-      opt.textContent = `Season ${entry.season}`;
-      select.append(opt);
-    });
-    select.value = String(detail.activeSeason);
-    select.addEventListener('change', () => selectCastleSeason(Number(select.value)));
-    els.castleSeasonTabs.append(select);
+    els.castleSeasonTabs.append(buildSeasonMenu(seasons, Number(detail.activeSeason), (n) => selectCastleSeason(n)));
   }
 
   const allDone = castleAllLocal(detail);
@@ -4950,13 +4869,6 @@ function bindStaticEvents() {
   els.heroInfo.addEventListener('click', () => {
     if (state.heroId) openModal(state.heroId);
   });
-  /* The picture itself is a skip target while the preview runs; the hero's own
-   * buttons keep their behaviour. */
-  els.hero.addEventListener('click', (e) => {
-    if (!els.heroVideo.classList.contains('playing')) return;
-    if (e.target.closest('button, a, input, label')) return;
-    skipPreview();
-  });
   els.heroMute.addEventListener('click', () => {
     const video = els.heroVideo;
     const nextMuted = !video.muted;
@@ -5048,22 +4960,19 @@ function bindStaticEvents() {
   els.castleModal.querySelectorAll('[data-close-castle]').forEach((el) => el.addEventListener('click', closeCastleModal));
   els.settingsModal.querySelectorAll('[data-close-settings]').forEach((el) => el.addEventListener('click', closeSettings));
   els.castleFallbackBtn.addEventListener('click', toggleCastleFallback);
-  els.autoplaySoundBtn.addEventListener('click', toggleAutoplaySound);
-  els.libraryRootSave.addEventListener('click', saveLibraryRoot);
-  els.libraryRootInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      saveLibraryRoot();
-    }
-  });
-  els.libraryRestartBtn.addEventListener('click', restartLibraryApp);
   els.castleSeasonDownload.addEventListener('click', queueCastleSeason);
   bindCastleDeleteAll();
   els.castleList.addEventListener('click', toggleCastleList);
   els.castleResume.addEventListener('click', () => {
     const target = castlePlayTarget();
-    if (target) goWatch(target.id);
+    if (target) { goWatch(target.id); return; }
+    const all = els.castleSeasonDownload;
+    const one = els.castleEpisodes.querySelector('.castle-dl-btn:not(:disabled):not(.queued):not(.is-paused):not(.is-play):not(.is-active)');
+    if (!all.hidden && !all.disabled) all.click();
+    else if (one) one.click();
+    else toast('Nothing available to download yet');
   });
+  els.castlePlot.addEventListener('click', () => els.castlePlot.classList.toggle('is-open'));
   els.onlineCastleBtn.addEventListener('click', () => openCastleForTitle(state.onlineTitle?.title));
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
