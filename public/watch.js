@@ -48,6 +48,7 @@ const subtitleLayer = $('subtitleLayer');
 const subtitleText = $('subtitleText');
 const preview = $('tlPreview');
 const skipIntroBtn = $('skipIntro');
+const skipIntroFill = $('skipIntroFill');
 const idleEl = $('idle');
 const idleFill = $('idleFill');
 
@@ -80,7 +81,6 @@ let framesRequested = false;
 let previewMode = 'none';
 let previewBackdrop = '';
 let intro = null;
-let introDismissed = false;
 
 /* subtitle state */
 const SUB_OFFSET_STEP = 0.5;
@@ -109,7 +109,6 @@ let subBgOpacity = 0;
 
 const params = new URLSearchParams(location.search);
 const id = params.get('id');
-const INTRO_SKIP_KEY = `netflix-home:intro-skipped:${id}`;
 
 /* One series shares one set of subtitle settings across all its episodes. */
 function subtitleScope() {
@@ -140,7 +139,6 @@ async function init() {
   if (saved && !saved.finished && saved.t > 5 && saved.d > 0 && saved.t / saved.d < 0.96) {
     pendingResume = saved.t;
   }
-  introDismissed = readIntroSkipped();
 
   try {
     const res = await fetch(`/api/item/${encodeURIComponent(id)}`, { cache: 'no-store' });
@@ -230,12 +228,14 @@ function bindEvents() {
     updateBuffer();
     renderSubtitle();
     syncSkipIntro();
+    syncNextDue();
     if (Date.now() - lastSaved > 3000) saveNow();
   });
   video.addEventListener('progress', updateBuffer);
   video.addEventListener('durationchange', () => {
     duration = video.duration || duration;
     updateTimeline();
+    syncNextDue();
   });
   video.addEventListener('error', () => {
     const code = video.error?.code;
@@ -469,11 +469,31 @@ async function loadNextEpisode() {
     $('nextEp').setAttribute('aria-label', data.kind === 'local'
       ? `Play next episode ${tag}`
       : `Open ${tag} to download`);
+    syncNextDue();
   } catch {
     /* button stays hidden when the lookup fails */
   } finally {
     nextWrap.classList.remove('is-loading');
     if (!nextEpisode) nextWrap.hidden = true;
+  }
+}
+
+/* The next-episode card comes up by itself in the last seconds of an episode,
+ * and only when that episode is already on disk: a catalog-only row cannot play,
+ * so it stays a hover card instead of appearing as if it were queued. */
+const NEXT_DUE_SECONDS = 10;
+
+function syncNextDue() {
+  const local = nextEpisode?.kind === 'local';
+  const left = duration - (video.currentTime || 0);
+  const due = Boolean(local && duration > 0 && left <= NEXT_DUE_SECONDS);
+  const was = nextWrap.classList.contains('is-due');
+  if (due === was) return;
+  nextWrap.classList.toggle('is-due', due);
+  /* Bring the controls back for the card; hideUiNow keeps them while it is up. */
+  if (due) {
+    showUi();
+    armHideUi();
   }
 }
 
@@ -1156,7 +1176,6 @@ function hidePreview() {
 async function initIntro() {
   intro = null;
   skipIntroBtn.hidden = true;
-  if (introDismissed) return;
 
   try {
     const res = await fetch(`/api/intro/${encodeURIComponent(id)}`, { cache: 'no-store' });
@@ -1174,33 +1193,32 @@ async function initIntro() {
   syncSkipIntro();
 }
 
-/* Show only inside the intro, and only while at least 2 s of it are left. */
+/* The button is tied to the playhead, not to a one-shot flag: it appears
+ * whenever the viewer is inside the intro, including after seeking back, and
+ * carries a fill showing how much of the intro has played. */
 function syncSkipIntro() {
-  if (!intro || introDismissed) {
+  if (!intro) {
     skipIntroBtn.hidden = true;
     return;
   }
   const t = video.currentTime || 0;
-  skipIntroBtn.hidden = !(t >= intro.startSec && t <= intro.endSec - 2);
+  const inside = t >= intro.startSec && t <= intro.endSec - 2;
+  skipIntroBtn.hidden = !inside;
+  if (!inside) return;
+  const span = Math.max(0.5, intro.endSec - intro.startSec);
+  const pct = Math.min(100, Math.max(0, ((t - intro.startSec) / span) * 100));
+  skipIntroFill.style.width = `${pct.toFixed(1)}%`;
 }
 
 function skipIntroNow() {
   if (!intro) return;
   video.currentTime = Math.min(intro.endSec, Math.max(0, duration - 0.5));
-  introDismissed = true;
-  rememberIntroSkip();
+  /* Dropping the playhead at the end of the window hides the button on the next
+   * tick; seeking back into the intro brings it back. */
   syncSkipIntro();
   updateTimeline();
   showUi();
   armHideUi();
-}
-
-function readIntroSkipped() {
-  try { return sessionStorage.getItem(INTRO_SKIP_KEY) === '1'; } catch { return false; }
-}
-
-function rememberIntroSkip() {
-  try { sessionStorage.setItem(INTRO_SKIP_KEY, '1'); } catch { /* storage disabled */ }
 }
 
 function setPlayIcon(playing) {
@@ -1217,6 +1235,8 @@ function showUi() {
 
 function hideUiNow() {
   if (video.paused || dragging || panelOpen()) return;
+  /* The next-episode card is on screen: hiding the bar would hide it too. */
+  if (nextWrap.classList.contains('is-due')) return;
   hidePreview();
   player.classList.add('hide-ui', 'hide-cursor');
 }

@@ -203,6 +203,7 @@ body.leaving .player {
   bottom: 130px;
   height: 44px;
   padding: 0 20px;
+  overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.7);
   border-radius: 4px;
   background: rgba(0, 0, 0, 0.55);
@@ -211,6 +212,18 @@ body.leaving .player {
   font-weight: 600;
   transition: background 0.15s, border-color 0.15s;
 }
+/* How much of the intro has played: the fill grows under the label. */
+.skip-intro-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0%;
+  background: linear-gradient(90deg, rgba(229, 9, 20, 0.9), rgba(229, 9, 20, 0.55));
+  pointer-events: none;
+  transition: width 0.2s linear;
+}
+.skip-intro-text { position: relative; }
 .skip-intro:hover { background: rgba(255, 255, 255, 0.16); border-color: #fff; }
 
 /* ---------- bottom bar ---------- */
@@ -393,7 +406,8 @@ body.leaving .player {
   transition: opacity 0.18s linear, transform 0.2s var(--ease);
 }
 .next-wrap:hover .next-pop,
-.next-wrap:focus-within .next-pop { opacity: 1; transform: none; pointer-events: auto; }
+.next-wrap:focus-within .next-pop,
+.next-wrap.is-due .next-pop { opacity: 1; transform: none; pointer-events: auto; }
 .next-card {
   display: block;
   width: 100%;
@@ -881,6 +895,17 @@ body.leaving .player {
   .tl-preview { width: 132px; }
   .cc-panel, .ep-panel { right: 12px; bottom: 96px; }
   .next-pop { display: none; }
+  /* The automatic "up next" card is the one thing that still has to show on a
+   * phone, so it pins to the viewport instead of the narrow control wrapper. */
+  .next-wrap.is-due .next-pop {
+    display: block;
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: 104px;
+    width: auto;
+    transform: none;
+  }
   .subtitle-layer { bottom: 20%; }
   .subtitle-text { max-width: 92%; font-size: calc(clamp(15px, 3.6vw, 22px) * var(--sub-scale, 1.3)); }
 }
