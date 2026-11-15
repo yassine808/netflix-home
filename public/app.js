@@ -8,7 +8,8 @@ import {
   searchOnline, getOnlineTitle, searchCastle, getCastleTitle, getCastleSeriesEpisodes, startCastleDownload,
   deleteLibraryItem, deleteLibraryItems, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   pauseDownload, resumeDownload,
-  getSettings, setOfflineMode, setCastleFallback,
+  getSettings, setOfflineMode, setCastleFallback, setAutoplaySound,
+  setLibraryRoot, restartApp,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
   setImg, skel, skelLines, skelMeta, skelCards, skelPoster, skelEpisodes, skelDownload,
   decodesHevc,
@@ -37,6 +38,13 @@ const state = {
   offline: false,
   // Mirrors the server's Castle fallback setting: false = Torrentio only.
   castleFallback: true,
+  // Mirrors the server's sound setting: false = preview and player start muted.
+  autoplaySound: true,
+  // Library folder this tab is scanning, and the one config.json holds. They
+  // differ until the app restarts.
+  libraryRoot: '',
+  libraryRootSetting: '',
+  libraryRestartPending: false,
   searchHistory: readJson(SEARCH_HISTORY_KEY, []),
   toastTimer: null,
   toastExitTimer: null,
@@ -190,6 +198,14 @@ const els = {
   settingsModal: $('settingsModal'),
   castleFallbackBtn: $('castleFallbackBtn'),
   castleFallbackLabel: $('castleFallbackLabel'),
+  autoplaySoundBtn: $('autoplaySoundBtn'),
+  autoplaySoundLabel: $('autoplaySoundLabel'),
+  libraryRootInput: $('libraryRootInput'),
+  libraryRootSave: $('libraryRootSave'),
+  libraryRootHint: $('libraryRootHint'),
+  libraryRootError: $('libraryRootError'),
+  libraryRestartRow: $('libraryRestartRow'),
+  libraryRestartBtn: $('libraryRestartBtn'),
   castleSeasonTabs: $('castleSeasonTabs'),
   castleEpisodes: $('castleEpisodes'),
   castleStatus: $('castleStatus'),
@@ -319,6 +335,12 @@ async function boot() {
       applyOfflineUi();
       state.castleFallback = settings.castleFallback !== false;
       applyCastleFallbackUi();
+      state.autoplaySound = settings.autoplaySound !== false;
+      applyAutoplaySoundUi();
+      state.libraryRoot = settings.libraryRoot || '';
+      state.libraryRootSetting = settings.libraryRootSetting || state.libraryRoot;
+      state.libraryRestartPending = Boolean(settings.libraryRootPending);
+      applyLibraryRootUi();
     })
     .catch(() => { /* older server: leave the switch online */ });
   await loadLibrary({ first: true });
@@ -778,7 +800,9 @@ function playPreview(item) {
   const video = els.heroVideo;
   const id = item.playId || item.id;
   video.volume = 0.65;
-  video.muted = state.previewMuted;
+  /* The sound setting is the default; the speaker button overrides it for this
+   * visit (state.previewMuted). */
+  video.muted = state.previewMuted || state.autoplaySound === false;
   // Keep the title's own artwork on screen while the trailer buffers.
   video.poster = thumbUrl(item, 960);
   syncHeroMute();
@@ -861,6 +885,13 @@ function stopPreview() {
     video.load();
   } catch { /* ignore */ }
   video.classList.remove('playing');
+}
+
+/* Clicking the preview skips it and goes back to the still frame. */
+function skipPreview() {
+  if (!els.heroVideo.classList.contains('playing')) return;
+  stopPreview();
+  syncHeroMute(false);
 }
 
 function renderRows() {
@@ -2153,9 +2184,25 @@ function applyCastleFallbackUi() {
 function openSettings() {
   closeProfile();
   applyCastleFallbackUi();
+  applyAutoplaySoundUi();
+  applyLibraryRootUi();
+  showLibraryError('');
   els.settingsModal.hidden = false;
   syncBodyLock();
   setTimeout(() => els.settingsModal.querySelector('.modal-close')?.focus(), 40);
+  /* The app itself (after a restart) or another tab may have changed these. */
+  getSettings()
+    .then((settings) => {
+      state.castleFallback = settings.castleFallback !== false;
+      state.autoplaySound = settings.autoplaySound !== false;
+      state.libraryRoot = settings.libraryRoot || state.libraryRoot;
+      state.libraryRootSetting = settings.libraryRootSetting || state.libraryRoot;
+      state.libraryRestartPending = Boolean(settings.libraryRootPending);
+      applyCastleFallbackUi();
+      applyAutoplaySoundUi();
+      applyLibraryRootUi();
+    })
+    .catch(() => { /* keep what boot found */ });
 }
 
 function closeSettings() {
@@ -2179,6 +2226,82 @@ async function toggleCastleFallback() {
     toast(`Could not change the download source: ${err.message}`);
   } finally {
     els.castleFallbackBtn.disabled = false;
+  }
+}
+
+function applyAutoplaySoundUi() {
+  const on = state.autoplaySound !== false;
+  els.autoplaySoundBtn.setAttribute('aria-checked', String(on));
+  els.autoplaySoundBtn.classList.toggle('is-off', !on);
+  els.autoplaySoundLabel.textContent = on ? 'On' : 'Off';
+  els.autoplaySoundBtn.title = on
+    ? 'Preview and player start with sound'
+    : 'Preview and player start muted';
+}
+
+async function toggleAutoplaySound() {
+  els.autoplaySoundBtn.disabled = true;
+  try {
+    const settings = await setAutoplaySound(!(state.autoplaySound !== false));
+    state.autoplaySound = settings.autoplaySound !== false;
+    applyAutoplaySoundUi();
+    // A running preview has to follow the new default straight away.
+    if (!state.autoplaySound) {
+      els.heroVideo.muted = true;
+      syncHeroMute(false);
+    }
+    toast(state.autoplaySound
+      ? 'Auto-play sound on'
+      : 'Auto-play sound off — videos start muted');
+  } catch (err) {
+    toast(`Could not change the sound setting: ${err.message}`, { type: 'warn' });
+  } finally {
+    els.autoplaySoundBtn.disabled = false;
+  }
+}
+
+function applyLibraryRootUi() {
+  const current = state.libraryRoot || 'G:\\NETFLIX';
+  if (document.activeElement !== els.libraryRootInput) {
+    els.libraryRootInput.value = state.libraryRootSetting || current;
+  }
+  els.libraryRootHint.textContent = `Scanning ${current}. Films and the .cache folder (catalog, artwork, downloads) live here.`;
+  els.libraryRestartRow.hidden = !state.libraryRestartPending;
+}
+
+function showLibraryError(message) {
+  els.libraryRootError.textContent = message || '';
+  els.libraryRootError.hidden = !message;
+}
+
+async function saveLibraryRoot() {
+  const wanted = els.libraryRootInput.value.trim();
+  showLibraryError('');
+  els.libraryRootSave.disabled = true;
+  try {
+    const settings = await setLibraryRoot(wanted);
+    state.libraryRoot = settings.libraryRoot || state.libraryRoot;
+    state.libraryRootSetting = settings.libraryRootSetting || wanted;
+    state.libraryRestartPending = Boolean(settings.libraryRootPending);
+    applyLibraryRootUi();
+    toast(state.libraryRestartPending
+      ? 'Folder saved — restart the app to scan it'
+      : 'That folder is already the library');
+  } catch (err) {
+    showLibraryError(err.message);
+  } finally {
+    els.libraryRootSave.disabled = false;
+  }
+}
+
+async function restartLibraryApp() {
+  els.libraryRestartBtn.disabled = true;
+  try {
+    await restartApp();
+    toast('Restarting the app — this page reconnects in a moment', { type: 'info' });
+  } catch (err) {
+    els.libraryRestartBtn.disabled = false;
+    toast(`Could not restart: ${err.message}`, { type: 'warn' });
   }
 }
 
@@ -4869,6 +4992,13 @@ function bindStaticEvents() {
   els.heroInfo.addEventListener('click', () => {
     if (state.heroId) openModal(state.heroId);
   });
+  /* The picture itself is a skip target while the preview runs; the hero's own
+   * buttons keep their behaviour. */
+  els.hero.addEventListener('click', (e) => {
+    if (!els.heroVideo.classList.contains('playing')) return;
+    if (e.target.closest('button, a, input, label')) return;
+    skipPreview();
+  });
   els.heroMute.addEventListener('click', () => {
     const video = els.heroVideo;
     const nextMuted = !video.muted;
@@ -4960,6 +5090,15 @@ function bindStaticEvents() {
   els.castleModal.querySelectorAll('[data-close-castle]').forEach((el) => el.addEventListener('click', closeCastleModal));
   els.settingsModal.querySelectorAll('[data-close-settings]').forEach((el) => el.addEventListener('click', closeSettings));
   els.castleFallbackBtn.addEventListener('click', toggleCastleFallback);
+  els.autoplaySoundBtn.addEventListener('click', toggleAutoplaySound);
+  els.libraryRootSave.addEventListener('click', saveLibraryRoot);
+  els.libraryRootInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveLibraryRoot();
+    }
+  });
+  els.libraryRestartBtn.addEventListener('click', restartLibraryApp);
   els.castleSeasonDownload.addEventListener('click', queueCastleSeason);
   bindCastleDeleteAll();
   els.castleList.addEventListener('click', toggleCastleList);

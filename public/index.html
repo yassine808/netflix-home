@@ -413,6 +413,35 @@
       <button class="modal-close" data-close-settings aria-label="Close">✕</button>
       <h2 class="settings-title" id="settingsTitle">Settings</h2>
       <section class="settings-section">
+        <h3 class="settings-heading">Library</h3>
+        <div class="settings-field">
+          <label for="libraryRootInput">Netflix folder</label>
+          <div class="settings-input-row">
+            <input id="libraryRootInput" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="G:\NETFLIX" aria-describedby="libraryRootHint">
+            <button class="settings-save" id="libraryRootSave" type="button">Save</button>
+          </div>
+          <p class="settings-hint" id="libraryRootHint">The folder the app scans for films and series.</p>
+          <p class="settings-error" id="libraryRootError" hidden></p>
+        </div>
+        <div class="settings-restart" id="libraryRestartRow" hidden>
+          <span>Folder saved. Restart the app to scan it.</span>
+          <button class="settings-restart-btn" id="libraryRestartBtn" type="button">Restart now</button>
+        </div>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-heading">Playback</h3>
+        <div class="settings-row">
+          <div class="settings-copy">
+            <strong>Auto-play sound</strong>
+            <span>Start the home preview and the player with sound. Off starts both muted; the speaker button still unmutes that video.</span>
+          </div>
+          <button class="net-switch" id="autoplaySoundBtn" type="button" role="switch" aria-checked="true" aria-label="Auto-play sound" title="Start the preview and the player with sound">
+            <span class="net-switch-track" aria-hidden="true"><span class="net-switch-knob"></span></span>
+            <span class="net-switch-label" id="autoplaySoundLabel">On</span>
+          </button>
+        </div>
+      </section>
+      <section class="settings-section">
         <h3 class="settings-heading">Downloads</h3>
         <div class="settings-row">
           <div class="settings-copy">
