@@ -561,6 +561,12 @@ export async function downloadTorrentFile({ magnet, file, dir, total = 0, onProg
     `--select-file=${index}`,
     '--seed-time=0',
     '--file-allocation=none',
+    /* aria2 stops at 55 peers by default, and on a 19-seeder release that cap
+     * is worth a few percent: the same 376 MB file took 48.6 s at 200 peers
+     * against 52.2 s at the default, and 70.8 s with `prealloc` (the whole file
+     * written before a piece arrives). Measurements in benchmark/aria2.csv. */
+    '--bt-max-peers=200',
+    '--disk-cache=64M',
     '--summary-interval=0',
     '--console-log-level=warn',
     '--auto-file-renaming=false',

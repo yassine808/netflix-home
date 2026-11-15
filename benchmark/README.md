@@ -9,6 +9,7 @@ pipeline lives here as a CSV table. Append new runs, never overwrite old ones.
 | `copy-on-hdd.csv` | container-copy timings on the real library disk (`G:`, 1 TB 5400 rpm HDD), with and without `+faststart` |
 | `real-episodes.csv` | the app's own log line for real downloads, one row per job |
 | `audio-encode.csv` | audio encoder comparisons on the real E-AC3 tracks of one release |
+| `aria2.csv` | download throughput per aria2 flag set, same torrent, same file |
 | `raw/` | untouched `results.json` from each harness run |
 
 ## Machine

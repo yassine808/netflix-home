@@ -1,0 +1,5 @@
+date,release,size_mb,flags,run,wall_s,mb_per_s,notes
+2026-11-15,[Erai-raws] Cyberpunk - Edgerunners - 03 (1080p),376.0,app flags (--file-allocation=none),1,52.2,7.20,same torrent and same file index for every row
+2026-11-15,[Erai-raws] Cyberpunk - Edgerunners - 03 (1080p),376.0,+ --bt-max-peers=200 --disk-cache=64M,1,48.6,7.73,adopted: the swarm, not the disk, is the limit
+2026-11-15,[Erai-raws] Cyberpunk - Edgerunners - 03 (1080p),376.0,+ --file-allocation=prealloc --disk-cache=64M,1,70.8,5.31,rejected: preallocated the whole 376 MB before the first piece arrived
+2026-11-15,[Erai-raws] Cyberpunk - Edgerunners - 03 (1080p),376.0,+ --bt-max-peers=500 --disk-cache=256M + 6 extra trackers,1,49.4,7.61,no gain over 200 peers: the swarm, not the peer cap or the tracker list
