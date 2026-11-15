@@ -220,10 +220,8 @@ const els = {
   downloadsEmpty: $('downloadsEmpty'),
   downloadsCount: $('downloadsCount'),
   downloadsRoot: $('downloadsRoot'),
-  dlActive: $('dlActive'),
-  dlQueued: $('dlQueued'),
-  dlDone: $('dlDone'),
-  dlFailed: $('dlFailed'),
+  dlGroups: $('dlGroups'),
+  dlClear: $('dlClear'),
   notif: $('notif'),
   bellBtn: $('bellBtn'),
   notifMenu: $('notifMenu'),
@@ -1567,80 +1565,181 @@ function downloadRowTitle(job) {
   return rest;
 }
 
+const LIVE = new Set(['queued', 'downloading', 'paused', 'cancelling']);
+const DL_RANK = { downloading: 0, cancelling: 0, paused: 1, queued: 2, failed: 3, completed: 4 };
+const DISMISS_KEY = 'netflix-home:dl-dismissed';
+const dlDismissed = new Set(readJson(DISMISS_KEY, []));
+const dlCards = new Map();
+const dlOpen = new Map();
+const X_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+const CHEV_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+
+function dismissJobs(ids) {
+  ids.forEach((id) => dlDismissed.add(id));
+  writeJson(DISMISS_KEY, [...dlDismissed].slice(-300));
+}
+function dismissRow(id) { dismissJobs([id]); renderDownloads(); }
+
+function dlGroupState(jobs) {
+  if (jobs.some((j) => j.status === 'downloading' || j.status === 'cancelling')) return 'downloading';
+  if (jobs.some((j) => j.status === 'queued')) return 'queued';
+  if (jobs.some((j) => j.status === 'paused')) return 'paused';
+  if (jobs.some((j) => j.status === 'failed')) return 'failed';
+  return 'completed';
+}
+
+function buildDlCard(key) {
+  const el = createEl('article', 'dl-card');
+  const top = createEl('div', 'dl-card-top');
+  const acts = createEl('div', 'dl-card-actions');
+  const toggle = createEl('button', 'dl-icon dl-chev');
+  toggle.type = 'button';
+  toggle.innerHTML = CHEV_SVG;
+  const x = createEl('button', 'dl-icon dl-x');
+  x.type = 'button';
+  x.innerHTML = `${X_SVG}<span>Cancel all</span>`;
+  acts.append(toggle, x);
+  top.append(acts);
+  const prog = createEl('div', 'dl-card-prog');
+  const bar = createEl('div', 'download-bar');
+  const fill = document.createElement('i');
+  bar.append(fill);
+  const line = createEl('p', 'dl-card-line');
+  prog.append(bar, line);
+  const wrap = createEl('div', 'dl-collapse');
+  const rows = createEl('div', 'dl-rows');
+  wrap.append(rows);
+  el.append(top, prog, wrap);
+  const card = { key, el, top, toggle, x, prog, bar, fill, line, wrap, rows, head: null, jobs: [], armed: 0 };
+  toggle.addEventListener('click', () => { dlOpen.set(key, el.classList.contains('is-collapsed')); applyDlOpen(card); });
+  x.addEventListener('click', () => removeDlGroup(card));
+  return card;
+}
+
+function applyDlOpen(card) {
+  const multi = card.jobs.length > 1;
+  const open = !multi || (dlOpen.has(card.key) ? dlOpen.get(card.key) : card.jobs.some((j) => j.status !== 'completed'));
+  card.el.classList.toggle('is-collapsed', !open);
+  card.wrap.inert = !open;
+  card.toggle.hidden = !multi;
+  card.toggle.setAttribute('aria-expanded', String(open));
+  card.toggle.setAttribute('aria-label', open ? 'Hide episodes' : 'Show episodes');
+}
+
+async function removeDlGroup(card) {
+  const live = card.jobs.filter((j) => LIVE.has(j.status));
+  if (live.length && !card.armed) {
+    card.el.classList.add('is-armed');
+    card.armed = setTimeout(() => { card.armed = 0; card.el.classList.remove('is-armed'); }, 3200);
+    return;
+  }
+  clearTimeout(card.armed);
+  card.armed = 0;
+  card.el.classList.remove('is-armed');
+  dismissJobs(card.jobs.filter((j) => !LIVE.has(j.status)).map((j) => j.id));
+  if (!live.length) { renderDownloads(); return; }
+  card.el.classList.add('is-busy');
+  try { await Promise.all(live.map((j) => cancelDownload(j.id))); }
+  catch { toast('Could not cancel every download. Try again.'); }
+  card.el.classList.remove('is-busy');
+  refreshDownloads();
+}
+
+function updateDlCard(card, g, qpos) {
+  const list = g.list;
+  const n = list.length;
+  card.jobs = list;
+  card.el.dataset.state = g.state;
+  card.el.toggleAttribute('data-single', n === 1);
+  const art = downloadArt(list[0]);
+  if (!card.head || card.head._art !== `${art.poster}|${art.logo}`) {
+    const head = buildDownloadHead(list[0], art);
+    if (card.head) card.head.replaceWith(head); else card.top.prepend(head);
+    card.head = head;
+  }
+  updateDownloadHead(card.head, list);
+
+  let sum = 0, speed = 0, bytes = 0, total = 0;
+  list.forEach((j) => {
+    sum += j.status === 'completed' ? 1 : (j.progress || 0);
+    if (j.status === 'downloading') speed += Number(j.speed) || 0;
+    total += Number(j.total) || 0;
+    bytes += Number(j.bytes) || 0;
+  });
+  const pct = Math.round((sum / n) * 100);
+  const done = list.filter((j) => j.status === 'completed').length;
+  const failed = list.filter((j) => j.status === 'failed').length;
+  const label = { downloading: 'Downloading', queued: 'Waiting in queue', paused: 'Paused', failed: `${failed} failed`, completed: 'Finished' }[g.state];
+  const eta = formatEta({ speed, total, bytes });
+  const parts = [label];
+  if (n > 1 && g.state !== 'completed') parts.push(`${done} of ${n} done`);
+  if (speed) parts.push(formatSpeed(speed));
+  if (eta) parts.push(eta);
+  card.line.replaceChildren(...parts.map((t) => createEl('span', '', t)), createEl('b', 'dl-card-pct', `${pct}%`));
+  card.prog.hidden = !list.some((j) => LIVE.has(j.status));
+  card.fill.style.width = `${pct}%`;
+  card.bar.classList.toggle('is-paused', g.state === 'paused');
+  const live = list.some((j) => LIVE.has(j.status));
+  card.x.setAttribute('aria-label', live ? 'Cancel all downloads for this title' : 'Remove from list');
+  card.x.title = live ? 'Cancel all' : 'Remove from list';
+
+  if (!dlDrag.active) {
+    const sorted = [...list].sort((x, y) => (DL_RANK[x.status] - DL_RANK[y.status])
+      || (x.status === 'queued' ? qpos.get(x.id) - qpos.get(y.id)
+        : (Number(x.season) || 0) - (Number(y.season) || 0) || (Number(x.episode) || 0) - (Number(y.episode) || 0)));
+    sorted.forEach((j, i) => {
+      const el = dlRows.get(j.id);
+      if (card.rows.children[i] !== el) card.rows.insertBefore(el, card.rows.children[i] || null);
+    });
+    while (card.rows.children.length > sorted.length) card.rows.lastElementChild.remove();
+  }
+  applyDlOpen(card);
+}
+
 function renderDownloads() {
-  const active = state.downloads.filter((j) => j.status === 'downloading' || j.status === 'cancelling');
-  const queued = orderedQueue(state.downloads.filter((j) => j.status === 'queued'));
-  const paused = state.downloads.filter((j) => j.status === 'paused');
-  const finished = state.downloads.filter((j) => j.status === 'completed').slice(0, 8);
-  const failed = state.downloads.filter((j) => j.status === 'failed');
-  const all = [...active, ...paused, ...queued, ...finished, ...failed];
-  const ids = new Set(all.map((j) => j.id));
+  const jobs = state.downloads.filter((j) => j.status !== 'cancelled' && !dlDismissed.has(j.id));
+  const queue = orderedQueue(jobs.filter((j) => j.status === 'queued'));
+  const qpos = new Map(queue.map((j, i) => [j.id, i]));
+  const ids = new Set(jobs.map((j) => j.id));
 
   dlRows.forEach((row, id) => { if (!ids.has(id)) { row.remove(); dlRows.delete(id); } });
-  all.forEach((job) => {
+  jobs.forEach((job) => {
     let row = dlRows.get(job.id);
     if (!row) { row = buildDownloadRow(job); dlRows.set(job.id, row); }
     updateDownloadRow(row, job);
+    if (qpos.has(job.id)) row.querySelector('.dl-pos').textContent = String(qpos.get(job.id) + 1);
   });
 
-  const used = new Set();
-  const fill = (section, jobs, isQueue) => {
-    section.hidden = jobs.length === 0;
-    section.querySelector('.dl-count').textContent = jobs.length ? `(${jobs.length})` : '';
-    if (!jobs.length) return;
-    const box = section.querySelector('.dl-items');
-
-    // Consecutive jobs of the same show share one head with the show's art.
-    const groups = new Map();
-    for (const job of jobs) {
-      const key = downloadShowKey(job);
-      used.add(`${section.id}|${key}`);
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(job);
-    }
-    // During a drag the DOM order is the user's, but the heads must stay known
-    // so the cleanup below does not delete them mid-gesture.
-    if (isQueue && dlDrag.active) return;
-    const desired = [];
-    let last = '';
-    for (const job of jobs) {
-      const key = downloadShowKey(job);
-      if (key !== last) {
-        const cacheKey = `${section.id}|${key}`;
-        let head = dlHeads.get(cacheKey);
-        // The first render can land before the library (and its cached art) has
-        // loaded; rebuild the head once the poster or wordmark changes.
-        const art = downloadArt(job);
-        if (!head || head._art !== `${art.poster}|${art.logo}`) {
-          if (head) head.remove();
-          head = buildDownloadHead(job, art);
-          dlHeads.set(cacheKey, head);
-        }
-        updateDownloadHead(head, groups.get(key));
-        desired.push(head);
-        last = key;
-      }
-      desired.push(dlRows.get(job.id));
-    }
+  const groups = new Map();
+  jobs.forEach((job) => {
+    const k = downloadShowKey(job);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(job);
+  });
+  const order = [...groups].map(([key, list], i) => ({ key, list, i, state: dlGroupState(list) }))
+    .sort((p, q) => DL_RANK[p.state] - DL_RANK[q.state] || p.i - q.i);
+  const desired = order.map((g) => {
+    let card = dlCards.get(g.key);
+    if (!card) { card = buildDlCard(g.key); dlCards.set(g.key, card); }
+    card.el.classList.remove('is-leaving');
+    updateDlCard(card, g, qpos);
+    return card.el;
+  });
+  dlCards.forEach((card, key) => {
+    if (groups.has(key) || card.el.classList.contains('is-leaving')) return;
+    card.el.classList.add('is-leaving');
+    setTimeout(() => {
+      if (card.el.classList.contains('is-leaving')) { card.el.remove(); dlCards.delete(key); }
+    }, 340);
+  });
+  if (!dlDrag.active) {
     desired.forEach((el, i) => {
-      if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null);
+      if (els.dlGroups.children[i] !== el) els.dlGroups.insertBefore(el, els.dlGroups.children[i] || null);
     });
-    while (box.children.length > desired.length) box.lastElementChild.remove();
-    if (isQueue) {
-      jobs.forEach((job, i) => {
-        dlRows.get(job.id).querySelector('.dl-pos').textContent = String(i + 1);
-      });
-    }
-  };
-  fill(els.dlActive, [...active, ...paused]);
-  fill(els.dlQueued, queued, true);
-  fill(els.dlDone, finished);
-  fill(els.dlFailed, failed);
-  for (const [key, head] of dlHeads) {
-    if (!used.has(key)) { head.remove(); dlHeads.delete(key); }
   }
+  els.dlClear.hidden = !state.downloads.some((j) => !LIVE.has(j.status) && !dlDismissed.has(j.id));
   els.dlSkeleton.hidden = state.downloadsLoaded;
-  els.downloadsEmpty.hidden = all.length > 0 || !state.downloadsLoaded;
+  els.downloadsEmpty.hidden = jobs.length > 0 || !state.downloadsLoaded;
 }
 
 function tweenNumber(el, to) {
@@ -1671,7 +1770,7 @@ function buildDownloadRow(job) {
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
     e.preventDefault();
     const sib = e.key === 'ArrowUp' ? row.previousElementSibling : row.nextElementSibling;
-    if (!sib) return;
+    if (!sib || !sib.classList.contains('is-queued')) return;
     const box = row.parentElement;
     animateReorder(box, () => (e.key === 'ArrowUp' ? box.insertBefore(row, sib) : box.insertBefore(sib, row)));
     commitQueueOrder(box);
@@ -1735,28 +1834,29 @@ function updateDownloadRow(row, job) {
   if (job.error) r.meta.append(createEl('span', 'download-error', job.error));
 
   r.actions.replaceChildren();
+  const live = job.status === 'queued' || job.status === 'downloading' || job.status === 'paused';
+  const mk = (cls, text, fn) => {
+    const b = createEl('button', cls, text);
+    b.type = 'button';
+    b.addEventListener('click', fn);
+    return b;
+  };
   if (job.status === 'queued' || job.status === 'downloading') {
-    const pause = createEl('button', 'download-action', 'Pause');
-    pause.addEventListener('click', () => downloadAction(job.id, 'pause', pause));
-    r.actions.append(pause);
+    r.actions.append(mk('download-action', 'Pause', (e) => downloadAction(job.id, 'pause', e.currentTarget)));
   }
   if (job.status === 'paused') {
-    const resume = createEl('button', 'download-action primary', 'Resume');
-    resume.addEventListener('click', () => downloadAction(job.id, 'resume', resume));
-    r.actions.append(resume);
-  }
-  if (job.status === 'queued' || job.status === 'downloading' || job.status === 'paused') {
-    const btn = createEl('button', 'download-action', 'Cancel');
-    btn.addEventListener('click', () => downloadAction(job.id, 'cancel', btn));
-    r.actions.append(btn);
+    r.actions.append(mk('download-action primary', 'Resume', (e) => downloadAction(job.id, 'resume', e.currentTarget)));
   }
   if (job.status === 'failed' || job.status === 'cancelled') {
-    const retry = createEl('button', 'download-action primary', 'Retry');
-    retry.addEventListener('click', () => downloadAction(job.id, 'retry', retry));
-    r.actions.append(retry);
+    r.actions.append(mk('download-action primary', 'Retry', (e) => downloadAction(job.id, 'retry', e.currentTarget)));
   } else if (job.status === 'completed') {
     r.actions.append(createEl('span', 'download-done', '✓'));
   }
+  const x = mk('download-x', '', (e) => (live ? downloadAction(job.id, 'cancel', e.currentTarget) : dismissRow(job.id)));
+  x.innerHTML = X_SVG;
+  x.title = live ? 'Cancel download' : 'Remove from list';
+  x.setAttribute('aria-label', x.title);
+  r.actions.append(x);
 }
 
 /* FLIP: smoothly slide siblings when the order changes */
@@ -1778,9 +1878,12 @@ function animateReorder(box, mutate, skip) {
 }
 
 function commitQueueOrder(box) {
-  const rows = [...box.querySelectorAll('.download-row')];
-  const ids = rows.map((el) => el.dataset.id);
-  rows.forEach((el, i) => { el.querySelector('.dl-pos').textContent = String(i + 1); });
+  const mine = [...box.querySelectorAll('.download-row.is-queued')].map((el) => el.dataset.id);
+  const set = new Set(mine);
+  const queued = orderedQueue(state.downloads.filter((j) => j.status === 'queued')).map((j) => j.id);
+  let k = 0;
+  const ids = queued.map((id) => (set.has(id) ? mine[k++] : id));
+  ids.forEach((id, i) => { dlRows.get(id)?.querySelector('.dl-pos')?.replaceChildren(String(i + 1)); });
   writeJson(QUEUE_ORDER_KEY, ids);
   reorderDownloads(ids);
 }
@@ -1788,7 +1891,7 @@ function commitQueueOrder(box) {
 function startDrag(e, row) {
   if (e.button !== undefined && e.button !== 0) return;
   const box = row.parentElement;
-  if (!box || box.querySelectorAll('.download-row').length < 2) return;
+  if (!box || box.querySelectorAll('.download-row.is-queued').length < 2) return;
   e.preventDefault();
   dlDrag.active = true;
   document.body.classList.add('dl-dragging');
@@ -1810,16 +1913,17 @@ function startDrag(e, row) {
     lastY = ev.clientY;
     place();
     const center = lastY - grabOffset + row.offsetHeight / 2;
-    const sibs = [...box.querySelectorAll('.download-row')].filter((el) => el !== row);
+    const sibs = [...box.querySelectorAll('.download-row.is-queued')].filter((el) => el !== row);
     let target = null;
     for (const el of sibs) {
       const rc = el.getBoundingClientRect();
       if (center < rc.top + rc.height / 2) { target = el; break; }
     }
-    if (target !== placed) {
-      animateReorder(box, () => box.insertBefore(row, target), row);
+    const dest = target || (sibs.length ? sibs[sibs.length - 1].nextElementSibling : null);
+    if (dest !== placed) {
+      animateReorder(box, () => box.insertBefore(row, dest), row);
       place();
-      placed = target;
+      placed = dest;
     }
     const sr = scroller.getBoundingClientRect();
     cancelAnimationFrame(raf);
@@ -1861,17 +1965,27 @@ async function downloadAction(id, action, button) {
   }
 }
 
+let dlCloseTimer = 0;
+
 function openDownloads() {
-  els.downloadsPanel.hidden = false;
+  const panel = els.downloadsPanel;
+  clearTimeout(dlCloseTimer);
+  const wasHidden = panel.hidden;
+  panel.hidden = false;
   syncBodyLock();
+  if (wasHidden) void panel.offsetWidth; // commit the closed state so the slide-in animates
+  panel.classList.add('is-open');
   refreshDownloads();
-  setTimeout(() => els.downloadsPanel.querySelector('.downloads-close')?.focus(), 40);
+  setTimeout(() => panel.querySelector('.downloads-close')?.focus({ preventScroll: true }), 60);
 }
 
 function closeDownloads() {
-  els.downloadsPanel.hidden = true;
-  syncBodyLock();
-  els.downloadsBtn.focus();
+  const panel = els.downloadsPanel;
+  if (panel.hidden) return;
+  panel.classList.remove('is-open');
+  clearTimeout(dlCloseTimer);
+  dlCloseTimer = setTimeout(() => { panel.hidden = true; syncBodyLock(); }, 340);
+  els.downloadsBtn.focus({ preventScroll: true });
 }
 
 function syncBodyLock() {
@@ -4791,6 +4905,10 @@ function bindStaticEvents() {
   });
 
   els.downloadsBtn.addEventListener('click', openDownloads);
+  els.dlClear.addEventListener('click', () => {
+    dismissJobs(state.downloads.filter((j) => !LIVE.has(j.status)).map((j) => j.id));
+    renderDownloads();
+  });
   els.downloadsPanel.querySelectorAll('[data-close-downloads]').forEach((el) => {
     el.addEventListener('click', closeDownloads);
   });

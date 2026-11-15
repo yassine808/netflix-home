@@ -390,26 +390,14 @@
           <h2 id="downloadsTitle">Downloads</h2>
           <p id="downloadsCount">No active downloads</p>
         </div>
-        <button class="downloads-close" data-close-downloads aria-label="Close downloads">✕</button>
+        <div class="downloads-tools">
+          <button class="dl-clear" id="dlClear" type="button" hidden>Clear finished</button>
+          <button class="downloads-close" data-close-downloads aria-label="Close downloads"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        </div>
       </header>
       <div class="downloads-list" id="downloadsList">
         <div class="dl-skeleton" id="dlSkeleton" aria-hidden="true"></div>
-        <section class="dl-section" id="dlActive" hidden>
-          <h3 class="dl-heading">In progress <span class="dl-count"></span></h3>
-          <div class="dl-items"></div>
-        </section>
-        <section class="dl-section dl-queue" id="dlQueued" hidden>
-          <h3 class="dl-heading">Up next <span class="dl-count"></span><small>Drag to reorder</small></h3>
-          <div class="dl-items"></div>
-        </section>
-        <section class="dl-section" id="dlDone" hidden>
-          <h3 class="dl-heading">Finished <span class="dl-count"></span></h3>
-          <div class="dl-items"></div>
-        </section>
-        <section class="dl-section" id="dlFailed" hidden>
-          <h3 class="dl-heading">Failed <span class="dl-count"></span></h3>
-          <div class="dl-items"></div>
-        </section>
+        <div class="dl-groups" id="dlGroups"></div>
       </div>
       <div class="downloads-empty" id="downloadsEmpty">
         <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg>
