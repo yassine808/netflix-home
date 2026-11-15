@@ -2553,3 +2553,12 @@ body.modal-open .hero-media img, body.modal-open .hero-media video { animation-p
 .castle-modal #castleResume[data-mode="download"] { background: #fff; border: 1px solid #fff; color: #000; border-radius: 4px; box-shadow: none; }
 .castle-modal #castleResume:hover,
 .castle-modal #castleResume[data-mode="download"]:hover { background: rgba(255, 255, 255, 0.86); color: #000; transform: translateY(-1px); }
+
+
+/* Square-ish buttons (no pills): Play / Resume / Download and Favourite share one shape. */
+.castle-modal #castleResume,
+.castle-modal #castleResume[data-mode="download"] { border-radius: 6px; }
+.castle-modal .castle-list-btn { border-radius: 6px; }
+.season-trigger { border-radius: 8px; }
+.season-pop { border-radius: 12px; }
+.season-opt { border-radius: 8px; }
