@@ -195,6 +195,29 @@ function codecFor(text) {
   return best || 'other';
 }
 
+/* The audio codec decides whether the remux has to encode at all. An AAC track
+ * is copied into the MP4: a real 26 min HEVC/AAC release remuxed in 10.1 s
+ * (152.9x realtime). The same episode with two E-AC3 tracks took 28.6 s,
+ * because E-AC3 has to be re-encoded and the native AAC encoder is the slowest
+ * thing left in the pipeline. Titles rarely name the codec, so an unknown track
+ * is `other` and simply earns no bonus. */
+const AUDIO_RES = [
+  ['truehd', /\btruehd\b|\batmos\b/i],
+  ['eac3', /\bddp\b|dd\+|\be-?ac-?3\b/i],
+  ['ac3', /\bac-?3\b|\bdd[25][. ]/i],
+  ['dts', /\bdts\b|dts-?hd|dtsx/i],
+  ['flac', /\bflac\b/i],
+  ['opus', /\bopus\b/i],
+  ['aac', /\baac\b|\baac[25]/i],
+];
+
+function audioFor(text) {
+  for (const [codec, re] of AUDIO_RES) {
+    if (re.test(text)) return codec;
+  }
+  return 'other';
+}
+
 /**
  * Turn one Torrentio stream into a release, or null when it has no usable hash.
  */
@@ -233,6 +256,7 @@ export function parseStream(stream) {
     seeders: parseSeeders(stream.title || ''),
     quality: qualityFor(name, fileName, bucket),
     codec: codecFor(`${searchText}\n${bucket}`),
+    audio: audioFor(`${searchText}\n${bucket}`),
     dualAudio,
     languages,
     tags: parseTags(flagsLine),
@@ -308,16 +332,19 @@ function languageCode(value) {
  *      has one slow peer and nothing else).
  *   2. Drop CAM/TS rips and anything under 1080p: 1080p or 2160p only.
  *   3. Quality: 1080p and 2160p score the same +300.
- *   4. Codec is ignored: the remux re-encodes HEVC/AV1 to H.264 anyway.
+ *   4. Video: a release whose video can be stream-copied is preferred, but an
+ *      HEVC release without a HEVC-capable client takes -120, because it would
+ *      be a full GPU transcode instead of a container copy.
  *   5. Audio: dual audio +120; +80 when English plus another language is
- *      offered, +40 when English is the only one.
+ *      offered, +40 when English is the only one. An AAC first track adds +80
+ *      (when the video is copyable): that release needs no conversion at all.
  *   6. Seeders: min(700, seeders * 10). A healthy swarm is what finishes the
  *      episode; 70+ seeders reach the cap.
  *   7. Size: see sizeScore(). Smaller wins at equal health.
  *   8. Packs cost -60: the same download for one episode, less predictable.
  *   9. originalLanguage +40 when its 2-letter form is advertised.
  */
-export function rankReleases(releases, { originalLanguage = '' } = {}) {
+export function rankReleases(releases, { originalLanguage = '', copyVideo = false } = {}) {
   if (!Array.isArray(releases)) return [];
   const wanted = languageCode(originalLanguage);
   const ranked = [];
@@ -368,6 +395,30 @@ export function rankReleases(releases, { originalLanguage = '' } = {}) {
     if (size !== 0) {
       score += size;
       reasons.push(size > 0 ? 'small' : 'size');
+    }
+
+    /* An AAC first track is what lets the whole episode skip the remux: with a
+     * copyable video the release is installed by renaming it (0 s). Without it
+     * the remux either copies the audio (a 26 min HEVC/AAC release: 10.1 s) or
+     * has to encode it (two E-AC3 tracks: 28.6 s). 80 points wins against a
+     * same-size, same-health release (health is 10 per seeder, capped at 70
+     * peers), but never against a swarm that is clearly healthier - a
+     * 20-seeder deficit is worth more than the encode.
+     *
+     * Only when the video can be copied too: an HEVC release that has to be
+     * transcoded costs far more than the audio encode saves, so the bonus waits
+     * for the client that decodes HEVC in hardware. */
+    if (release.audio === 'aac' && (release.codec !== 'hevc' || copyVideo)) {
+      score += 80;
+      reasons.push('aac audio');
+    }
+
+    /* Without a client that copies HEVC, an HEVC release is a GPU transcode of
+     * the whole episode (~140 s for 30 min) instead of a container copy. -120
+     * is worth 12 seeders: a much healthier swarm still wins. */
+    if (release.codec === 'hevc' && !copyVideo) {
+      score -= 120;
+      reasons.push('hevc transcode');
     }
 
     if (release.isPack) {

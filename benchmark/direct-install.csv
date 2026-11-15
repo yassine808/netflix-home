@@ -1,0 +1,10 @@
+date,step,input,direct,wall_s,out_mb,notes
+2026-11-15,whole job,Cyberpunk S01E03 (HEVC Main10 + 2x AAC),yes,76.4,332.2,download 56.3 s + probe/rename 3.6 s + subtitles 1.3 s; no remux
+2026-11-15,install only (copy instead of rename),Cyberpunk S01E03 (HEVC Main10 + 2x AAC),yes,7.13,332.2,copy HDD->HDD in the benchmark harness; a real job renames within the same volume
+2026-11-15,subtitle extraction,Cyberpunk S01E03 (29 embedded tracks),yes,3.68,,one ffmpeg pass writes all 29 .vtt sidecars
+2026-11-15,subtitle extraction,Cyberpunk S01E03 (29 embedded tracks),yes,1.3,,same pass inside the real job (warm cache)
+2026-11-15,remux fallback,h264 + 2x E-AC3 (Erai E03),no,40.54,362.5,E-AC3 re-encoded to AAC; 38.0x realtime
+2026-11-15,dub variant build,h264 copy + second AAC (248.6 MB),yes,9.03,248.6,output on the library HDD, cold cache
+2026-11-15,dub variant build,h264 copy + second AAC (248.6 MB),yes,5.50,248.6,output on the library HDD, warm cache
+2026-11-15,dub variant build,h264 copy + second AAC (248.6 MB),yes,4.03,248.6,output on the C: SSD; rejected (cache lives with the library)
+2026-11-15,demux only (no output),Cyberpunk S01E03 video track,,2.55,,ffmpeg -c copy -f null: read floor is 124 MB/s

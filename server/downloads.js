@@ -674,11 +674,11 @@ function pad2(value) {
 
 /* Same naming pattern the Castle download uses, so one series never ends up
  * with two files for the same episode. */
-function torrentFileName(job, quality) {
+function torrentFileName(job, quality, extension = '.mp4') {
   if (job.season > 0) {
-    return `${job.seriesTitle} S${pad2(job.season)}E${pad2(job.episode)} ${quality}.mp4`;
+    return `${job.seriesTitle} S${pad2(job.season)}E${pad2(job.episode)} ${quality}${extension}`;
   }
-  return `${job.seriesTitle}${job.year ? ` (${job.year})` : ''} ${quality}.mp4`;
+  return `${job.seriesTitle}${job.year ? ` (${job.year})` : ''} ${quality}${extension}`;
 }
 
 /* A widescreen master is often 1920x960 (2:1) or 1920x800; the height alone
@@ -699,12 +699,12 @@ function qualityFromHeight(height, width = 0) {
  * shows the same numbers, so its quality label cannot drift from the job.
  * Returns null when Torrentio has nothing usable (Castle is the fallback).
  */
-export async function planTorrentRelease({ imdbId, season = 0, episode = 0, originalLanguage = '' } = {}) {
+export async function planTorrentRelease({ imdbId, season = 0, episode = 0, originalLanguage = '', copyVideo = false } = {}) {
   if (!/^tt\d{4,10}$/.test(String(imdbId || '').trim())) return null;
 
   const streams = await findReleases({ imdbId: String(imdbId).trim(), isSeries: Number(season) > 0, season, episode });
   if (!streams.length) return null;
-  const ranked = rankReleases(streams, { originalLanguage: text(originalLanguage) });
+  const ranked = rankReleases(streams, { originalLanguage: text(originalLanguage), copyVideo: copyVideo === true });
   if (!ranked.length) return null;
 
   /* Prefer releases that ship English; untagged ones stay as fallbacks, in the
@@ -764,6 +764,7 @@ export async function addTorrentDownload(body = {}) {
     season,
     episode,
     originalLanguage: text(body.originalLanguage),
+    copyVideo: body.copyVideo === true,
   });
   if (!plan) return null;
   const candidates = plan.candidates;
@@ -1269,30 +1270,37 @@ async function attemptRelease(job, release, dir, controller) {
 
   const quality = qualityFromHeight(probe.video?.height, probe.video?.width) || release.quality;
   job.quality = quality;
-  job.fileName = sanitizeFileName(torrentFileName(job, quality));
+  /* `direct` means the file already is what the browser wants: no video
+   * transcode and the track it will play first is AAC. The container is kept,
+   * so the "remux" below is a rename instead of a 6.8-28.6 s rewrite. */
+  const direct = picked.direct === true;
+  const extension = direct ? (path.extname(downloaded.path).toLowerCase() || '.mkv') : '.mp4';
+  job.fileName = sanitizeFileName(torrentFileName(job, quality, extension));
   const dest = await uniquePath(job.targetDir, job.fileName);
   const part = `${dest}.part`;
   const stem = dest.slice(0, dest.length - path.extname(dest).length);
   const durationSec = Number(probe.durationSec) || 0;
 
-  job.stage = 'remuxing';
-  job.progressValue = 0.84;
+  job.stage = direct ? 'subtitles' : 'remuxing';
+  job.progressValue = direct ? 0.97 : 0.84;
   job.part = part;
   scheduleSave(0);
   await fsp.rm(part, { force: true }).catch(() => {});
   const remuxStartedAt = Date.now();
   try {
-    await remuxToMp4({
-      input: downloaded.path,
-      output: part,
-      video: picked.video,
-      audio: picked.audio,
-      onProgress: ({ sec } = {}) => {
-        if (!durationSec || !Number.isFinite(sec)) return;
-        job.progressValue = 0.84 + Math.min(0.12, (sec / durationSec) * 0.12);
-        scheduleSave();
-      },
-    });
+    if (!direct) {
+      await remuxToMp4({
+        input: downloaded.path,
+        output: part,
+        video: picked.video,
+        audio: picked.audio,
+        onProgress: ({ sec } = {}) => {
+          if (!durationSec || !Number.isFinite(sec)) return;
+          job.progressValue = 0.84 + Math.min(0.12, (sec / durationSec) * 0.12);
+          scheduleSave();
+        },
+      });
+    }
   } catch (err) {
     job.part = '';
     await fsp.rm(part, { force: true }).catch(() => {});
@@ -1304,7 +1312,9 @@ async function attemptRelease(job, release, dir, controller) {
   {
     const seconds = (Date.now() - remuxStartedAt) / 1000;
     const speed = durationSec ? `${(durationSec / Math.max(seconds, 0.001)).toFixed(1)}x realtime` : 'duration unknown';
-    console.log(`[download] ${job.title}: remuxed ${(durationSec / 60).toFixed(0)} min to H.264 in ${seconds.toFixed(1)} s (${speed})`);
+    console.log(direct
+      ? `[download] ${job.title}: kept ${probe.video?.codec || 'video'}+aac as ${extension} in ${seconds.toFixed(1)} s (no conversion, ${speed})`
+      : `[download] ${job.title}: remuxed ${(durationSec / 60).toFixed(0)} min to H.264 in ${seconds.toFixed(1)} s (${speed})`);
   }
 
   job.stage = 'subtitles';
@@ -1324,7 +1334,10 @@ async function attemptRelease(job, release, dir, controller) {
     return 'aborted';
   }
 
-  await fsp.rename(part, dest);
+  /* The direct path keeps the downloaded file where the downloader left it and
+   * moves it into the library at the very end; the remux path swaps the .part. */
+  if (direct) await fsp.rename(downloaded.path, dest);
+  else await fsp.rename(part, dest);
   job.part = '';
   const stat = await fsp.stat(dest);
   job.dest = dest;
@@ -1370,6 +1383,7 @@ async function runTorrentJob(job) {
       season: job.season,
       episode: job.episode,
       originalLanguage: job.originalLanguage,
+      copyVideo: job.copyVideo === true,
     }).catch(() => null);
     if (plan?.candidates?.length) {
       job.candidates = plan.candidates;

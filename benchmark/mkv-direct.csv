@@ -1,0 +1,11 @@
+date,source,container,mime,mode,first_frame_s,seek_to_s,seek_s,dur_s,audio_bytes,video_bytes,notes
+2026-11-15,Cyberpunk S01E03 Smooth Criminal (HEVC Main10 + 2x AAC 5.1),mkv,video/x-matroska,plain,0.69,,,1542.2,44137,12183,Brave headless; direct play of the release file
+2026-11-15,Cyberpunk S01E03 Smooth Criminal (HEVC Main10 + 2x AAC 5.1),mkv,video/x-matroska,plain,1.03,900,1.21,1542.2,45095,12183,seek to 15:00
+2026-11-15,Cyberpunk S01E03 Smooth Criminal (HEVC Main10 + 2x AAC 5.1),mkv,video/x-matroska,plain,0.90,600,0.15,1542.2,45095,12183,repeat run; seek to 10:00
+2026-11-15,Erai-raws E03 (h264 + 2x E-AC3),mkv,video/x-matroska,plain,0.82,600,0.20,1542.1,0,20429,video plays but audio_bytes 0: Chromium decodes no E-AC3
+2026-11-15,mixed.mkv (h264 + AAC + E-AC3),mkv,video/x-matroska,plain,1.07,300,0.43,600.2,27759,20429,AAC first track plays
+2026-11-15,Cyberpunk S01E03 copied to MP4 (HEVC + AAC),mp4,video/mp4,plain,1.01,600,0.15,1542.2,40089,11413,same content after a 9.23 s remux: no playback gain
+2026-11-15,Cyberpunk S01E03 Smooth Criminal,mkv,video/x-matroska,app,0.73,,,1542.2,40089,11413,GET /api/stream/<id>; 353 English cues loaded
+2026-11-15,Cyberpunk S01E03 Smooth Criminal after a real job,mkv,video/x-matroska,app,0.73,,,1542.2,40089,11413,installed by attemptRelease with no conversion
+2026-11-15,Cyberpunk S01E03 Smooth Criminal ?audio=2,mkv,video/x-matroska,app,6.99,,,1542.2,48014,12361,first English dub: builds the variant file
+2026-11-15,Cyberpunk S01E03 Smooth Criminal ?audio=2,mkv,video/x-matroska,app,0.68,,,1542.2,43978,11830,variant cached; 353 cues

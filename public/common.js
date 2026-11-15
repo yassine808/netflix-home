@@ -122,7 +122,7 @@ export async function getCastleSeriesEpisodes(id, { signal } = {}) {
  * 18 s on the same disk. Chromium only answers "probably" when the platform has
  * a hardware HEVC decoder, and that is the decoder that plays the result. */
 let hevcDecode = null;
-function decodesHevc() {
+export function decodesHevc() {
   if (hevcDecode !== null) return hevcDecode;
   hevcDecode = false;
   try {

@@ -11,6 +11,7 @@ import {
   getSettings, setOfflineMode, setCastleFallback,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
   setImg, skel, skelLines, skelMeta, skelCards, skelPoster, skelEpisodes, skelDownload,
+  decodesHevc,
 } from './common.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'downloading', 'cancelling']);
@@ -2739,6 +2740,10 @@ function loadCastlePlan(detail, episodes) {
     year: String(detail.year || ''),
     season: String(season),
     episodes: numbers.join(','),
+    // The server ranks with this: a HEVC release it can copy is the fastest
+    // install, one it would have to transcode is not. Without the flag the
+    // sheet could label a different release than the click downloads.
+    copyVideo: String(decodesHevc()),
   });
 
   fetch(`/api/castle/plan?${params}`, { cache: 'no-store' })

@@ -10,6 +10,8 @@ pipeline lives here as a CSV table. Append new runs, never overwrite old ones.
 | `real-episodes.csv` | the app's own log line for real downloads, one row per job |
 | `audio-encode.csv` | audio encoder comparisons on the real E-AC3 tracks of one release |
 | `aria2.csv` | download throughput per aria2 flag set, same torrent, same file |
+| `mkv-direct.csv` | time to first frame and to seek when the release's own `.mkv` is served to Brave unchanged, against the same content remuxed to MP4 |
+| `direct-install.csv` | what the "no conversion" branch costs: probe, rename, subtitle extraction, dub-variant builds |
 | `raw/` | untouched `results.json` from each harness run |
 
 ## Machine
@@ -32,6 +34,15 @@ pipeline lives here as a CSV table. Append new runs, never overwrite old ones.
 - `real-episodes.csv` — copied from the app's `remuxed N min to H.264 in X s
   (Yx realtime)` line, which times `remuxToMp4` only. Download and subtitle
   time are not included.
+- `mkv-direct.csv` — `stream-check.mjs` (serves a file with the app's range
+  logic, drives headless Brave over CDP, and reports when `currentTime > 0.1`
+  at `readyState >= 3`) and `url-check.mjs` (same browser pointed at the app's
+  `/api/stream/<id>` and `/api/subtitle/<id>/en`). `audio_bytes` and
+  `video_bytes` are `webkitAudioDecodedByteCount` / `webkitVideoDecodedByteCount`
+  after the run, so a silent file is visible as `audio_bytes: 0`.
+- `direct-install.csv` — the app's own job timing (`/api/downloads` stage
+  changes) plus `install-direct.mjs` and `remux-anywhere.mjs` for the isolated
+  steps. `direct=yes` means `pickTracks` kept the release container.
 
 ## What did not work
 
@@ -44,6 +55,17 @@ pipeline lives here as a CSV table. Append new runs, never overwrite old ones.
   (5.1: 64.94 s against 67.87 s), so it buys nothing.
 - `aac_mf` (MediaFoundation) is slower than native AAC with `-aac_coder fast`.
 - Fragmenting the MP4 (`frag_keyframe+empty_moov`) is no faster than a plain mux.
+- Staging the remux on the SSD: source and output on `C:` remux in 25.7 s
+  against 29.3 s for the HDD pair, but the finished file then needs 4.4 s to
+  copy back to the library, so the pipeline is slower. The remux is CPU-bound
+  (audio encode), not disk-bound.
+- E-AC3/AC-3 as the *first* audio track of a direct-played `.mkv`: the video
+  plays, `webkitAudioDecodedByteCount` stays 0. A file only takes the direct
+  path when the track it will play first is AAC.
+- `--enable-utp=true` in aria2: the download died at 0 MB in 2.5 s.
+- `video.audioTracks`: Chromium does not expose the container's audio tracks
+  (`hasAudioTracks: false`), so a dub switch cannot reuse the one file; it
+  still needs the variant in `.cache\audio\`.
 
 ## Reading the numbers
 

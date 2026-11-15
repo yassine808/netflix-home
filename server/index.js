@@ -637,7 +637,10 @@ app.get('/api/stream/:id', async (req, res) => {
       const track = tracks.find((entry) => entry.streamIndex === wanted);
       if (track && tracks[0] && track.streamIndex !== tracks[0].streamIndex) {
         const variant = await ensureAudioVariant(found.item, full, track);
-        if (variant !== full) return sendMedia(req, res, variant, 'video/mp4');
+        if (variant !== full) {
+          const variantType = MIME[path.extname(variant).toLowerCase()] || 'video/mp4';
+          return sendMedia(req, res, variant, variantType);
+        }
       }
     } catch {
       /* fall back to the original file */
@@ -1192,7 +1195,10 @@ app.get('/api/releases', async (req, res) => {
   const episode = Number(req.query.episode) || 0;
   try {
     const streams = await findReleases({ imdbId, isSeries, season, episode });
-    const ranked = rankReleases(streams, { originalLanguage: String(req.query.original || '') });
+    const ranked = rankReleases(streams, {
+      originalLanguage: String(req.query.original || ''),
+      copyVideo: req.query.copyVideo === 'true' || req.query.copyVideo === '1',
+    });
     res.setHeader('Cache-Control', 'no-store');
     res.json({
       imdbId,
@@ -1250,6 +1256,9 @@ app.get('/api/castle/plan', async (req, res) => {
   const title = String(req.query.title || '').trim();
   const season = Math.max(0, Number(req.query.season) || 0);
   const year = Math.max(0, Number(req.query.year) || 0);
+  /* The sheet must label the release the click will actually queue, so the
+   * client's HEVC flag is part of the ranking here too (and of the cache key). */
+  const copyVideo = req.query.copyVideo === 'true' || req.query.copyVideo === '1';
   const episodes = String(req.query.episodes || '')
     .split(',')
     .map((value) => Number(value))
@@ -1278,7 +1287,7 @@ app.get('/api/castle/plan', async (req, res) => {
     }
 
     const rows = await eachLimit(episodes, 4, async (episode) => {
-      const key = `${imdbId}:${season}:${episode}:${original}`;
+      const key = `${imdbId}:${season}:${episode}:${original}:${copyVideo ? 'copy' : 'transcode'}`;
       const plan = cachedPlan(key);
       if (plan) {
         const { release } = plan;
@@ -1300,12 +1309,12 @@ app.get('/api/castle/plan', async (req, res) => {
       let fetched = null;
       let failure = null;
       try {
-        fetched = await planTorrentRelease({ imdbId, season, episode, originalLanguage: original });
+        fetched = await planTorrentRelease({ imdbId, season, episode, originalLanguage: original, copyVideo });
       } catch (err) {
         failure = err;
         await new Promise((resolve) => setTimeout(resolve, 600));
         try {
-          fetched = await planTorrentRelease({ imdbId, season, episode, originalLanguage: original });
+          fetched = await planTorrentRelease({ imdbId, season, episode, originalLanguage: original, copyVideo });
           failure = null;
         } catch (err2) {
           failure = err2;
@@ -1404,6 +1413,12 @@ app.post('/api/castle/download', async (req, res) => {
                 collection: 'Downloads',
                 folder: isSeries ? title : '',
                 poster: String(body.poster || ''),
+                /* The browser asked for this: it decodes HEVC in hardware, so
+                 * the remux can copy the release's own video stream instead of
+                 * transcoding 30 min of it on the GPU. Dropping the flag here
+                 * was the difference between a 10 s container copy and a 66 s
+                 * transcode of a 317 MB release. */
+                copyVideo: body.copyVideo === true,
               });
               break;
             } catch (err) {

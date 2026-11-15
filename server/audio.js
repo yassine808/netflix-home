@@ -171,7 +171,7 @@ function variantPath(full, track, stat) {
   const hash = crypto.createHash('sha1')
     .update(`${full}:${Math.round(stat.mtimeMs)}:${stat.size}:${track.streamIndex}`)
     .digest('hex');
-  return path.join(audioDir, `${hash}.mp4`);
+  return path.join(audioDir, `${hash}.mkv`);
 }
 
 /**
@@ -207,16 +207,26 @@ export async function ensureAudioVariant(item, full, track) {
   const job = (async () => {
     const part = `${target}.part`;
     await fsp.rm(part, { force: true }).catch(() => {});
+    /* The variant is the same video with another language played first, so it
+     * keeps the source container: Chromium plays Matroska, and an MP4 would
+     * need the hvc1 retag for HEVC. A track that is not already AAC has to be
+     * encoded - copying E-AC3/AC-3 gives a silent file, because Chromium
+     * decodes neither in a container. */
+    const codec = String(track.codec || '').toLowerCase();
+    const channels = Number(track.channels) || 2;
+    const audioArgs = codec === 'aac'
+      ? ['-c:a', 'copy']
+      : ['-c:a', 'aac', '-aac_coder:a:0', 'fast', '-b:a', channels > 2 ? '448k' : '192k', '-ac', channels > 2 ? '6' : '2'];
     const args = [
       '-y', '-loglevel', 'error',
       '-i', full,
       '-map', '0:v:0',
       '-map', `0:a:${track.position}`,
-      '-c', 'copy',
-      '-movflags', '+faststart',
+      '-c:v', 'copy',
+      ...audioArgs,
       '-metadata:s:a:0', `language=${track.lang || 'und'}`,
       '-disposition:a:0', 'default',
-      '-f', 'mp4', part,
+      '-f', 'matroska', part,
     ];
     try {
       await execFileP(ffmpegPath, args, 0);
