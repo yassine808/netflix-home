@@ -39,7 +39,7 @@ Double-click **`netflix-home.exe`**.
 - if the app is already running, a second launch just opens the page (it reads the port from `.cache\port`)
 - if port 3000 is taken by something else, the server picks a random free port and opens that one
 - it scans the folder it lives in (`G:\NETFLIX`), so the exe, the movies and the database stay together
-- **Quit app** in the profile menu stops the server (`POST /api/quit`, loopback only). There is no tray icon.
+- the notification-area icon has **Open**, **Online**, **Offline** and **Exit** on its right-click menu; **Quit app** in the profile menu does the same as **Exit** (`POST /api/quit`, loopback only)
 - diagnostics go to `launcher.log` (gitignored)
 
 ## Library folder

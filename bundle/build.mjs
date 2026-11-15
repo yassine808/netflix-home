@@ -74,6 +74,7 @@ const publicFiles = walk(path.join(root, 'public')).map((rel) => ({
 }));
 const assets = [
   ...publicFiles,
+  { key: 'tray.ps1', source: path.join(root, 'bundle', 'tray.ps1') },
   { key: 'bin/ffmpeg.exe', source: ffmpeg },
   { key: 'bin/ffprobe.exe', source: ffprobe },
   { key: 'bin/yt-dlp.exe', source: ytdlp },

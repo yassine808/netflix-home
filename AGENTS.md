@@ -100,7 +100,7 @@ Invoke-WebRequest "http://localhost:3000/api/art/<id>/poster?w=480" -SkipHttpErr
 - Legacy `pictures.db`, `library.db` and `trailers.db` are migrated once via `ATTACH` (only when the target table is empty) and then left on disk; `meta.json` is read only as a first-upgrade probe cache. Don't resurrect them as write targets.
 - Hero rows must be returned normalized (`{image, video, startSec, builtAt}`); the raw SQLite row uses snake_case and breaks the preview route.
 - `node:sqlite` is built into Node 22+; no dependency to install. `server/db.js` loads it with `createRequire(process.execPath)('node:sqlite')` — a top-level `await import` breaks CJS SEA bundling.
-- The EXE is GUI-subsystem: there is no console and no tray icon. Quit through the profile menu (`POST /api/quit`, loopback only). A second launch probes `.cache\port` and only opens the browser.
+- The EXE is GUI-subsystem: there is no console. A notification-area icon (`bundle/tray.ps1`, started by `bundle/entry.js`, opt out with `NETFLIX_NO_TRAY=1`) offers Open, Online, Offline and Exit; it talks to the server over loopback and removes itself when the server stops answering. Quit also works through the profile menu (`POST /api/quit`, loopback only). A second launch probes `.cache\port` and only opens the browser.
 - postject prints `warning: The signature seems corrupted!` during injection — expected.
 - npm 11 blocks install scripts by default; if `ffmpeg-static/ffmpeg.exe` is missing, run `npm install-scripts approve ffmpeg-static` or the package's `install.js`.
 - Never commit `.cache/`, `node_modules/`, `dist/`, `.build/`, `bundle/manifest.json`, or downloaded media.

@@ -164,6 +164,44 @@ async function waitForProcessExit(pid, ms = 20000) {
   return false;
 }
 
+/* The exe has no window, so the notification-area icon is the only handle on a
+ * server that is already running. It is a Windows PowerShell WinForms process
+ * (bundle/tray.ps1, packed as an asset) that owns the icon and talks to the
+ * server over loopback; the script removes its own icon when the server stops
+ * answering, so a quit or a crash never leaves a ghost in the tray. */
+function startTray(port, appDir) {
+  if (process.env.NETFLIX_NO_TRAY === '1') {
+    log('tray suppressed by NETFLIX_NO_TRAY');
+    return;
+  }
+  const script = path.join(appDir, 'tray.ps1');
+  if (!fs.existsSync(script)) {
+    log(`tray script missing: ${script}`);
+    return;
+  }
+  const icon = path.join(appDir, 'public', 'favicon.ico');
+  try {
+    /* Not detached: on Windows a detached PowerShell exits its WinForms loop
+     * straight away (exit code 0, no icon). The child still outlives the
+     * server because Windows does not kill children with their parent. */
+    const child = spawn('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy', 'Bypass',
+      '-WindowStyle', 'Hidden',
+      '-File', script,
+      '-Port', String(port),
+      '-ServerPid', String(process.pid),
+      '-Icon', icon,
+    ], { stdio: 'ignore', windowsHide: true });
+    child.once('error', (err) => log(`tray failed to start: ${err?.message || err}`));
+    child.unref();
+    log(`tray icon started for http://localhost:${port}`);
+  } catch (err) {
+    log(`tray failed to start: ${err?.message || err}`);
+  }
+}
+
 async function main() {
   /* config.json carries the library folder picked in Settings. It has to be
    * read before the root is resolved. */
@@ -198,6 +236,7 @@ async function main() {
   if (port) {
     log(`browser opened at http://localhost:${port}`);
     openBrowser(`http://localhost:${port}`);
+    startTray(port, appDir);
   } else {
     log('server did not become ready in 20 s');
   }

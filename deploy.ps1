@@ -26,11 +26,26 @@ if (-not (Test-Path $Target)) {
     New-Item -ItemType Directory -Path $Target | Out-Null
 }
 
-# A running copy holds the file open; stop it before overwriting.
+# A running copy holds the file open; stop it before overwriting. The process
+# can take a few seconds to let go of the EXE (antivirus and the crash-safe
+# queue writer both touch it), so wait for it to disappear and retry the copy.
 Get-Process -Name "netflix-home" -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 2
+for ($i = 0; $i -lt 40; $i++) {
+    if (-not (Get-Process -Name "netflix-home" -ErrorAction SilentlyContinue)) { break }
+    Start-Sleep -Milliseconds 500
+}
+Start-Sleep -Milliseconds 500
 
-Copy-Item $exe (Join-Path $Target "netflix-home.exe") -Force
+$copied = $false
+for ($i = 0; $i -lt 20 -and -not $copied; $i++) {
+    try {
+        Copy-Item $exe (Join-Path $Target "netflix-home.exe") -Force
+        $copied = $true
+    } catch {
+        if ($i -eq 19) { throw }
+        Start-Sleep -Milliseconds 750
+    }
+}
 
 # Clean up the loose files left by the folder-based deployment.
 foreach ($legacy in @("server", "public", "node_modules", "package.json", "package-lock.json")) {
