@@ -94,6 +94,12 @@ function extractAssets(root) {
 }
 
 function openBrowser(url) {
+  /* Starting the server in the background must not pull focus away from
+   * whatever is on screen, so a caller can opt out of the tab. */
+  if (process.env.NETFLIX_NO_BROWSER === '1') {
+    log(`browser suppressed by NETFLIX_NO_BROWSER: ${url}`);
+    return;
+  }
   spawn('cmd.exe', ['/c', 'start', '', url], {
     detached: true,
     stdio: 'ignore',
