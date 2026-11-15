@@ -2545,3 +2545,11 @@ body.modal-open .hero-media img, body.modal-open .hero-media video { animation-p
   .season-pop { min-width: 200px; }
 }
 @media (prefers-reduced-motion: reduce) { .season-pop, .season-trigger svg { transition-duration: .01ms; } }
+
+
+/* Hero main button = same look as the episode "Play" button, in every state
+   (Play, Resume, Download): white fill, black text, 4px corners. */
+.castle-modal #castleResume,
+.castle-modal #castleResume[data-mode="download"] { background: #fff; border: 1px solid #fff; color: #000; border-radius: 4px; box-shadow: none; }
+.castle-modal #castleResume:hover,
+.castle-modal #castleResume[data-mode="download"]:hover { background: rgba(255, 255, 255, 0.86); color: #000; transform: translateY(-1px); }
