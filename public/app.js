@@ -6,6 +6,7 @@ import {
   getSeries, getSeriesCatalog, debounce, createEl,
   browseCastle,
   searchOnline, getOnlineTitle, searchCastle, getCastleTitle, getCastleSeriesEpisodes, startCastleDownload,
+  getSavedCastle,
   deleteLibraryItem, deleteLibraryItems, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   pauseDownload, resumeDownload,
   getSettings, setOfflineMode, setCastleFallback, setAutoplaySound,
@@ -1345,13 +1346,48 @@ function showOnline() {
   setView('online');
   renderOnlineFilters();
   if (state.offline) {
-    els.onlineGrid.replaceChildren();
-    els.onlineEmpty.hidden = true;
-    els.onlineLoading.hidden = true;
-    showOnlineNote('Offline mode is on — Online needs internet. Switch it off in the header to browse the catalog.');
+    showSavedCatalogue();
     return;
   }
   if (!state.onlineBrowse.length && !state.onlineBrowseLoading) loadOnlineBrowse();
+  else if (state.onlineBrowse.every((item) => item.saved)) loadOnlineBrowse();
+}
+
+/* Offline mode still shows the catalogue: every title opened at least once is
+ * in catalog.db with its seasons, episodes and saved pictures. Only the
+ * Download buttons change, because the transfer needs internet. */
+let savedCatalogueToken = 0;
+async function showSavedCatalogue() {
+  const token = ++savedCatalogueToken;
+  els.onlineEmpty.hidden = true;
+  els.onlineLoading.hidden = true;
+  try {
+    const data = await getSavedCastle();
+    if (token !== savedCatalogueToken) return;
+    const results = Array.isArray(data.results) ? data.results : [];
+    state.onlineBrowse = results;
+    renderOnlineGrid();
+    els.onlineEmpty.hidden = results.length > 0;
+    if (!results.length) {
+      const heading = els.onlineEmpty.querySelector('h2');
+      const body = els.onlineEmpty.querySelector('p');
+      if (heading) heading.textContent = 'No saved titles yet';
+      if (body) body.textContent = 'Go online and open a title once — its seasons, episodes and artwork are then kept for offline.';
+    }
+    showOnlineNote(results.length
+      ? `Offline mode — ${results.length} saved title${results.length === 1 ? '' : 's'} from your catalogue. Downloads stay disabled until you go online.`
+      : 'Offline mode is on — no saved catalogue yet. Go online once to fill it.');
+  } catch (err) {
+    if (token !== savedCatalogueToken) return;
+    state.onlineBrowse = [];
+    els.onlineGrid.replaceChildren();
+    els.onlineEmpty.hidden = false;
+    const heading = els.onlineEmpty.querySelector('h2');
+    const body = els.onlineEmpty.querySelector('p');
+    if (heading) heading.textContent = 'Could not read the catalogue';
+    if (body) body.textContent = err.message;
+    showOnlineNote(`Could not read the saved catalogue (${err.message}).`);
+  }
 }
 
 function showOnlineNote(message) {
@@ -1675,6 +1711,26 @@ function dismissJobs(ids) {
 }
 function dismissRow(id) { dismissJobs([id]); renderDownloads(); }
 
+/* X on a finished download only drops the row: the server forgets the record,
+ * the file and its library entry stay. Unfinished rows use the cancel path,
+ * which also deletes whatever bytes were fetched. */
+async function removeFinishedJob(job, button) {
+  if (button) button.disabled = true;
+  try {
+    await cancelDownload(job.id);
+  } catch (err) {
+    // A restarted server no longer knows the record. It is still only a
+    // notification here, so drop the row instead of failing forever.
+    if (!/\b404\b/.test(err.message)) {
+      if (button) button.disabled = false;
+      toast(`Could not remove the download: ${err.message}`, { type: 'warn' });
+      return false;
+    }
+  }
+  dismissRow(job.id);
+  return true;
+}
+
 function dlGroupState(jobs) {
   if (jobs.some((j) => j.status === 'downloading' || j.status === 'cancelling')) return 'downloading';
   if (jobs.some((j) => j.status === 'queued')) return 'queued';
@@ -1722,8 +1778,8 @@ function applyDlOpen(card) {
 }
 
 async function removeDlGroup(card) {
-  const live = card.jobs.filter((j) => LIVE.has(j.status));
-  if (live.length && !card.armed) {
+  const unfinished = card.jobs.filter((j) => j.status !== 'completed' && j.status !== 'cancelled');
+  if (unfinished.length && !card.armed) {
     card.el.classList.add('is-armed');
     card.armed = setTimeout(() => { card.armed = 0; card.el.classList.remove('is-armed'); }, 3200);
     return;
@@ -1731,12 +1787,15 @@ async function removeDlGroup(card) {
   clearTimeout(card.armed);
   card.armed = 0;
   card.el.classList.remove('is-armed');
-  dismissJobs(card.jobs.filter((j) => !LIVE.has(j.status)).map((j) => j.id));
-  if (!live.length) { renderDownloads(); return; }
   card.el.classList.add('is-busy');
-  try { await Promise.all(live.map((j) => cancelDownload(j.id))); }
-  catch { toast('Could not cancel every download. Try again.'); }
+  // Unfinished jobs cancel and drop their partial files; completed ones only
+  // lose the record. The file in the library is never touched.
+  const results = await Promise.allSettled(card.jobs.map((j) => cancelDownload(j.id)));
+  dismissJobs(card.jobs.filter((_, i) => results[i].status === 'fulfilled').map((j) => j.id));
   card.el.classList.remove('is-busy');
+  if (results.some((result) => result.status === 'rejected')) {
+    toast('Could not remove every download. Try again.');
+  }
   refreshDownloads();
 }
 
@@ -1774,9 +1833,14 @@ function updateDlCard(card, g, qpos) {
   card.prog.hidden = !list.some((j) => LIVE.has(j.status));
   card.fill.style.width = `${pct}%`;
   card.bar.classList.toggle('is-paused', g.state === 'paused');
-  const live = list.some((j) => LIVE.has(j.status));
-  card.x.setAttribute('aria-label', live ? 'Cancel all downloads for this title' : 'Remove from list');
-  card.x.title = live ? 'Cancel all' : 'Remove from list';
+  const pending = list.some((j) => j.status !== 'completed' && j.status !== 'cancelled');
+  card.x.querySelector('span').textContent = pending ? 'Cancel all' : 'Remove';
+  card.x.setAttribute('aria-label', pending
+    ? 'Cancel unfinished downloads and delete their partial data for this title'
+    : 'Remove from list (downloaded files stay)');
+  card.x.title = pending
+    ? 'Cancel unfinished downloads and delete partial data'
+    : 'Remove from list — the file stays in the library';
 
   if (!dlDrag.active) {
     const sorted = [...list].sort((x, y) => (DL_RANK[x.status] - DL_RANK[y.status])
@@ -1832,7 +1896,7 @@ function renderDownloads() {
       if (els.dlGroups.children[i] !== el) els.dlGroups.insertBefore(el, els.dlGroups.children[i] || null);
     });
   }
-  els.dlClear.hidden = !state.downloads.some((j) => !LIVE.has(j.status) && !dlDismissed.has(j.id));
+  els.dlClear.hidden = !state.downloads.some((j) => j.status === 'completed' && !dlDismissed.has(j.id));
   els.dlSkeleton.hidden = state.downloadsLoaded;
   els.downloadsEmpty.hidden = jobs.length > 0 || !state.downloadsLoaded;
 }
@@ -1947,9 +2011,14 @@ function updateDownloadRow(row, job) {
   } else if (job.status === 'completed') {
     r.actions.append(createEl('span', 'download-done', '✓'));
   }
-  const x = mk('download-x', '', (e) => (live ? downloadAction(job.id, 'cancel', e.currentTarget) : dismissRow(job.id)));
+  const finished = job.status === 'completed';
+  const x = mk('download-x', '', (e) => (finished
+    ? removeFinishedJob(job, e.currentTarget)
+    : downloadAction(job.id, 'cancel', e.currentTarget)));
   x.innerHTML = X_SVG;
-  x.title = live ? 'Cancel download' : 'Remove from list';
+  x.title = finished
+    ? 'Remove from list — the file stays in the library'
+    : live ? 'Cancel and delete partial data' : 'Delete unfinished download';
   x.setAttribute('aria-label', x.title);
   r.actions.append(x);
 }
@@ -2202,6 +2271,9 @@ function applyOfflineUi() {
     // endpoints and the cached sheet art are untouched.
     els.onlineModal?.querySelectorAll('img').forEach((img) => img.remove());
     if (!els.castleModal.hidden && state.castleTitle) renderCastleDownloads(state.castleTitle);
+  } else if (!els.castleModal.hidden && state.castleTitle) {
+    // Coming back online puts the Download buttons back.
+    renderCastleDownloads(state.castleTitle);
   }
   // Cards already on screen keep their <img src>, so a remote CDN picture
   // would still be fetched after the switch flips. Re-render swaps those out
@@ -2985,7 +3057,10 @@ function syncCastleSheet() {
 }
 
 function populateCastleModal(item, { loading = false } = {}) {
-  const remoteArt = state.offline ? '' : (item.background || item.poster || '');
+  // Saved titles point at this app's own art routes, which keep working
+  // offline; only an unsaved CDN picture has to be dropped.
+  const art = item.background || item.poster || '';
+  const remoteArt = state.offline && !art.startsWith('/api/') ? '' : art;
   setImg(els.castleBackdrop, remoteArt);
   els.castleBackdrop.hidden = !remoteArt;
   setCastleLogo(item);
@@ -3050,7 +3125,7 @@ async function openCastleModal(item) {
         if (!full || !Array.isArray(full.seasons)) return;
         state.castleCatalog = { seasons: full.seasons };
         if (!els.castleModal.hidden && state.castleTitle === merged) {
-          els.castleSeasonDownload.disabled = state.castleBusy || castleAllLocal(merged);
+          els.castleSeasonDownload.disabled = state.castleBusy || state.offline || castleAllLocal(merged);
         }
       }).catch(() => { /* the button falls back to the open season */ });
     }
@@ -3177,9 +3252,11 @@ function applyCastlePlan(detail, episodes) {
       meta.textContent = [formatDuration(episode?.duration), 'Torrentio unreachable - tap to retry'].filter(Boolean).join(' · ');
       const btn = row.querySelector('.castle-dl-btn');
       if (btn && !btn.classList.contains('is-play') && !btn.classList.contains('queued')
-        && !btn.classList.contains('is-active') && !btn.classList.contains('is-paused')) {
+        && !btn.classList.contains('is-active') && !btn.classList.contains('is-paused')
+        && !btn.classList.contains('is-retry')) {
         btn.disabled = false;
         btn.title = 'Torrentio did not answer; try the download again';
+        btn.querySelector('span').textContent = 'Retry';
       }
       return;
     }
@@ -3191,7 +3268,8 @@ function applyCastlePlan(detail, episodes) {
       meta.textContent = [formatDuration(episode?.duration), 'No Torrentio release'].filter(Boolean).join(' · ');
       const btn = row.querySelector('.castle-dl-btn');
       const idle = btn && !btn.classList.contains('is-play') && !btn.classList.contains('queued')
-        && !btn.classList.contains('is-active') && !btn.classList.contains('is-paused');
+        && !btn.classList.contains('is-active') && !btn.classList.contains('is-paused')
+        && !btn.classList.contains('is-retry');
       if (idle) {
         btn.disabled = true;
         btn.title = 'Torrentio has no release with English audio and Castle fallback is off';
@@ -3204,6 +3282,20 @@ function applyCastlePlan(detail, episodes) {
       plan.quality,
       plan.sizeBytes ? formatSize(plan.sizeBytes) : '',
     ].filter(Boolean).join(' · ');
+
+    /* The row was painted before this plan arrived, and Castle may have no file
+     * for it at all. Turn the idle button into a real Download now. */
+    const btn = row.querySelector('.castle-dl-btn');
+    const idle = btn && !btn.classList.contains('is-play') && !btn.classList.contains('queued')
+      && !btn.classList.contains('is-active') && !btn.classList.contains('is-paused')
+      && !btn.classList.contains('is-retry');
+    if (idle) {
+      btn.disabled = state.offline;
+      btn.title = state.offline
+        ? 'Offline mode — go online to download'
+        : `${plan.quality}${plan.sizeBytes ? ` · ${formatSize(plan.sizeBytes)}` : ''} · Torrentio`;
+      btn.querySelector('span').textContent = 'Download';
+    }
   });
 }
 
@@ -3415,10 +3507,14 @@ function bindCastleDeleteAll() {
   });
 }
 
-function appendCastleAction(row, detail, episode, local, quality) {
+function appendCastleAction(row, detail, episode, local, quality, plan) {
   const season = detail.activeSeason ?? state.castleSeason;
   const action = createEl('div', 'castle-ep-action');
   const job = local ? null : castleJobFor(detail, season, episode.episode);
+  /* Castle's own 720p row is not the only way to download: Torrentio plans are
+   * complete releases too. An episode with a plan must never read "Unavailable"
+   * just because the Castle source has no file for it. */
+  const available = Boolean(quality || plan?.quality);
 
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -3463,14 +3559,18 @@ function appendCastleAction(row, detail, episode, local, quality) {
     paint(EP_DOWNLOAD_ICON, 'Paused');
     btn.addEventListener('click', openDownloads);
   } else if (job && job.status === 'failed') {
+    btn.classList.add('is-retry');
     paint(EP_DOWNLOAD_ICON, 'Retry');
-    btn.title = job.error || 'The last attempt failed';
-    btn.disabled = !quality;
+    btn.title = state.offline ? 'Go online to download' : (job.error || 'The last attempt failed');
+    btn.disabled = !available || state.offline;
     btn.addEventListener('click', () => queueCastleEpisode(episode, btn));
   } else {
-    paint(EP_DOWNLOAD_ICON, quality ? 'Download' : 'Unavailable');
-    if (!quality) btn.disabled = true;
-    else btn.addEventListener('click', () => queueCastleEpisode(episode, btn));
+    paint(EP_DOWNLOAD_ICON, available ? 'Download' : 'Unavailable');
+    btn.disabled = !available || state.offline;
+    btn.title = state.offline
+      ? 'Offline mode — go online to download'
+      : available && plan?.quality ? `${plan.quality} · Torrentio` : '';
+    btn.addEventListener('click', () => queueCastleEpisode(episode, btn));
   }
 
   action.prepend(btn);
@@ -3533,7 +3633,9 @@ function renderCastleDownloads(detail) {
   els.castleSeasonTabs.replaceChildren();
   els.castleStatus.textContent = '';
   els.castleStatus.hidden = false;
-  els.castleSource.textContent = 'Checking Torrentio releases…';
+  els.castleSource.textContent = state.offline
+    ? 'Offline mode — showing the saved catalogue'
+    : 'Checking Torrentio releases…';
   updateCastleListButton(detail);
 
   const localMap = state.castleLocal?.local || null;
@@ -3546,6 +3648,8 @@ function renderCastleDownloads(detail) {
   els.castleResume.innerHTML = playTarget
     ? `${EP_PLAY_ICON}<span>${playTarget.label}</span>`
     : `${EP_DOWNLOAD_ICON}<span>${isSeries ? `Download Season ${detail.activeSeason || 1}` : 'Download'}</span>`;
+  els.castleResume.disabled = !playTarget && state.offline;
+  els.castleResume.title = !playTarget && state.offline ? 'Offline mode — go online to download' : '';
 
   const selected = renderCastleSizes(detail, episodes);
 
@@ -3558,7 +3662,8 @@ function renderCastleDownloads(detail) {
 
   const allDone = castleAllLocal(detail);
   els.castleSeasonDownload.hidden = !(detail.type === 'series' && episodes.length);
-  els.castleSeasonDownload.disabled = state.castleBusy || allDone;
+  els.castleSeasonDownload.disabled = state.castleBusy || allDone || state.offline;
+  els.castleSeasonDownload.title = state.offline ? 'Offline mode — go online to download' : '';
   els.castleSeasonDownload.classList.toggle('is-done', allDone);
   els.castleSeasonDownload.textContent = allDone ? 'Everything downloaded' : 'Download all';
 
@@ -3650,11 +3755,12 @@ function renderCastleDownloads(detail) {
     }
     row.append(main);
 
-    appendCastleAction(row, detail, episode, local, quality);
+    appendCastleAction(row, detail, episode, local, quality, plan);
     els.castleEpisodes.append(row);
   });
 
   const planSeason = detail.activeSeason ?? state.castleSeason ?? 0;
+  if (state.offline) return;
   const planCached = state.castlePlanCache.get(castlePlanKey(detail, planSeason));
   if (planCached && Date.now() - planCached.at < CASTLE_PLAN_TTL) applyCastlePlan(detail, episodes);
   else loadCastlePlan(detail, episodes);
@@ -3711,10 +3817,16 @@ async function selectCastleSeason(season) {
 
 async function queueCastleEpisode(episode, btn) {
   const detail = state.castleTitle;
+  if (!detail) return;
+  if (state.offline) {
+    toast('Go online to download.', { type: 'warn' });
+    return;
+  }
   const quality = (episode.resolutions || []).find((entry) => entry.resolution === CASTLE_RESOLUTION)
     || episode.quality
     || null;
-  if (!detail) return;
+  // A Torrentio plan is a download too, even when Castle lists no file.
+  const plan = castlePlanFor(detail, episode.episode);
 
   const isSeries = detail.type === 'series';
   const label = isSeries
@@ -3734,7 +3846,7 @@ async function queueCastleEpisode(episode, btn) {
       year: detail.year,
       season: isSeries ? state.castleSeason : 0,
       episode: episode.episode,
-      size: quality?.size || 0,
+      size: quality?.size || plan?.sizeBytes || 0,
       poster: detail.poster,
     });
     if (Array.isArray(result?.skipped) && result.skipped.length) {
@@ -3764,6 +3876,10 @@ async function queueCastleEpisode(episode, btn) {
 async function queueCastleSeason() {
   const detail = state.castleTitle;
   if (!detail || detail.type !== 'series' || state.castleBusy) return;
+  if (state.offline) {
+    toast('Go online to download.', { type: 'warn' });
+    return;
+  }
 
   state.castleBusy = true;
   els.castleSeasonDownload.disabled = true;
@@ -3829,7 +3945,11 @@ async function queueCastleSeason() {
     const quality = (episode.resolutions || []).find((entry) => entry.resolution === CASTLE_RESOLUTION)
       || episode.quality
       || null;
-    if (!quality) {
+    // A Torrentio plan is a source too: "Download all" must not skip an episode
+    // just because Castle has no 720p file for it.
+    const planEntry = state.castlePlanCache.get(castlePlanKey(detail, episode.season));
+    const plan = planEntry?.episodes?.get(Number(episode.episode)) || null;
+    if (!quality && !plan?.quality) {
       skipped += 1;
       continue;
     }
@@ -3842,7 +3962,7 @@ async function queueCastleSeason() {
         year: detail.year,
         season: episode.season,
         episode: episode.episode,
-        size: quality.size,
+        size: quality?.size || plan?.sizeBytes || 0,
         poster: detail.poster,
       });
       // The file was already on disk: the server queued nothing.
@@ -5206,8 +5326,12 @@ function bindStaticEvents() {
   });
 
   els.downloadsBtn.addEventListener('click', openDownloads);
-  els.dlClear.addEventListener('click', () => {
-    dismissJobs(state.downloads.filter((j) => !LIVE.has(j.status)).map((j) => j.id));
+  els.dlClear.addEventListener('click', async () => {
+    // "Clear finished" is about completed rows only. Failed ones keep their
+    // partial files until X explicitly deletes them.
+    const done = state.downloads.filter((j) => j.status === 'completed');
+    await Promise.allSettled(done.map((j) => cancelDownload(j.id)));
+    dismissJobs(done.map((j) => j.id));
     renderDownloads();
   });
   els.downloadsPanel.querySelectorAll('[data-close-downloads]').forEach((el) => {

@@ -116,6 +116,17 @@ export async function getCastleSeriesEpisodes(id, { signal } = {}) {
   return res.json();
 }
 
+/* The saved Castle catalogue, for offline browsing. */
+export async function getSavedCastle({ signal } = {}) {
+  const res = await fetch('/api/castle/saved', { cache: 'no-store', signal });
+  if (!res.ok) {
+    let payload = null;
+    try { payload = await res.json(); } catch { /* non-JSON error */ }
+    throw new Error(payload?.error || `saved catalog ${res.status}`);
+  }
+  return res.json();
+}
+
 /* Does this browser decode HEVC by itself? When it does, the server copies the
  * release's own video stream into the MP4 instead of re-encoding it, which
  * takes the GPU out of the download: 30 min of 1080p HEVC went from 140 s to
