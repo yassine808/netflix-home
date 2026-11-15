@@ -116,11 +116,30 @@ export async function getCastleSeriesEpisodes(id, { signal } = {}) {
   return res.json();
 }
 
+/* Does this browser decode HEVC by itself? When it does, the server copies the
+ * release's own video stream into the MP4 instead of re-encoding it, which
+ * takes the GPU out of the download: 30 min of 1080p HEVC went from 140 s to
+ * 18 s on the same disk. Chromium only answers "probably" when the platform has
+ * a hardware HEVC decoder, and that is the decoder that plays the result. */
+let hevcDecode = null;
+function decodesHevc() {
+  if (hevcDecode !== null) return hevcDecode;
+  hevcDecode = false;
+  try {
+    const probe = document.createElement('video');
+    hevcDecode = ['hvc1.2.4.L120.90', 'hvc1.1.6.L120.90']
+      .some((codec) => probe.canPlayType(`video/mp4; codecs="${codec}"`) === 'probably');
+  } catch {
+    hevcDecode = false;
+  }
+  return hevcDecode;
+}
+
 export async function startCastleDownload(body) {
   const res = await fetch('/api/castle/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, copyVideo: decodesHevc() }),
   });
   if (!res.ok) {
     let payload = null;

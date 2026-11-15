@@ -1,0 +1,14 @@
+date,source,encoder,args,scope,audio_s,wall_s,speed_x,out_mb,exit,notes
+2026-11-15,S01E03 5.1 eac3 640k,aac,twoloop (default) 448k 6ch,60-240 s slice,180,17.05,10.6,9.6,0,native encoder; single-threaded
+2026-11-15,S01E03 5.1 eac3 640k,aac,-aac_coder fast 448k 6ch,60-240 s slice,180,7.23,24.9,9.6,0,same AAC-LC, same 445 kb/s, same size; adopted
+2026-11-15,S01E03 5.1 eac3 640k,aac,-aac_coder:a:0 fast 448k 6ch,60-240 s slice,180,7.10,25.3,9.6,0,per-stream form of the same option
+2026-11-15,S01E03 5.1 eac3 640k,aac_mf,448k 6ch,60-240 s slice,180,10.11,17.8,10.3,0,MediaFoundation AAC; faster than twoloop, slower than aac_coder fast
+2026-11-15,S01E03 5.1 eac3 640k,libopus,384k 6ch -> .m4a,60-240 s slice,180,0.21,-,0.0,-22,rejected: the m4a (ipod) muxer has no Opus support
+2026-11-15,S01E03 5.1 eac3 640k,libopus,-c copy,60-240 s slice,180,1.05,-,29.4,0,control: the whole 3 min slice as a pure container copy
+2026-11-15,S01E03 5.1 eac3 640k,aac,-aac_coder fast 448k 6ch,full track (1542 s),1542,67.87,22.7,42.9,0,the single-threaded cost that dominated the remux
+2026-11-15,S01E03 stereo eac3 128k,aac,-aac_coder fast 192k 2ch,full track (1542 s),1542,27.26,56.6,33.8,0,second track; both tracks encode concurrently inside one ffmpeg
+2026-11-15,S01E03 5.1 eac3 640k,libopus,-b:a 320k -mapping_family 1 -> mp4,full track (1542 s),1542,64.94,23.7,52.8,0,no faster than AAC fast; Brave reported canPlayType opus = probably
+2026-11-15,S01E03 stereo eac3 128k,libopus,-b:a 128k -> mp4,full track (1542 s),1542,24.23,63.7,23.5,0,no faster than AAC fast
+2026-11-15,S01E03 5.1 eac3 640k,aac,-aac_coder fast, 4 pieces encoded concurrently,full track (1542 s),1542,22.72,67.9,82.4,0,4 chunks of 385.5 s + stream-copy concat
+2026-11-15,S01E03 5.1 eac3 640k,aac,-aac_coder fast, 6 pieces encoded concurrently,full track (1542 s),1542,17.90,86.1,82.6,0,6 chunks of 257 s + stream-copy concat; adopted
+2026-11-15,S01E03 5.1 eac3 640k,aac,6 pieces + concat + mux (app remuxToMp4),full track (1542 s),1542,29.27,52.7,345.7,0,whole remux through the app code with h264 copied; was 77.7 s in one pass

@@ -8,6 +8,7 @@ pipeline lives here as a CSV table. Append new runs, never overwrite old ones.
 | `remux-pipeline.csv` | one row per ffmpeg invocation on the fixed 90 s clip: encode settings, wall time, CPU, GPU/NVENC, output size |
 | `copy-on-hdd.csv` | container-copy timings on the real library disk (`G:`, 1 TB 5400 rpm HDD), with and without `+faststart` |
 | `real-episodes.csv` | the app's own log line for real downloads, one row per job |
+| `audio-encode.csv` | audio encoder comparisons on the real E-AC3 tracks of one release |
 | `raw/` | untouched `results.json` from each harness run |
 
 ## Machine
@@ -30,6 +31,18 @@ pipeline lives here as a CSV table. Append new runs, never overwrite old ones.
 - `real-episodes.csv` — copied from the app's `remuxed N min to H.264 in X s
   (Yx realtime)` line, which times `remuxToMp4` only. Download and subtitle
   time are not included.
+
+## What did not work
+
+- `+faststart` — costs a full rewrite of the output (see `copy-on-hdd.csv`).
+- Copying E-AC3 into the MP4 instead of re-encoding it: the file builds and
+  plays, but Brave reports `canPlayType('audio/mp4; codecs="ec-3"')` as empty
+  and decodes 0 audio bytes, so it is silent. Same for AC-3.
+- Opus in MP4: Brave does decode it (`canPlayType` = `probably`, 225,852 audio
+  bytes in 6.5 s), but it encodes no faster than AAC `fast` on the same track
+  (5.1: 64.94 s against 67.87 s), so it buys nothing.
+- `aac_mf` (MediaFoundation) is slower than native AAC with `-aac_coder fast`.
+- Fragmenting the MP4 (`frag_keyframe+empty_moov`) is no faster than a plain mux.
 
 ## Reading the numbers
 

@@ -806,6 +806,9 @@ export async function addTorrentDownload(body = {}) {
     episode,
     year: Number(body.year) || 0,
     originalLanguage: text(body.originalLanguage),
+    /* The client decodes HEVC in hardware, so the remux can copy the video
+     * instead of spending two minutes of GPU on it. */
+    copyVideo: body.copyVideo === true,
     poster: text(body.poster),
     targetDir,
     dest: '',
@@ -1261,7 +1264,7 @@ async function attemptRelease(job, release, dir, controller) {
   job.progressValue = 0.82;
   scheduleSave(0);
   const probe = await probeMedia(downloaded.path);
-  const picked = pickTracks(probe, { originalLanguage: job.originalLanguage });
+  const picked = pickTracks(probe, { originalLanguage: job.originalLanguage, copyVideo: job.copyVideo === true });
   if (picked.error) return `${release.name}: ${picked.reason || picked.error}`;
 
   const quality = qualityFromHeight(probe.video?.height, probe.video?.width) || release.quality;
