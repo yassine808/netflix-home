@@ -1170,9 +1170,74 @@ code { font-family: Consolas, "Courier New", monospace; }
 .settings-copy strong { display: block; margin-bottom: 6px; font-size: 15px; }
 .settings-copy span { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
 .settings-row .net-switch { flex: 0 0 auto; margin-top: -6px; }
+.settings-field { display: flex; flex-direction: column; gap: 10px; }
+.settings-field label { font-size: 12.5px; font-weight: 600; letter-spacing: 0.02em; color: var(--muted-2); }
+.settings-input-row { display: flex; gap: 10px; }
+.settings-input-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.settings-input-row input::placeholder { color: var(--muted-2); }
+.settings-input-row input:focus { outline: none; border-color: rgba(255, 255, 255, 0.5); background: rgba(0, 0, 0, 0.65); }
+.settings-save {
+  flex: 0 0 auto;
+  height: 40px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 4px;
+  background: #fff;
+  color: #000;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s, opacity 0.2s;
+}
+.settings-save:hover { background: rgba(255, 255, 255, 0.82); }
+.settings-save:disabled { opacity: 0.5; cursor: default; }
+.settings-hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.settings-error { margin: 0; color: #ff8a8f; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.settings-restart {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.settings-restart span { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.settings-restart-btn {
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--red);
+  color: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s, opacity 0.2s;
+}
+.settings-restart-btn:hover { background: #ff2a36; }
+.settings-restart-btn:disabled { opacity: 0.5; cursor: default; }
 @media (max-width: 520px) {
   .modal-panel.settings-panel { padding: 30px 20px 22px; }
   .settings-row { gap: 16px; }
+  .settings-input-row { flex-direction: column; }
+  .settings-restart { flex-direction: column; align-items: stretch; }
 }
 
 .modal-hero { position: relative; min-height: 430px; height: 52vh; background: #0f0f0f; overflow: hidden; }

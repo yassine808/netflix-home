@@ -10,8 +10,12 @@ import path from 'node:path';
  * `castleFallback` decides what happens when Torrentio has no release with
  * English audio: true downloads Castle's 720p HLS file instead, false keeps the
  * download Torrentio-only and refuses instead of quietly lowering the quality.
+ *
+ * `autoplaySound` is the sound default for video the app starts by itself: the
+ * hero preview on the home page and the player when an episode opens. Off means
+ * both start muted and the viewer unmutes them.
  */
-const DEFAULTS = { offline: false, castleFallback: true };
+const DEFAULTS = { offline: false, castleFallback: true, autoplaySound: true };
 
 let settingsFile = '';
 let state = { ...DEFAULTS };
@@ -22,6 +26,7 @@ export function initSettings(cacheDir) {
     const raw = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
     if (raw && typeof raw.offline === 'boolean') state.offline = raw.offline;
     if (raw && typeof raw.castleFallback === 'boolean') state.castleFallback = raw.castleFallback;
+    if (raw && typeof raw.autoplaySound === 'boolean') state.autoplaySound = raw.autoplaySound;
   } catch {
     /* first run or unreadable file: keep defaults */
   }
@@ -46,6 +51,14 @@ export function setOffline(value) {
 
 export function setCastleFallback(value) {
   return save({ ...state, castleFallback: Boolean(value) });
+}
+
+export function isAutoplaySound() {
+  return state.autoplaySound !== false;
+}
+
+export function setAutoplaySound(value) {
+  return save({ ...state, autoplaySound: Boolean(value) });
 }
 
 function save(next) {

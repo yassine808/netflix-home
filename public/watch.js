@@ -1,6 +1,6 @@
 import {
   formatClock, formatDuration, progressFor, saveProgress, thumbUrl, readJson, writeJson, getSeries,
-  skel,
+  getSettings, skel,
 } from './common.js';
 
 const $ = (id) => document.getElementById(id);
@@ -60,6 +60,7 @@ let idleTimer = null;
 let dragging = false;
 let pendingResume = 0;
 let lastVolume = 1;
+let autoplaySound = true;
 let dragRatio = 0;
 let raf = 0;
 let lastTimeLabel = '';
@@ -160,6 +161,7 @@ async function init() {
   document.body.style.background = '#000';
   video.poster = thumbUrl(item, 960);
   await initAudioTracks();
+  await loadAutoplaySound();
   video.src = streamUrl();
   video.load();
   bindEvents();
@@ -331,13 +333,34 @@ function bindEvents() {
 }
 
 function attemptAutoplay() {
-  video.play().then(() => {
+  /* An audio policy refusal must not leave a black screen: retry muted and let
+   * the viewer unmute from the volume button. */
+  const start = () => video.play().then(() => {
     player.classList.remove('paused');
-  }).catch(() => {
+  }).catch((err) => {
+    if (err?.name === 'NotAllowedError' && !video.muted) {
+      video.muted = true;
+      syncVolume();
+      return start();
+    }
     player.classList.add('paused');
     setPlayIcon(false);
     showUi();
+    return undefined;
   });
+  return start();
+}
+
+/* Sound default from Settings: the player starts muted when auto-play sound is
+ * off. */
+async function loadAutoplaySound() {
+  try {
+    const settings = await getSettings();
+    autoplaySound = settings?.autoplaySound !== false;
+  } catch {
+    /* older server: keep sound on */
+  }
+  if (!autoplaySound) video.muted = true;
 }
 
 function togglePlay() {

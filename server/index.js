@@ -2,6 +2,7 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { initDb, dbStats, analyzeDb, purgeOrphans, maybeVacuum,
@@ -29,7 +30,9 @@ import {
   isCastleId, castleArt, castleEpisodeArt, castleEpisodeArtForSeries, castleTrailerItem,
 } from './castle.js';
 import { castleSyncStatus, startCastleSync } from './castle-sync.js';
-import { initSettings, getSettings, isOffline, setOffline, isCastleFallback, setCastleFallback } from './settings.js';
+import { initSettings, getSettings, isOffline, setOffline, isCastleFallback, setCastleFallback,
+  setAutoplaySound } from './settings.js';
+import { initConfig, getLibraryRootSetting, setLibraryRootSetting } from './config.js';
 import { initFrames, frameMeta, ensureSprite } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
 import { initHero, heroStart, heroReady, ensureHero, warmHeroes } from './hero.js';
@@ -58,10 +61,20 @@ function exactDir(dir, name) {
   }
 }
 
-/* The deployed copy lives next to its own movies (G:\NETFLIX\Movies), so a
- * "Movies" folder beside the app wins over the old fixed locations. */
+/* The folder picked in Settings wins over the folder layout below: the user
+ * knows where the films are. A drive that is not plugged in must not stop the
+ * launch, so a missing folder falls back to auto-detection. */
 function resolveLibraryRoot() {
   if (process.env.LIBRARY_ROOT) return path.resolve(process.env.LIBRARY_ROOT);
+  const chosen = getLibraryRootSetting();
+  if (chosen) {
+    try {
+      if (fs.statSync(chosen).isDirectory()) return chosen;
+      console.warn(`library folder from Settings is not a folder: ${chosen}`);
+    } catch {
+      console.warn(`library folder from Settings is missing: ${chosen}`);
+    }
+  }
   if (exactDir(projectRoot, 'Movies')) return projectRoot;
   for (const candidate of ['G:\\NETFLIX', 'G:\\Movies', 'G:\\']) {
     try {
@@ -75,6 +88,9 @@ function resolveLibraryRoot() {
   return fallback;
 }
 
+/* config.json sits beside the app, not inside the library, so the path survives
+ * a change of library. */
+initConfig(projectRoot);
 const libraryRoot = resolveLibraryRoot();
 /* The database and thumbnails live with the library, so G:\NETFLIX holds the
  * movies, the cache and the launcher together. */
@@ -275,7 +291,23 @@ app.use('/api', (req, res, next) => {
   res.status(503).json({ error: 'offline mode is on — internet access is disabled', offline: true });
 });
 
-app.get('/api/settings', (req, res) => res.json(getSettings()));
+/* Everything the settings sheet needs. `libraryRoot` is the folder this process
+ * scans; `libraryRootSetting` is what config.json says, and the two differ until
+ * the app restarts. `canRestart` is false for `npm start`, where the executable
+ * is node itself and there is nothing to relaunch. */
+function settingsPayload() {
+  const chosen = getLibraryRootSetting();
+  return {
+    ...getSettings(),
+    libraryRoot,
+    libraryRootSetting: chosen || libraryRoot,
+    libraryRootPending: Boolean(chosen) && path.resolve(chosen) !== path.resolve(libraryRoot),
+    appDir: projectRoot,
+    canRestart: Boolean(process.env.APP_ROOT),
+  };
+}
+
+app.get('/api/settings', (req, res) => res.json(settingsPayload()));
 
 /* Catalog database size, row counts and process cost, for verifying the cache
  * and spotting growth without a profiler. */
@@ -312,6 +344,68 @@ app.post('/api/settings/castle-fallback', (req, res) => {
     return res.status(400).json({ error: 'pass {"castleFallback": true|false}' });
   }
   res.json(setCastleFallback(req.body.castleFallback));
+});
+
+/* Sound default for video the app starts by itself: the hero preview and the
+ * player. Off starts both muted. */
+app.post('/api/settings/autoplay-sound', (req, res) => {
+  if (typeof req.body?.autoplaySound !== 'boolean') {
+    return res.status(400).json({ error: 'pass {"autoplaySound": true|false}' });
+  }
+  res.json(setAutoplaySound(req.body.autoplaySound));
+});
+
+/* Library folder, chosen in Settings. It is saved beside the app and read at
+ * boot, because the catalog database, the artwork cache and the download queue
+ * all open against the root the process started with. */
+app.post('/api/settings/library-root', (req, res) => {
+  try {
+    setLibraryRootSetting(req.body?.path);
+    res.json(settingsPayload());
+  } catch (err) {
+    res.status(err?.status || 500).json({ error: err?.message || String(err) });
+  }
+});
+
+/* Restart the bundled app in place: the new process waits for this one to exit,
+ * then resolves the library from config.json and opens its own browser tab. */
+app.post('/api/restart', (req, res) => {
+  const remote = req.socket.remoteAddress || '';
+  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote)) {
+    return res.status(403).json({ error: 'local requests only' });
+  }
+  if (!process.env.APP_ROOT) {
+    return res.status(409).json({
+      error: 'restart is only available in the bundled app — stop npm start and run it again',
+    });
+  }
+  res.json({ ok: true });
+  setTimeout(() => {
+    try {
+      const env = { ...process.env };
+      // The child has to re-read config.json instead of inheriting this
+      // library, and it has to come back with a browser tab.
+      delete env.LIBRARY_ROOT;
+      delete env.NETFLIX_NO_BROWSER;
+      env.NETFLIX_WAIT_PID = String(process.pid);
+      const child = spawn(process.execPath, [], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: process.env.APP_ROOT,
+        env,
+      });
+      child.unref();
+    } catch (err) {
+      console.error(`restart failed: ${err?.message || err}`);
+    }
+    try {
+      analyzeDb();
+      maybeVacuum();
+    } catch {
+      /* shutting down anyway */
+    }
+    process.exit(0);
+  }, 200);
 });
 
 const MIME = {

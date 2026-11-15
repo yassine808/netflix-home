@@ -17,6 +17,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import manifest from './manifest.json';
+import { initConfig, getLibraryRootSetting } from '../server/config.js';
 
 const BUILD_ID = manifest.build;
 const ASSETS = manifest.files;
@@ -55,10 +56,20 @@ function hasExactDir(dir, name) {
   }
 }
 
-/* Same order as the server: env, a Movies folder beside the exe, then the old
- * fixed locations. The exe folder is the last resort so a fresh folder works. */
+/* Same order as the server: env, the folder chosen in Settings (config.json
+ * beside the exe), a Movies folder next to the exe, then the old fixed
+ * locations. The exe folder is the last resort so a fresh folder works. */
 function libraryRoot() {
   if (process.env.LIBRARY_ROOT) return path.resolve(process.env.LIBRARY_ROOT);
+  const chosen = getLibraryRootSetting();
+  if (chosen) {
+    try {
+      if (fs.statSync(chosen).isDirectory()) return chosen;
+      log(`library folder from Settings is not a folder: ${chosen}`);
+    } catch {
+      log(`library folder from Settings is missing: ${chosen}`);
+    }
+  }
   if (hasExactDir(exeDir, 'Movies')) return exeDir;
   for (const candidate of ['G:\\NETFLIX', 'G:\\Movies', 'G:\\']) {
     try {
@@ -136,7 +147,30 @@ async function waitForServer(portFile, ms = 20000) {
   return 0;
 }
 
+/* A restart from Settings spawns this exe while the old server is still
+ * shutting down. Waiting for that pid keeps the new instance from finding the
+ * old server alive, opening a tab and exiting again. */
+async function waitForProcessExit(pid, ms = 20000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  log(`pid ${pid} was still alive after ${ms} ms; starting anyway`);
+  return false;
+}
+
 async function main() {
+  /* config.json carries the library folder picked in Settings. It has to be
+   * read before the root is resolved. */
+  initConfig(exeDir);
+  const waitPid = Number(process.env.NETFLIX_WAIT_PID) || 0;
+  if (waitPid) await waitForProcessExit(waitPid);
+
   const root = libraryRoot();
   fs.mkdirSync(path.join(root, '.cache'), { recursive: true });
   process.env.LIBRARY_ROOT = root;

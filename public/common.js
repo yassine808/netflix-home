@@ -217,6 +217,41 @@ export async function setCastleFallback(castleFallback) {
   return res.json();
 }
 
+/* The folder the app scans. Saved beside the app, because the catalog, the
+ * artwork cache and the download queue all live inside the library itself —
+ * the answer says whether a restart is still needed (`libraryRootPending`). */
+export async function setLibraryRoot(libraryRoot) {
+  const res = await fetch('/api/settings/library-root', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: String(libraryRoot || '') }),
+  });
+  let payload = null;
+  try { payload = await res.json(); } catch { /* non-JSON error */ }
+  if (!res.ok) throw new Error(payload?.error || `library folder ${res.status}`);
+  return payload;
+}
+
+/* Relaunches the bundled app, so the new library folder is the one it opens. */
+export async function restartApp() {
+  const res = await fetch('/api/restart', { method: 'POST' });
+  let payload = null;
+  try { payload = await res.json(); } catch { /* non-JSON error */ }
+  if (!res.ok) throw new Error(payload?.error || `restart ${res.status}`);
+  return payload;
+}
+
+/* Sound default for the hero preview and the player. */
+export async function setAutoplaySound(autoplaySound) {
+  const res = await fetch('/api/settings/autoplay-sound', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ autoplaySound: Boolean(autoplaySound) }),
+  });
+  if (!res.ok) throw new Error(`autoplay sound ${res.status}`);
+  return res.json();
+}
+
 /* Removes one episode/movie file from disk. Needs DELETE /api/item/:id on the server. */
 export async function deleteLibraryItem(id) {
   const res = await fetch(`/api/item/${encodeURIComponent(id)}`, { method: 'DELETE' });

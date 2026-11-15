@@ -6,4 +6,5 @@ media/
 Thumbs.db
 dist/
 .build/
+config.json
 bundle/manifest.json
