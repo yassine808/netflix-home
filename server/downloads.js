@@ -503,6 +503,9 @@ function publicJob(job) {
     fileName: job.fileName,
     collection: job.collection,
     identifier: job.identifier,
+    /* The drawer heads every group with the show's own art, so the poster the
+     * download was started with travels with the job. */
+    poster: job.poster || '',
     source: job.source || null,
     sourceLabel: job.sourceLabel || '',
     quality: job.quality || '',

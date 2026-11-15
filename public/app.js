@@ -1401,12 +1401,18 @@ async function refreshDownloads({ initial = false } = {}) {
 
 function updateDownloadsBadge() {
   const active = state.downloads.filter((job) => ACTIVE_STATUSES.has(job.status)).length;
+  const paused = state.downloads.filter((job) => job.status === 'paused').length;
   els.downloadsBadge.hidden = active === 0;
   els.downloadsBadge.textContent = active > 9 ? '9+' : String(active);
   els.downloadsBtn.classList.toggle('busy', active > 0);
-  els.downloadsCount.textContent = active
-    ? `${active} active download${active === 1 ? '' : 's'}`
-    : 'No active downloads';
+  if (active) {
+    els.downloadsCount.textContent = `${active} active download${active === 1 ? '' : 's'}`
+      + (paused ? ` · ${paused} paused` : '');
+  } else if (paused) {
+    els.downloadsCount.textContent = `${paused} paused download${paused === 1 ? '' : 's'}`;
+  } else {
+    els.downloadsCount.textContent = 'No active downloads';
+  }
 }
 
 function formatSpeed(bytes) {
@@ -1437,6 +1443,130 @@ function orderedQueue(jobs) {
     .map((x) => x.job);
 }
 
+/* ---------- downloads: one group per show ---------- */
+
+const dlHeads = new Map();
+
+/* "Cyberpunk: Edgerunners S01E10" -> "Cyberpunk: Edgerunners" */
+function downloadShow(job) {
+  const raw = String(job.title || job.fileName || 'Download').trim();
+  const show = raw
+    .replace(/\s*[-_.]?\s*[Ss]\d{1,2}\s*[Ee]\d{1,3}\b.*$/, '')
+    .replace(/\s*\(\d{4}\)\s*$/, '')
+    .replace(/\s+\d{3,4}p\b.*$/i, '')
+    .trim();
+  return show || raw;
+}
+
+function downloadShowKey(job) {
+  return `${downloadShow(job).toLowerCase()}|${job.identifier || ''}`;
+}
+
+function downloadEpisodeLabel(job) {
+  const season = Number(job.season) || 0;
+  const episode = Number(job.episode) || 0;
+  if (season && episode) return `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
+  if (episode) return `E${String(episode).padStart(2, '0')}`;
+  return '';
+}
+
+/* A finished episode is in the library already, so its poster and wordmark are
+ * cached on disk and load instantly; an in-flight job only has the remote
+ * poster it was started with. A show already in the library lends its wordmark
+ * to the episodes still downloading. */
+function downloadArt(job) {
+  const items = state.library?.items || [];
+  const file = String(job.fileName || '');
+  const normalize = (value) => String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  const show = normalize(downloadShow(job));
+  const exact = file ? items.find((row) => row.fileName === file) : null;
+  const sameShow = show
+    ? items.find((row) => normalize(row.title) === show)
+    : null;
+  const item = exact || sameShow;
+  if (item) {
+    return {
+      poster: `/api/art/${encodeURIComponent(item.id)}/poster?w=240`,
+      logo: logoUrl(item),
+    };
+  }
+  return { poster: String(job.poster || ''), logo: '' };
+}
+
+function buildDownloadHead(job, artwork = downloadArt(job)) {
+  const head = createEl('div', 'dl-group');
+  const show = downloadShow(job);
+  const { poster, logo } = artwork;
+  head._art = `${poster}|${logo}`;
+
+  const art = createEl('div', 'dl-group-art');
+  art.append(createEl('span', 'dl-group-initial', show.slice(0, 2).toUpperCase()));
+  if (poster) {
+    const img = document.createElement('img');
+    img.className = 'dl-group-poster';
+    img.alt = '';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.addEventListener('load', () => img.classList.add('loaded'));
+    img.addEventListener('error', () => img.remove());
+    img.src = poster;
+    art.append(img);
+  }
+
+  const copy = createEl('div', 'dl-group-copy');
+  const name = createEl('span', 'dl-group-title', show);
+  copy.append(name);
+  if (logo) {
+    const mark = document.createElement('img');
+    mark.className = 'dl-group-logo';
+    mark.alt = show;
+    mark.loading = 'lazy';
+    mark.decoding = 'async';
+    mark.addEventListener('load', () => {
+      mark.classList.add('loaded');
+      name.hidden = true;
+    });
+    mark.addEventListener('error', () => mark.remove());
+    mark.src = logo;
+    copy.append(mark);
+  }
+  const meta = createEl('p', 'dl-group-meta');
+  copy.append(meta);
+  head.append(art, copy);
+  head._meta = meta;
+  return head;
+}
+
+function updateDownloadHead(head, jobs) {
+  const season = Number(jobs[0]?.season) || 0;
+  const qualities = [...new Set(jobs.map((job) => job.quality).filter(Boolean))];
+  const bytes = jobs.reduce((sum, job) => sum
+    + (Number(job.status === 'completed' ? job.bytes : job.total) || 0), 0);
+  const parts = [];
+  if (season) parts.push(`Season ${season}`);
+  if (qualities.length === 1) parts.push(qualities[0]);
+  if (season) parts.push(`${jobs.length} episode${jobs.length === 1 ? '' : 's'}`);
+  if (bytes) parts.push(formatSize(bytes));
+  head._meta.textContent = parts.join(' · ');
+}
+
+/* The group head already names the show, so a row only repeats what it adds. */
+function downloadRowTitle(job) {
+  const raw = String(job.title || '').trim();
+  const label = downloadEpisodeLabel(job);
+  if (!label || !raw) return raw;
+  const show = downloadShow(job);
+  let rest = raw.toLowerCase().startsWith(show.toLowerCase()) ? raw.slice(show.length) : raw;
+  rest = rest
+    .replace(new RegExp(label, 'i'), '')
+    .replace(/^[\s\-–—:.]+|[\s\-–—:.]+$/g, '')
+    .trim();
+  return rest;
+}
+
 function renderDownloads() {
   const active = state.downloads.filter((j) => j.status === 'downloading' || j.status === 'cancelling');
   const queued = orderedQueue(state.downloads.filter((j) => j.status === 'queued'));
@@ -1453,21 +1583,62 @@ function renderDownloads() {
     updateDownloadRow(row, job);
   });
 
+  const used = new Set();
   const fill = (section, jobs, isQueue) => {
     section.hidden = jobs.length === 0;
     section.querySelector('.dl-count').textContent = jobs.length ? `(${jobs.length})` : '';
-    if (isQueue && dlDrag.active) return; // don't fight the user's drag
+    if (!jobs.length) return;
     const box = section.querySelector('.dl-items');
-    jobs.forEach((job, i) => {
-      const row = dlRows.get(job.id);
-      if (box.children[i] !== row) box.insertBefore(row, box.children[i] || null);
-      if (isQueue) row.querySelector('.dl-pos').textContent = String(i + 1);
+
+    // Consecutive jobs of the same show share one head with the show's art.
+    const groups = new Map();
+    for (const job of jobs) {
+      const key = downloadShowKey(job);
+      used.add(`${section.id}|${key}`);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(job);
+    }
+    // During a drag the DOM order is the user's, but the heads must stay known
+    // so the cleanup below does not delete them mid-gesture.
+    if (isQueue && dlDrag.active) return;
+    const desired = [];
+    let last = '';
+    for (const job of jobs) {
+      const key = downloadShowKey(job);
+      if (key !== last) {
+        const cacheKey = `${section.id}|${key}`;
+        let head = dlHeads.get(cacheKey);
+        // The first render can land before the library (and its cached art) has
+        // loaded; rebuild the head once the poster or wordmark changes.
+        const art = downloadArt(job);
+        if (!head || head._art !== `${art.poster}|${art.logo}`) {
+          if (head) head.remove();
+          head = buildDownloadHead(job, art);
+          dlHeads.set(cacheKey, head);
+        }
+        updateDownloadHead(head, groups.get(key));
+        desired.push(head);
+        last = key;
+      }
+      desired.push(dlRows.get(job.id));
+    }
+    desired.forEach((el, i) => {
+      if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null);
     });
+    while (box.children.length > desired.length) box.lastElementChild.remove();
+    if (isQueue) {
+      jobs.forEach((job, i) => {
+        dlRows.get(job.id).querySelector('.dl-pos').textContent = String(i + 1);
+      });
+    }
   };
   fill(els.dlActive, [...active, ...paused]);
   fill(els.dlQueued, queued, true);
   fill(els.dlDone, finished);
   fill(els.dlFailed, failed);
+  for (const [key, head] of dlHeads) {
+    if (!used.has(key)) { head.remove(); dlHeads.delete(key); }
+  }
   els.dlSkeleton.hidden = state.downloadsLoaded;
   els.downloadsEmpty.hidden = all.length > 0 || !state.downloadsLoaded;
 }
@@ -1510,9 +1681,10 @@ function buildDownloadRow(job) {
   const pos = createEl('span', 'dl-pos', '');
   const main = createEl('div', 'download-main');
   const top = createEl('div', 'download-top');
+  const ep = createEl('span', 'download-ep', '');
   const title = createEl('span', 'download-title');
   const pct = createEl('span', 'download-pct');
-  top.append(title, pct);
+  top.append(ep, title, pct);
   const file = createEl('div', 'download-file');
   const bar = createEl('div', 'download-bar');
   const fillEl = document.createElement('i');
@@ -1521,14 +1693,19 @@ function buildDownloadRow(job) {
   main.append(top, file, bar, meta);
   const actions = createEl('div', 'download-actions');
   row.append(grip, pos, main, actions);
-  row._r = { title, pct, file, bar, fillEl, meta, actions };
+  row._r = { ep, title, pct, file, bar, fillEl, meta, actions };
   return row;
 }
 
 function updateDownloadRow(row, job) {
   const r = row._r;
   row.className = `download-row is-${job.status}${row.classList.contains('dragging') ? ' dragging' : ''}`;
-  r.title.textContent = job.title || job.fileName;
+  const label = downloadEpisodeLabel(job);
+  r.ep.textContent = label;
+  r.ep.hidden = !label;
+  const title = downloadRowTitle(job);
+  r.title.textContent = title;
+  r.title.hidden = !title;
   r.file.textContent = job.fileName || '';
   const pct = job.status === 'completed' ? 100 : Math.round((job.progress || 0) * 100);
   const showPct = job.status !== 'queued' && job.status !== 'failed';
@@ -1536,6 +1713,8 @@ function updateDownloadRow(row, job) {
   if (showPct) tweenNumber(r.pct, pct);
   r.fillEl.style.width = `${pct}%`;
   r.bar.classList.toggle('indeterminate', job.status === 'cancelling');
+  /* A failed transfer has no progress to show; the bar just reads as broken. */
+  r.bar.hidden = job.status === 'failed' || job.status === 'cancelled';
 
   r.meta.replaceChildren();
   r.meta.append(createEl('span', `download-status ${job.status}`, STATUS_LABELS[job.status] || job.status));
@@ -1543,8 +1722,11 @@ function updateDownloadRow(row, job) {
   if (job.stage && job.stage !== 'downloading' && job.status !== 'completed' && STAGE_LABELS[job.stage]) {
     r.meta.append(createEl('span', 'download-stage', STAGE_LABELS[job.stage]));
   }
-  if (job.total && job.status !== 'queued') r.meta.append(createEl('span', '', `${formatSize(job.bytes)} of ${formatSize(job.total)}`));
-  else if (job.status === 'completed') r.meta.append(createEl('span', '', formatSize(job.bytes)));
+  if (job.total && job.status !== 'queued') {
+    r.meta.append(createEl('span', '', job.bytes
+      ? `${formatSize(job.bytes)} of ${formatSize(job.total)}`
+      : formatSize(job.total)));
+  } else if (job.status === 'completed') r.meta.append(createEl('span', '', formatSize(job.bytes)));
   if (job.status === 'downloading') {
     if (job.speed) r.meta.append(createEl('span', '', formatSpeed(job.speed)));
     const eta = formatEta(job);
@@ -1596,8 +1778,9 @@ function animateReorder(box, mutate, skip) {
 }
 
 function commitQueueOrder(box) {
-  const ids = [...box.children].map((el) => el.dataset.id);
-  [...box.children].forEach((el, i) => { el.querySelector('.dl-pos').textContent = String(i + 1); });
+  const rows = [...box.querySelectorAll('.download-row')];
+  const ids = rows.map((el) => el.dataset.id);
+  rows.forEach((el, i) => { el.querySelector('.dl-pos').textContent = String(i + 1); });
   writeJson(QUEUE_ORDER_KEY, ids);
   reorderDownloads(ids);
 }
@@ -1605,7 +1788,7 @@ function commitQueueOrder(box) {
 function startDrag(e, row) {
   if (e.button !== undefined && e.button !== 0) return;
   const box = row.parentElement;
-  if (!box || box.children.length < 2) return;
+  if (!box || box.querySelectorAll('.download-row').length < 2) return;
   e.preventDefault();
   dlDrag.active = true;
   document.body.classList.add('dl-dragging');
@@ -1614,6 +1797,9 @@ function startDrag(e, row) {
   const scroller = els.downloadsList;
   let lastY = e.clientY;
   let raf = 0;
+  // Group heads sit between rows, so compare against the row that was last
+  // chosen instead of `nextElementSibling`.
+  let placed = row.nextElementSibling;
 
   const place = () => {
     row.style.transform = 'none';
@@ -1624,15 +1810,16 @@ function startDrag(e, row) {
     lastY = ev.clientY;
     place();
     const center = lastY - grabOffset + row.offsetHeight / 2;
-    const sibs = [...box.children].filter((el) => el !== row);
+    const sibs = [...box.querySelectorAll('.download-row')].filter((el) => el !== row);
     let target = null;
     for (const el of sibs) {
       const rc = el.getBoundingClientRect();
       if (center < rc.top + rc.height / 2) { target = el; break; }
     }
-    if ((target || null) !== row.nextElementSibling) {
+    if (target !== placed) {
       animateReorder(box, () => box.insertBefore(row, target), row);
       place();
+      placed = target;
     }
     const sr = scroller.getBoundingClientRect();
     cancelAnimationFrame(raf);
