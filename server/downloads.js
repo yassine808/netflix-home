@@ -867,16 +867,19 @@ export function listDownloads() {
 export function cancelDownload(id) {
   const job = jobs.get(String(id));
   if (!job) return null;
-  const part = job.dest ? `${job.dest}.part` : '';
 
   /* Deleting a multi-GB folder takes seconds and can fail while aria2c still
    * holds a handle, so it runs in the background: the caller and the UI get an
    * answer at once, which is what "cancel" has to feel like. Windows releases
    * the file a moment after the process is killed, hence the retries. */
   const removePart = async () => {
+    // `job.part` can be an ffmpeg output that is not `<dest>.part`; both must go.
+    const partials = new Set();
+    if (job.dest) partials.add(`${job.dest}.part`);
+    if (job.part) partials.add(String(job.part));
     for (let attempt = 0; attempt < 15; attempt++) {
       try {
-        if (part) await fsp.rm(part, { force: true });
+        for (const partial of partials) await fsp.rm(partial, { force: true });
         if (job.kind === 'torrent') {
           await fsp.rm(torrentTempDir(job), { recursive: true, force: true });
         }
@@ -897,6 +900,23 @@ export function cancelDownload(id) {
     jobs.delete(job.id);
     scheduleSave(0);
   };
+
+  /* A failed transfer is unfinished: the X clears the bytes it left behind. */
+  if (job.status === 'failed') {
+    void removePart();
+    forget();
+    return { id: job.id, status: 'cancelled', removed: true };
+  }
+
+  /* A finished download is no longer a transfer. Removing its row keeps the
+   * file and the library entry; only the notification goes away. */
+  if (job.status === 'completed') {
+    const index = queue.indexOf(job);
+    if (index >= 0) queue.splice(index, 1);
+    jobs.delete(job.id);
+    scheduleSave(0);
+    return { id: job.id, status: job.status, removed: true, kept: true };
+  }
 
   if (job.status === 'queued' || job.status === 'paused') {
     void removePart();
