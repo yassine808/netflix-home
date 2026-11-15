@@ -189,6 +189,29 @@ export async function searchOnline(query) {
   return payload;
 }
 
+/* First and last air year of one title. Remakes share a title, and a series
+ * keeps airing after its first season, so the run is what tells "Suits"
+ * (2011-2019) apart from its 2018 Korean remake. Cinemeta reports the run in
+ * releaseInfo ("2011-2019", "2018"); meta.year carries the same string. */
+export async function getTitleRun(type, id) {
+  const kind = validType(type);
+  const imdbId = validId(id);
+  if (!kind || !imdbId) return null;
+
+  const key = `run:${kind}:${imdbId}`;
+  const cached = cacheGet(key);
+  if (cached) return cached;
+
+  const data = await fetchJson(`${BASE}/meta/${kind}/${imdbId}.json`);
+  const meta = data?.meta;
+  const years = (clean(meta?.releaseInfo || meta?.year).match(/\b(?:18|19|20)\d{2}\b/g) || []).map(Number);
+  if (!years.length) return null;
+
+  const payload = { start: years[0], end: years[years.length - 1] };
+  cacheSet(key, payload, TITLE_TTL);
+  return payload;
+}
+
 function collectSeasons(videos) {
   const seasons = new Map();
   for (const video of Array.isArray(videos) ? videos : []) {
