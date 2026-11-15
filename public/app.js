@@ -93,6 +93,11 @@ const state = {
   castleSig: '',
   sheetTarget: null,
   heroPickId: null,
+  heroVisible: true,
+  heroPausedForScroll: false,
+  heroVolumeTimer: 0,
+  castleVisible: true,
+  castlePausedForScroll: false,
   seriesCatalog: new Map(),
   seriesCatalogLoading: new Set(),
   queuedEpisodes: new Set(),
@@ -791,7 +796,7 @@ function setupPreview(item) {
   state.previewStart = Math.min(Math.max(20, item.durationSec * 0.12), Math.max(20, item.durationSec - 80));
   clearTimeout(state.previewTimer);
   state.previewTimer = setTimeout(() => {
-    if (document.hidden || state.view !== 'home' || isModalOpen() || !els.searchOverlay.hidden) return;
+    if (document.hidden || state.view !== 'home' || !state.heroVisible || isModalOpen() || !els.searchOverlay.hidden) return;
     playPreview(item);
   }, 4000);
 }
@@ -799,7 +804,9 @@ function setupPreview(item) {
 function playPreview(item) {
   const video = els.heroVideo;
   const id = item.playId || item.id;
-  video.volume = 0.65;
+  video.volume = HERO_PREVIEW_VOLUME;
+  /* A fresh title starts a fresh preview: never leave a scroll pause in place. */
+  state.heroPausedForScroll = false;
   /* The sound setting is the default; the speaker button overrides it for this
    * visit (state.previewMuted). */
   video.muted = state.previewMuted || state.autoplaySound === false;
@@ -864,6 +871,61 @@ function syncHeroMute(blocked = false) {
   els.heroMute.title = label;
 }
 
+const HERO_PREVIEW_VOLUME = 0.65;
+const SCROLL_FADE_MS = 420;
+
+function stopHeroVolumeFade() {
+  if (state.heroVolumeTimer) clearTimeout(state.heroVolumeTimer);
+  state.heroVolumeTimer = 0;
+}
+
+/* Same timer-based fade the sheet uses: the trailer is silent before it pauses
+ * and fades back up where it left off, so scrolling never cuts the sound. */
+function fadeHeroVolume(target, done) {
+  const video = els.heroVideo;
+  stopHeroVolumeFade();
+  const from = Number.isFinite(video.volume) ? video.volume : 0;
+  const to = Math.max(0, Math.min(1, target));
+  const startedAt = performance.now();
+  const step = () => {
+    const t = Math.min(1, (performance.now() - startedAt) / SCROLL_FADE_MS);
+    const eased = 1 - Math.pow(1 - t, 3);
+    try { video.volume = from + (to - from) * eased; } catch { /* ignore */ }
+    if (t < 1) {
+      state.heroVolumeTimer = setTimeout(step, 16);
+      return;
+    }
+    state.heroVolumeTimer = 0;
+    if (done) done();
+  };
+  state.heroVolumeTimer = setTimeout(step, 16);
+}
+
+/* Scrolling the billboard away pauses the trailer instead of leaving it
+ * playing to an empty screen; scrolling back resumes it at the same spot. */
+function setHeroPreviewVisible(visible) {
+  const video = els.heroVideo;
+  state.heroVisible = visible;
+  if (!visible) {
+    if (!video.src || video.paused) return;
+    state.heroPausedForScroll = true;
+    fadeHeroVolume(0, () => {
+      if (state.heroVisible) return;
+      try { video.pause(); } catch { /* ignore */ }
+    });
+    return;
+  }
+  if (!state.heroPausedForScroll) return;
+  state.heroPausedForScroll = false;
+  if (!video.src || state.view !== 'home' || document.hidden) return;
+  const playing = video.play();
+  if (playing && typeof playing.catch === 'function') {
+    playing.then(() => {
+      if (!video.muted) fadeHeroVolume(HERO_PREVIEW_VOLUME);
+    }).catch(() => {});
+  }
+}
+
 videoLoop();
 function videoLoop() {
   els.heroVideo.addEventListener('timeupdate', () => {
@@ -877,6 +939,8 @@ function videoLoop() {
 
 function stopPreview() {
   clearTimeout(state.previewTimer);
+  stopHeroVolumeFade();
+  state.heroPausedForScroll = false;
   const video = els.heroVideo;
   try {
     video.pause();
@@ -4115,6 +4179,7 @@ function stopCastleTrailer() {
   clearTimeout(state.castleTrailerPlayTimer);
   state.castleTrailerPlayTimer = null;
   stopCastleVolumeFade();
+  state.castlePausedForScroll = false;
   const video = els.castleTrailer;
   video.classList.remove('playing');
   els.castleModal.querySelector('.online-hero')?.classList.remove('is-playing');
@@ -4158,7 +4223,7 @@ function scheduleCastleTrailer(url, token) {
   const wait = Math.max(0, (state.castleOpenedAt || 0) + CASTLE_TRAILER_DELAY - Date.now());
   state.castleTrailerPlayTimer = setTimeout(() => {
     state.castleTrailerPlayTimer = null;
-    if (token !== state.castleTrailerToken || els.castleModal.hidden) return;
+    if (token !== state.castleTrailerToken || els.castleModal.hidden || !state.castleVisible) return;
     playCastleTrailer(url);
   }, wait);
 }
@@ -4197,6 +4262,31 @@ function startCastleTrailer(item, source = 'local') {
   askCastleTrailer(item, state.castleTrailerToken, Date.now() + 120000, source);
 }
 
+/* The sheet trailer follows the same rule as the billboard: scrolling down to
+ * the episodes fades it out and pauses it, scrolling back fades it in again. */
+function setCastleTrailerVisible(visible) {
+  const video = els.castleTrailer;
+  state.castleVisible = visible;
+  if (!visible) {
+    if (!video.src || video.paused) return;
+    state.castlePausedForScroll = true;
+    fadeCastleVolume(0, () => {
+      if (state.castleVisible) return;
+      try { video.pause(); } catch { /* ignore */ }
+    });
+    return;
+  }
+  if (!state.castlePausedForScroll) return;
+  state.castlePausedForScroll = false;
+  if (!video.src || els.castleModal.hidden || document.hidden) return;
+  const playing = video.play();
+  if (playing && typeof playing.then === 'function') {
+    playing.then(() => {
+      if (!state.castleMuted) fadeCastleVolume(CASTLE_TRAILER_VOLUME);
+    }).catch(() => {});
+  }
+}
+
 function bindCastleTrailer() {
   els.castleTrailer.addEventListener('playing', () => {
     els.castleTrailer.classList.add('playing');
@@ -4208,6 +4298,44 @@ function bindCastleTrailer() {
     els.castleModal.querySelector('.online-hero')?.classList.remove('is-playing');
   });
   els.castleMute.addEventListener('click', toggleCastleMute);
+}
+
+/* Watch both hero video elements: the billboard scrolls with the window, the
+ * sheet trailer scrolls inside the modal. IntersectionObserver keeps this to
+ * one callback per threshold crossing instead of a scroll handler. */
+function bindScrollPreviews() {
+  const watch = (target, root, onChange) => {
+    if (!target) return;
+    if (typeof IntersectionObserver === 'function') {
+      const io = new IntersectionObserver((entries) => {
+        const last = entries[entries.length - 1];
+        onChange(Boolean(last?.isIntersecting));
+      }, { root: root || null, threshold: 0 });
+      io.observe(target);
+      return;
+    }
+
+    // Very old engines: fall back to geometry on scroll/resize.
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const box = target.getBoundingClientRect();
+      const view = root
+        ? root.getBoundingClientRect()
+        : { top: 0, bottom: window.innerHeight || document.documentElement.clientHeight };
+      onChange(box.bottom > view.top + 1 && box.top < view.bottom - 1);
+    };
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(measure);
+    };
+    (root || window).addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    measure();
+  };
+
+  watch(els.heroVideo, null, setHeroPreviewVisible);
+  watch(els.castleTrailer, els.castleModal, setCastleTrailerVisible);
 }
 
 function highlightSheetTarget() {
@@ -4959,6 +5087,7 @@ function toast(message, { type, title } = {}) {
 function bindStaticEvents() {
   bindNotifs();
   bindCastleTrailer();
+  bindScrollPreviews();
   document.querySelectorAll('.nav-link').forEach((link) => {
     link.addEventListener('click', (e) => {
       e.preventDefault();
@@ -5006,13 +5135,13 @@ function bindStaticEvents() {
     state.previewMuted = nextMuted;
     writeJson(PREVIEW_MUTED_KEY, nextMuted);
     if (!nextMuted) {
-      if (!video.volume) video.volume = 0.65;
+      if (!video.volume) video.volume = HERO_PREVIEW_VOLUME;
       video.volume = Math.max(video.volume, 0.2);
     }
     syncHeroMute(false);
     const item = state.byId.get(state.heroId);
     if (!video.src && item) playPreview(item);
-    else if (video.paused && item) video.play().catch(() => {});
+    else if (video.paused && item && !state.heroPausedForScroll) video.play().catch(() => {});
   });
 
   els.offlineBtn.addEventListener('click', toggleOffline);
