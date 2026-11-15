@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -19,9 +20,9 @@ const ffprobePath = ffprobeStatic.path;
  *                  that into the numbered file table the UI picks an episode
  *                  from. No payload is transferred.
  *   2. download  - aria2c downloads exactly one file index.
- *   3. remux     - one ffmpeg pass copies (or transcodes) the video, re-encodes
- *                  every audio track to AAC 5.1/stereo and keeps only h264, so
- *                  browsers can play the result. Subtitle streams are pulled
+ *   3. remux     - one ffmpeg pass copies (or transcodes) the video, keeps an
+ *                  AAC track as it is and re-encodes the rest to AAC 5.1/stereo,
+ *                  so browsers can play the result. Subtitle streams are pulled
  *                  out as sidecar WebVTT files.
  *
  * aria2c is bundled next to the EXE; ffmpeg/ffprobe come from the same static
@@ -46,6 +47,14 @@ const SLOW_WINDOW_MS = 180000;
 const SLOW_WARMUP_MS = 180000;
 const SLOW_REMAINING_BYTES = 300 * 1024 * 1024;
 const RPC_TIMEOUT_MS = 4000;
+
+/* VIDEO_COPY=1 keeps the source video stream instead of re-encoding it. A
+ * Chromium browser on a machine with HEVC hardware decode plays an HEVC Main10
+ * MP4 as it is, so the whole remux becomes a container write: measured 0.2 s
+ * for 90 s of 1080p against 5.7 s for the transcode. It is off by default
+ * because a browser without HEVC decode shows a black frame and there is no
+ * second copy to fall back on. */
+const VIDEO_COPY = /^(1|true|yes|on)$/i.test(String(process.env.VIDEO_COPY || '').trim());
 
 const VIDEO_EXTS = new Set([
   '.mp4', '.m4v', '.mkv', '.avi', '.mov', '.webm', '.wmv',
@@ -792,10 +801,12 @@ export function pickTracks(probe, { originalLanguage = '' } = {}) {
   const warnings = [];
 
   // probe.video is a single stream; keep its shape so remuxToMp4 can read .index.
-  const video = probe.video.codec === 'h264'
+  const keepSource = VIDEO_COPY && probe.video.codec !== 'h264';
+  const video = probe.video.codec === 'h264' || keepSource
     ? { ...probe.video }
     : { ...probe.video, transcode: true };
   if (video.transcode) warnings.push(`video is ${probe.video.codec || 'unknown'}; transcode to h264 is required`);
+  if (keepSource) warnings.push(`video stays ${probe.video.codec}; it needs hardware decode in the browser`);
 
   const audio = Array.isArray(probe.audio) ? probe.audio : [];
   if (!audio.length) {
@@ -851,19 +862,35 @@ export function pickTracks(probe, { originalLanguage = '' } = {}) {
 
 /* ---------- video encoder choice ---------- */
 
-/* Re-encoding an HEVC or AV1 release to H.264 with libx264 costs about five
- * minutes per hour of 1080p on a desktop CPU. A hardware encoder does the same
- * work several times faster and is indistinguishable at playback size, so the
- * first candidate that survives a short test encode wins. libx264 is always
- * the fallback, and VIDEO_ENCODER=<name> forces one. */
+/* Re-encoding an HEVC or AV1 release to H.264 is the slow phase of a download,
+ * and the encoder is not what costs the minutes: the CPU spends most of them
+ * decoding 10-bit HEVC a frame at a time. A hardware decoder keeps the frames
+ * on the GPU, a `scale_*` filter converts 10-bit to the 8-bit format the
+ * encoder wants without a trip through system memory, and the same file
+ * finishes in a fraction of the time. Measured on this desktop (i5-10400F,
+ * RTX 3070) with a 90 s 1080p HEVC Main10 clip:
+ *
+ *   CPU decode + h264_nvenc p4 ....... 19.9 s
+ *   NVDEC + h264_nvenc p4 ............ 11.9 s
+ *   NVDEC + h264_nvenc p1 ............. 4.2 s
+ *
+ * `decode` runs before `-i`, `filter` replaces the implied format conversion.
+ * Each candidate is proved against a 10-bit HEVC sample, because a decoder that
+ * cannot open it must lose here and not halfway through a download. libx264 is
+ * always the fallback, and VIDEO_ENCODER=<name> forces one.
+ */
 const VIDEO_ENCODERS = [
   {
     name: 'h264_nvenc',
-    args: ['-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', '21', '-b:v', '0', '-pix_fmt', 'yuv420p'],
+    decode: ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda'],
+    filter: 'scale_cuda=format=nv12',
+    args: ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'hq', '-rc', 'vbr', '-cq', '23', '-b:v', '0'],
   },
   {
     name: 'h264_qsv',
-    args: ['-c:v', 'h264_qsv', '-global_quality', '22', '-preset', 'veryfast', '-pix_fmt', 'nv12'],
+    decode: ['-hwaccel', 'qsv', '-hwaccel_output_format', 'qsv'],
+    filter: 'scale_qsv=format=nv12',
+    args: ['-c:v', 'h264_qsv', '-global_quality', '22', '-preset', 'veryfast'],
   },
   {
     name: 'h264_amf',
@@ -877,6 +904,21 @@ const VIDEO_ENCODERS = [
 
 let encoderChoice = null;
 
+/* A 10-bit HEVC sample is the honest test: the decoder, the GPU format
+ * conversion and the encoder all have to survive the kind of file a release
+ * actually ships. Built once per process, in the temp folder, and deleted. */
+async function encoderSample() {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'netflix-encoder-')).catch(() => '');
+  if (!dir) return null;
+  const file = path.join(dir, 'sample.mp4');
+  const built = await runCapture(ffmpegPath, [
+    '-hide_banner', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=10:duration=0.4,format=yuv420p10le',
+    '-c:v', 'libx265', '-pix_fmt', 'yuv420p10le', '-f', 'mp4', file,
+  ], { timeout: 30000 }).catch(() => null);
+  return built?.code === 0 ? { dir, file } : null;
+}
+
 async function videoEncoder() {
   if (encoderChoice) return encoderChoice;
   const wanted = String(process.env.VIDEO_ENCODER || '').trim().toLowerCase();
@@ -884,23 +926,30 @@ async function videoEncoder() {
     ? [...VIDEO_ENCODERS.filter((entry) => entry.name === wanted), ...VIDEO_ENCODERS]
     : VIDEO_ENCODERS;
 
+  const sample = await encoderSample();
   const tried = new Set();
   for (const entry of list) {
     if (tried.has(entry.name)) continue;
     tried.add(entry.name);
+    /* Without a sample there is nothing to decode, so only the encoder is
+     * proved and a bad `decode` list becomes a full remux failure. */
+    const source = sample ? ['-i', sample.file] : ['-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=10:duration=0.4'];
+    const filter = sample && entry.filter ? ['-vf', entry.filter] : [];
     const probe = await runCapture(ffmpegPath, [
       '-hide_banner', '-loglevel', 'error',
-      '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=10:duration=0.4',
-      ...entry.args, '-an', '-f', 'null', '-',
-    ], { timeout: 20000 }).catch(() => null);
+      ...(sample ? entry.decode || [] : []),
+      ...source, ...filter,
+      ...entry.args, '-an', '-frames:v', '5', '-f', 'null', '-',
+    ], { timeout: 30000 }).catch(() => null);
     if (probe?.code === 0) {
       encoderChoice = entry;
-      console.log(`[torrent] video encoder: ${entry.name}`);
-      return entry;
+      console.log(`[torrent] video encoder: ${entry.name}${entry.decode ? ' (hardware decode)' : ''}`);
+      break;
     }
   }
+  if (sample) await fsp.rm(sample.dir, { recursive: true, force: true }).catch(() => {});
 
-  encoderChoice = VIDEO_ENCODERS[VIDEO_ENCODERS.length - 1];
+  if (!encoderChoice) encoderChoice = VIDEO_ENCODERS[VIDEO_ENCODERS.length - 1];
   return encoderChoice;
 }
 
@@ -918,14 +967,16 @@ export async function remuxToMp4({ input, output, video, audio, onProgress } = {
   const tracks = (Array.isArray(audio) ? audio : [])
     .filter((track) => Number.isInteger(Number(track?.index)) && Number(track.index) >= 0);
 
-  const encoder = video.codec === 'h264' ? null : await videoEncoder();
+  const encoder = video.transcode ? await videoEncoder() : null;
 
-  const buildArgs = (videoArgs) => {
+  const buildArgs = (videoArgs, { decode = [], filter = '' } = {}) => {
     const args = [
       '-y', '-loglevel', 'error', '-nostats', '-progress', 'pipe:1',
+      ...decode,
       '-i', source,
       '-map', `0:${Number(video.index)}`,
     ];
+    if (filter) args.push('-vf', filter);
     args.push(...videoArgs);
 
     tracks.forEach((track, position) => {
@@ -934,13 +985,22 @@ export async function remuxToMp4({ input, output, video, audio, onProgress } = {
       const rawLang = String(track.lang || '').trim().toLowerCase();
       const lang = /^[a-z]{2,3}$/.test(rawLang) ? rawLang : (toIso2(rawLang) || 'und');
 
-      args.push(
-        '-map', `0:${Number(track.index)}`,
-        `-c:a:${position}`, 'aac',
-        `-b:a:${position}`, surround ? '448k' : '192k',
-        `-ac:a:${position}`, surround ? '6' : '2',
-        `-metadata:s:a:${position}`, `language=${lang}`,
-      );
+      /* An AAC track is already what the player wants, and the native AAC
+       * encoder is single-threaded: re-encoding 5.1 costs about as much as the
+       * hardware video encode does. Copy it and keep the original layout. */
+      const copyable = String(track.codec || '').toLowerCase() === 'aac' && channels >= 1 && channels <= 6;
+
+      args.push('-map', `0:${Number(track.index)}`);
+      if (copyable) {
+        args.push(`-c:a:${position}`, 'copy');
+      } else {
+        args.push(
+          `-c:a:${position}`, 'aac',
+          `-b:a:${position}`, surround ? '448k' : '192k',
+          `-ac:a:${position}`, surround ? '6' : '2',
+        );
+      }
+      args.push(`-metadata:s:a:${position}`, `language=${lang}`);
       if (track.title) args.push(`-metadata:s:a:${position}`, `title=${track.title}`);
       args.push(`-disposition:a:${position}`, position === 0 ? 'default' : '0');
     });
@@ -1017,7 +1077,13 @@ export async function remuxToMp4({ input, output, video, audio, onProgress } = {
   };
 
   try {
-    let result = await runOnce(buildArgs(encoder ? encoder.args : ['-c:v', 'copy']));
+    const hw = encoder ? { decode: encoder.decode, filter: encoder.filter } : {};
+    /* A copied HEVC stream has to be tagged `hvc1`: the `hev1` default is
+     * accepted by ffmpeg but Chromium refuses to play it. */
+    const videoArgs = encoder
+      ? [...encoder.args]
+      : ['-c:v', 'copy', ...(video.codec === 'hevc' ? ['-tag:v', 'hvc1'] : [])];
+    let result = await runOnce(buildArgs(videoArgs, hw));
 
     /* A hardware encoder can refuse the session (driver reset, too many
      * sessions, an unsupported source depth). Losing a whole download and
