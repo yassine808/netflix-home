@@ -864,36 +864,51 @@ export function listDownloads() {
     .map(publicJob);
 }
 
-export async function cancelDownload(id) {
+export function cancelDownload(id) {
   const job = jobs.get(String(id));
   if (!job) return null;
   const part = job.dest ? `${job.dest}.part` : '';
+
+  /* Deleting a multi-GB folder takes seconds and can fail while aria2c still
+   * holds a handle, so it runs in the background: the caller and the UI get an
+   * answer at once, which is what "cancel" has to feel like. Windows releases
+   * the file a moment after the process is killed, hence the retries. */
   const removePart = async () => {
-    if (part) await fsp.rm(part, { force: true }).catch(() => {});
-    if (job.kind === 'torrent') await fsp.rm(torrentTempDir(job), { recursive: true, force: true }).catch(() => {});
+    for (let attempt = 0; attempt < 15; attempt++) {
+      try {
+        if (part) await fsp.rm(part, { force: true });
+        if (job.kind === 'torrent') {
+          await fsp.rm(torrentTempDir(job), { recursive: true, force: true });
+        }
+        return;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+    }
   };
 
-  // A cancelled job is gone for good: drop it from the list right away and
-  // delete the partial file so nothing is left behind.
-  if (job.status === 'queued' || job.status === 'paused') {
+  /* A cancelled job is gone for good: drop it from the list right away. */
+  const forget = () => {
     const index = queue.indexOf(job);
     if (index >= 0) queue.splice(index, 1);
+    job.status = 'cancelled';
+    job.completedAt = Date.now();
+    job.speed = 0;
     jobs.delete(job.id);
     scheduleSave(0);
-    await removePart();
+  };
+
+  if (job.status === 'queued' || job.status === 'paused') {
+    void removePart();
+    forget();
     return { id: job.id, status: 'cancelled', removed: true };
   }
 
-  if (job.status === 'downloading') {
-    job.status = 'cancelled';
-    job.completedAt = Date.now();
-    jobs.delete(job.id);
-    scheduleSave(0);
+  if (job.status === 'downloading' || job.status === 'cancelling') {
     try { job.controller?.abort(); } catch { /* already gone */ }
     if (job.ffmpeg) killTree(job.ffmpeg);
-    // The writer may still hold the file open on Windows; the abort handler
-    // retries the delete once the stream closes.
-    await removePart();
+    void removePart();
+    forget();
     return { id: job.id, status: 'cancelled', removed: true };
   }
 
@@ -1214,21 +1229,27 @@ async function resetTorrentDir(dir) {
  * string so the caller can try the next release.
  */
 async function attemptRelease(job, release, dir, controller) {
+  /* A resumed job keeps the bytes it already has. The folder still holds the
+   * pieces and aria2 continues from its own control file, so zeroing these
+   * numbers made a half-downloaded episode jump back to 0 %. */
+  const resuming = job.release?.name === release.name && Number(job.bytes) > 0;
   job.release = release;
   job.quality = release.quality;
   job.seeders = release.seeders;
   job.sourceLabel = releaseLabel(release);
   job.stage = 'metadata';
-  job.progressValue = 0.01;
-  job.bytes = 0;
-  job.total = Number(release.sizeBytes) || 0;
+  if (!resuming) {
+    job.bytes = 0;
+    job.progressValue = 0.01;
+    job.total = Number(release.sizeBytes) || 0;
+  }
   job.speed = 0;
   scheduleSave(0);
 
   const magnet = magnetFor(release);
   let file = null;
   try {
-    const files = await fetchTorrentFiles(magnet, { dir });
+    const files = await fetchTorrentFiles(magnet, { dir, signal: controller.signal });
     file = matchEpisodeFile(files, release.fileName, { season: job.season, episode: job.episode });
   } catch (err) {
     if (controller.signal.aborted) return 'aborted';
@@ -1238,6 +1259,12 @@ async function attemptRelease(job, release, dir, controller) {
 
   job.stage = 'downloading';
   job.total = Number(file.size) || job.total;
+  /* Bytes left over from a different file in this release cannot be shown
+   * against this file's size. */
+  if (Number(job.bytes) > job.total) job.bytes = 0;
+  if (resuming && job.total) {
+    job.progressValue = Math.min(0.8, (job.bytes / job.total) * 0.8);
+  }
   scheduleSave(0);
   let downloaded;
   try {
@@ -1248,12 +1275,15 @@ async function attemptRelease(job, release, dir, controller) {
       total: Number(file.size) || 0,
       signal: controller.signal,
       onProgress: ({ bytes, total, speed }) => {
-        job.bytes = bytes;
-        if (total) job.total = total;
+        const size = Number(total) || job.total || 0;
+        if (size > 0) job.total = size;
+        /* Piece granularity can make aria2 report a little more than the file
+         * holds; showing "11 GB of 2.3 GB" was the old bar doing exactly that. */
+        job.bytes = size > 0 ? Math.min(Number(bytes) || 0, size) : (Number(bytes) || 0);
         /* aria2 reports the live transfer rate; a zero means it is waiting on
          * peers, which is worth showing instead of a stale average. */
         job.speed = Number(speed) || 0;
-        job.progressValue = job.total ? Math.min(0.8, (bytes / job.total) * 0.8) : 0;
+        job.progressValue = job.total ? Math.min(0.8, (job.bytes / job.total) * 0.8) : 0;
         scheduleSave();
       },
     });
@@ -1406,6 +1436,7 @@ async function runTorrentJob(job) {
    * If that cannot finish, the same release gets one clean start. */
   const resumed = Boolean(job.resumed);
   job.resumed = false;
+  let retriedIndex = -1;
   let wipedIndex = -1;
   let firstAttempt = true;
 
@@ -1422,10 +1453,24 @@ async function runTorrentJob(job) {
       failures.push(outcome);
       console.warn(`[download] ${job.title}: ${outcome} — trying the next release`);
 
-      /* Resume can fail for reasons the crash left behind: a corrupt .aria2
-       * control file, a piece half-written to disk, a deleted temp folder.
-       * Wipe the leftovers and give this release one fresh attempt before
-       * falling through to the next candidate. */
+      /* A failure inside the transfer is often transient: the client was
+       * killed, the swarm hiccupped, the disk stalled. The first retry keeps
+       * every verified piece and continues at the byte it stopped on. Only if
+       * that fails again is the folder wiped and the release tried clean; after
+       * that it moves on. Wiping on the first failure was what turned one bad
+       * minute into an endless "restarting this release" loop. */
+      /* aria2 refuses to touch a payload whose .aria2 control file is gone, and
+       * a path it cannot open or create will fail the same way every time.
+       * Those two go straight to the clean folder instead of burning a retry. */
+      const needsClean = /control file\(\*\.aria2\) does not exist|Failed to open the file|Failed to make the directory/i.test(outcome);
+      if (retrySame && !needsClean && retriedIndex !== index) {
+        retriedIndex = index;
+        if (Number(job.bytes) > 0) {
+          console.warn(`[download] ${job.title}: retrying this release with its saved pieces`);
+          index--;
+          continue;
+        }
+      }
       if (retrySame && wipedIndex !== index) {
         wipedIndex = index;
         console.warn(`[download] ${job.title}: restarting this release from a clean folder`);
@@ -1444,12 +1489,15 @@ async function runTorrentJob(job) {
       ? `all ${failures.length} release(s) failed${detail}`
       : 'no Torrentio release had the original audio, English audio and subtitles');
   } catch (err) {
+    /* A paused job stays paused and a cancelled one is already gone from the
+     * list; neither may be rewritten as "failed" by the abort that stopped it. */
     if (job.status === 'paused') {
       job.stage = '';
       job.speed = 0;
       scheduleSave(0);
       return;
     }
+    if (job.status === 'cancelled') return;
     job.status = 'failed';
     job.stage = '';
     job.speed = 0;

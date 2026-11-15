@@ -202,9 +202,11 @@ function killTree(child) {
 
 /**
  * Spawn a child through proc.js and collect its output. The caller may pass
- * `onSpawn` to attach abort listeners before the first byte arrives.
+ * `onSpawn` to attach abort listeners before the first byte arrives, and
+ * `signal` so a pause or a cancel kills the child instead of letting it run
+ * until its own timeout (a magnet metadata fetch can sit there for 120 s).
  */
-function runCapture(cmd, args, { timeout = 0, onSpawn } = {}) {
+function runCapture(cmd, args, { timeout = 0, onSpawn, signal } = {}) {
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -223,8 +225,22 @@ function runCapture(cmd, args, { timeout = 0, onSpawn } = {}) {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
       fn(value);
     };
+
+    const onAbort = () => {
+      killTree(child);
+      finish(reject, abortError());
+    };
+    if (signal) {
+      if (signal.aborted) {
+        killTree(child);
+        resolve({ code: null, stdout: '', stderr: '' });
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
 
     child.stdout.on('data', (chunk) => {
       stdout = (stdout + chunk.toString()).slice(-MAX_CAPTURE);
@@ -346,39 +362,70 @@ async function newestTorrent(dir, known) {
 }
 
 /**
+ * A pause keeps the .torrent aria2c saved, so resuming must not spend two
+ * minutes asking the swarm for metadata it already has. The saved name is the
+ * info hash (40 hex chars), which the magnet carries; a single .torrent in the
+ * folder is accepted too, for base32 magnets whose stored name is hex.
+ */
+async function savedTorrent(dir, link) {
+  const names = (await fsp.readdir(dir).catch(() => []))
+    .filter((name) => name.toLowerCase().endsWith('.torrent'));
+  if (!names.length) return null;
+  const hash = /urn:btih:([a-z0-9]+)/i.exec(link)?.[1]?.toLowerCase() || '';
+  if (hash) {
+    const hit = names.find((name) => name.toLowerCase() === `${hash}.torrent`);
+    if (hit) return path.join(dir, hit);
+    /* Base32 magnets name the same torrent by its hex hash on disk. */
+    if (/^[a-z2-7]{32}$/i.test(hash) && names.length === 1) {
+      const only = path.join(dir, names[0]);
+      return isFile(only) ? only : null;
+    }
+  }
+  return null;
+}
+
+/**
  * Phase 1: fetch only the torrent metadata and return the numbered file table.
  * `dir` belongs to the caller; the .torrent aria2c writes is left in place.
  */
-export async function fetchTorrentFiles(magnet, { dir } = {}) {
+export async function fetchTorrentFiles(magnet, { dir, signal } = {}) {
   const link = String(magnet || '').trim();
   if (!link) throw new Error('a magnet link is required');
   if (!dir) throw new Error('a download directory is required');
+  if (signal?.aborted) throw abortError();
 
   await fsp.mkdir(dir, { recursive: true });
   const known = new Set(
     (await fsp.readdir(dir).catch(() => [])).filter((name) => name.toLowerCase().endsWith('.torrent')),
   );
 
-  const args = [
-    '--bt-metadata-only=true',
-    '--bt-save-metadata=true',
-    `--dir=${dir}`,
-    '--seed-time=0',
-    `--bt-tracker=${TRACKERS.join(',')}`,
-    link,
-  ];
+  /* Reuse the saved metadata when this transfer already fetched it. */
+  let torrent = await savedTorrent(dir, link);
+  if (!torrent) {
+    const args = [
+      '--bt-metadata-only=true',
+      '--bt-save-metadata=true',
+      `--dir=${dir}`,
+      '--seed-time=0',
+      `--bt-tracker=${TRACKERS.join(',')}`,
+      link,
+    ];
 
-  const meta = await runCapture(aria2cPath(), args, { timeout: METADATA_TIMEOUT_MS });
-  const torrent = await newestTorrent(dir, known);
+    const meta = await runCapture(aria2cPath(), args, { timeout: METADATA_TIMEOUT_MS, signal });
+    if (signal?.aborted) throw abortError();
+    torrent = await newestTorrent(dir, known);
 
-  if (meta.code !== 0) {
-    throw new Error(lastLine(meta.stderr) || `aria2c exited with code ${meta.code}`);
+    if (meta.code !== 0) {
+      throw new Error(lastLine(meta.stderr) || `aria2c exited with code ${meta.code}`);
+    }
   }
   if (!torrent) throw new Error('aria2c did not write a .torrent file');
 
   const listing = await runCapture(aria2cPath(), ['--show-files', torrent], {
     timeout: SHOW_FILES_TIMEOUT_MS,
+    signal,
   });
+  if (signal?.aborted) throw abortError();
   if (listing.code !== 0) {
     throw new Error(lastLine(listing.stderr) || `aria2c --show-files exited with code ${listing.code}`);
   }
@@ -653,12 +700,15 @@ export async function downloadTorrentFile({ magnet, file, dir, total = 0, onProg
             return;
           }
           /* Before the RPC server answers, the file size is the only signal.
-           * Once it has, an empty queue means the transfer is over. A slow
-           * disk can make the RPC miss a few polls while aria2 finalizes, so
-           * give it half a minute before stopping the client. */
+           * Once it has, an unanswered poll means aria2 is busy, and a busy
+           * disk makes that last a long time: a spinning G: drive answered
+           * nothing for 60 seconds during a library scan, and killing the
+           * client after 20 misses turned a healthy transfer into a retry.
+           * A transfer that really died is caught by the byte-progress stall
+           * check above, so wait a full minute here. */
           if (rpcSeen) {
             misses += 1;
-            if (misses >= 20) killTree(handle);
+            if (misses >= 60) killTree(handle);
             return;
           }
           try {

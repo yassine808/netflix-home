@@ -1648,8 +1648,8 @@ app.delete('/api/downloads/:id', async (req, res) => {
   res.json(job);
 });
 
-/* Stop the app. The single-file build has no tray icon, so this menu item is
- * the way to shut it down; only a loopback caller may use it. */
+/* Stop the app. The tray icon offers the same thing as Exit; only a loopback
+ * caller may use this. */
 app.post('/api/quit', (req, res) => {
   const remote = req.socket.remoteAddress || '';
   if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote)) {
