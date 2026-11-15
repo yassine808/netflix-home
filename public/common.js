@@ -135,11 +135,27 @@ export function decodesHevc() {
   return hevcDecode;
 }
 
+/* Does this browser open a Matroska file at all? Chromium answers "probably"
+ * for an MKV carrying H.264 + AAC; Firefox and Safari answer "", so the server
+ * must not keep a release .mkv for them - it remuxes to MP4 instead. */
+let matroskaPlayable = null;
+export function playsMatroska() {
+  if (matroskaPlayable !== null) return matroskaPlayable;
+  matroskaPlayable = false;
+  try {
+    const probe = document.createElement('video');
+    matroskaPlayable = probe.canPlayType('video/x-matroska; codecs="avc1.640028, mp4a.40.2"') !== '';
+  } catch {
+    matroskaPlayable = false;
+  }
+  return matroskaPlayable;
+}
+
 export async function startCastleDownload(body) {
   const res = await fetch('/api/castle/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...body, copyVideo: decodesHevc() }),
+    body: JSON.stringify({ ...body, copyVideo: decodesHevc(), mkv: playsMatroska() }),
   });
   if (!res.ok) {
     let payload = null;

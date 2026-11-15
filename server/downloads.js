@@ -808,8 +808,10 @@ export async function addTorrentDownload(body = {}) {
     year: Number(body.year) || 0,
     originalLanguage: text(body.originalLanguage),
     /* The client decodes HEVC in hardware, so the remux can copy the video
-     * instead of spending two minutes of GPU on it. */
+     * instead of spending two minutes of GPU on it. `mkv` says it also opens
+     * Matroska, which is what allows keeping the release file untouched. */
     copyVideo: body.copyVideo === true,
+    mkv: body.mkv !== false,
     poster: text(body.poster),
     targetDir,
     dest: '',
@@ -1265,7 +1267,11 @@ async function attemptRelease(job, release, dir, controller) {
   job.progressValue = 0.82;
   scheduleSave(0);
   const probe = await probeMedia(downloaded.path);
-  const picked = pickTracks(probe, { originalLanguage: job.originalLanguage, copyVideo: job.copyVideo === true });
+  const picked = pickTracks(probe, {
+    originalLanguage: job.originalLanguage,
+    copyVideo: job.copyVideo === true,
+    mkv: job.mkv !== false,
+  });
   if (picked.error) return `${release.name}: ${picked.reason || picked.error}`;
 
   const quality = qualityFromHeight(probe.video?.height, probe.video?.width) || release.quality;

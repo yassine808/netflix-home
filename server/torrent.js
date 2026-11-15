@@ -799,7 +799,7 @@ function langOf(track) {
  * Choose the streams worth keeping: an h264 video stream, the original
  * language plus English audio, and one text subtitle per language.
  */
-export function pickTracks(probe, { originalLanguage = '', copyVideo = false } = {}) {
+export function pickTracks(probe, { originalLanguage = '', copyVideo = false, mkv = true } = {}) {
   if (!probe || !probe.video) {
     return { error: 'no-video', reason: 'the file has no video stream' };
   }
@@ -870,18 +870,21 @@ export function pickTracks(probe, { originalLanguage = '', copyVideo = false } =
   }
 
   /* `direct` is the answer to "does this file need converting at all". The
-   * release's own .mkv plays in Chromium when the video needs no transcode and
-   * the first audio track is AAC: measured in Brave, an HEVC+AAC .mkv shows a
-   * frame after 1.03 s and seeks to 15:00 in 1.21 s, while the same file went
-   * through a 6.8 s remux only to produce something the browser already had.
-   * E-AC3/AC-3 is the one thing that cannot pass through: Chromium reports
-   * `canPlayType('audio/mp4; codecs="ec-3"')` as empty and decodes 0 bytes. */
+   * release's own .mkv plays in Chromium when the browser opens Matroska
+   * (`mkv`, the client's own canPlayType probe), the video needs no transcode
+   * and the first audio track is AAC: measured in Brave, an HEVC+AAC .mkv
+   * shows a frame after 1.03 s and seeks to 15:00 in 1.21 s, while the same
+   * file went through a 6.8 s remux only to produce something the browser
+   * already had. E-AC3/AC-3 is the one thing that cannot pass through:
+   * Chromium reports `canPlayType('audio/mp4; codecs="ec-3"')` as empty and
+   * decodes 0 bytes. */
   return {
     video,
     audio: selected,
     subtitles,
     warnings,
-    direct: !video.transcode
+    direct: mkv
+      && !video.transcode
       && (!selected.length || String(selected[0].codec || '').toLowerCase() === 'aac'),
   };
 }

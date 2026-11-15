@@ -1419,6 +1419,10 @@ app.post('/api/castle/download', async (req, res) => {
                  * was the difference between a 10 s container copy and a 66 s
                  * transcode of a 317 MB release. */
                 copyVideo: body.copyVideo === true,
+                /* And this one says the browser opens Matroska. Without it the
+                 * release is remuxed into MP4 even when its tracks would play
+                 * untouched (Firefox, Safari). */
+                mkv: body.mkv !== false,
               });
               break;
             } catch (err) {
