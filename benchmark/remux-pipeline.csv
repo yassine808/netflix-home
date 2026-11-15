@@ -1,0 +1,15 @@
+date,source,mode,run,exit,wall_s,speed_x,cpu_s,cpu_cores,gpu_pct,nvenc_pct,out_mb,notes
+2026-11-15,src10bit.mkv,cpu-decode+h264_nvenc-p4-cq21+aac-encode,1,0,39.71,2.30,67.90,1.71,32,63,78.7,bench-v2; old pipeline; machine in use
+2026-11-15,src10bit.mkv,cpu-decode+h264_nvenc-p4-cq21+aac-encode,2,0,36.31,2.50,67.50,1.86,29,64,78.7,bench-v2; old pipeline; machine in use
+2026-11-15,src10bit.mkv,nvdec+scale_cuda+h264_nvenc-p1-cq23+aac-copy,1,0,8.15,11.10,3.70,0.45,31,63,75.2,bench-v2; new pipeline; machine in use
+2026-11-15,src10bit.mkv,nvdec+scale_cuda+h264_nvenc-p1-cq23+aac-copy,2,0,7.20,12.50,3.30,0.46,35,74,75.2,bench-v2; new pipeline; machine in use
+2026-11-15,src10bit.mkv,nvdec+scale_cuda+h264_nvenc-p1-cq23+aac-copy,1,0,5.05,17.90,3.10,0.61,38,82,75.2,bench3; SSD; faststart
+2026-11-15,src10bit.mkv,nvdec+scale_cuda+h264_nvenc-p1-cq23+aac-copy-nofaststart,1,0,4.61,19.60,3.00,0.65,39,88,75.2,bench3; SSD; faststart costs 0.44 s
+2026-11-15,src10bit.mkv,nvdec+h264_nvenc-p1-cq23-no-scale-filter,1,-40,0.63,143.30,0.50,0.79,32,45,0.0,bench3; rejected: h264_nvenc will not take 10-bit input
+2026-11-15,src10bit.mkv,nvdec+scale_cuda+h264_nvenc-p1-tune-ll-cq23,1,0,4.87,18.50,2.90,0.60,37,80,76.7,bench3; tune ll: no gain
+2026-11-15,src10bit.mkv,nvdec+scale_cuda+h264_nvenc-p1-constqp23,1,0,4.67,19.30,2.90,0.62,39,83,53.2,bench3; smaller file same speed; quality not measured
+2026-11-15,src10bit.mkv,copy-hevc+hvc1-tag+aac-copy,1,0,0.64,141.00,0.40,0.62,26,26,40.0,bench3; SSD; faststart
+2026-11-15,src10bit.mkv,copy-hevc+hvc1-tag+aac-copy-nofaststart,1,0,0.66,136.80,0.30,0.45,27,26,40.0,bench3; SSD; no difference at 40 MB
+2026-11-15,src10bit.mkv,nvdec+scale_cuda+h264_nvenc-p1-cq23-fragmented-mp4,1,0,4.71,19.20,3.60,0.76,40,87,75.1,bench3; frag_keyframe+empty_moov: no gain over no faststart
+2026-11-15,src10bit.mkv,copy-hevc-VIDEO_COPY-env,1,0,1.24,72.80,0.50,0.42,19,25,40.0,bench-v2; earlier run of the same copy path
+2026-11-15,src10bit.mkv,copy-hevc-VIDEO_COPY-env,2,0,0.74,122.00,0.40,0.53,25,34,40.0,bench-v2; earlier run of the same copy path

@@ -1,0 +1,5 @@
+date,title,minutes,source_codec,pipeline,seconds,speed_x,notes
+2026-11-15,Cyberpunk Edgerunners S02E10,30,hevc,cpu-decode+h264_nvenc-p4+aac-encode,622.6,2.9,old pipeline before the NVDEC change
+2026-11-14,Peaky Blinders S06E03,55,hevc,cpu-decode+h264_nvenc-p4+aac-encode,505.0,6.6,pre-NVDEC deployed build
+2026-11-15 04:08,Cyberpunk Edgerunners S02E10,30,hevc,nvdec+scale_cuda+h264_nvenc-p1-cq23+aac-copy,138.6,13.1,new pipeline; logged "hardware decode"
+2026-11-15 04:30,Cyberpunk Edgerunners S01E03,25,h264,copy (no encode),254.2,6.1,ANOMALY: pure container copy of a 347 MB file should take seconds; under investigation

@@ -1,0 +1,98 @@
+[
+  {
+    "mode": "A-cur",
+    "run": 1,
+    "exit": 0,
+    "wall_s": 5.05,
+    "speed": 17.9,
+    "cpu_s": 3.1,
+    "cores": 0.61,
+    "gpu": 38.0,
+    "nvenc": 82.0,
+    "out_mb": 75.2
+  },
+  {
+    "mode": "B-cur-nofast",
+    "run": 1,
+    "exit": 0,
+    "wall_s": 4.61,
+    "speed": 19.6,
+    "cpu_s": 3.0,
+    "cores": 0.65,
+    "gpu": 39.0,
+    "nvenc": 88.0,
+    "out_mb": 75.2
+  },
+  {
+    "mode": "C-noscale",
+    "run": 1,
+    "exit": -40,
+    "wall_s": 0.63,
+    "speed": 143.3,
+    "cpu_s": 0.5,
+    "cores": 0.79,
+    "gpu": 32.0,
+    "nvenc": 45.0,
+    "out_mb": 0.0
+  },
+  {
+    "mode": "D-tune-ll",
+    "run": 1,
+    "exit": 0,
+    "wall_s": 4.87,
+    "speed": 18.5,
+    "cpu_s": 2.9,
+    "cores": 0.6,
+    "gpu": 37.0,
+    "nvenc": 80.0,
+    "out_mb": 76.7
+  },
+  {
+    "mode": "E-constqp",
+    "run": 1,
+    "exit": 0,
+    "wall_s": 4.67,
+    "speed": 19.3,
+    "cpu_s": 2.9,
+    "cores": 0.62,
+    "gpu": 39.0,
+    "nvenc": 83.0,
+    "out_mb": 53.2
+  },
+  {
+    "mode": "F-copy",
+    "run": 1,
+    "exit": 0,
+    "wall_s": 0.64,
+    "speed": 141.0,
+    "cpu_s": 0.4,
+    "cores": 0.62,
+    "gpu": 26.0,
+    "nvenc": 26.0,
+    "out_mb": 40.0
+  },
+  {
+    "mode": "G-copy-nofast",
+    "run": 1,
+    "exit": 0,
+    "wall_s": 0.66,
+    "speed": 136.8,
+    "cpu_s": 0.3,
+    "cores": 0.45,
+    "gpu": 27.0,
+    "nvenc": 26.0,
+    "out_mb": 40.0
+  },
+  {
+    "mode": "H-frag",
+    "run": 1,
+    "exit": 0,
+    "wall_s": 4.71,
+    "speed": 19.2,
+    "cpu_s": 3.6,
+    "cores": 0.76,
+    "gpu": 40.0,
+    "nvenc": 87.0,
+    "out_mb": 75.1
+  }
+]

@@ -1,0 +1,9 @@
+date,source,mode,run,exit,wall_s,mb_per_s,out_mb,notes
+2026-11-15,Cyberpunk Edgerunners S02E10 1080p.mp4 (1076 MB),plain-copy,1,0,11.65,184.8,1076.0,G: read+write; likely partly page-cached
+2026-11-15,Cyberpunk Edgerunners S02E10 1080p.mp4 (1076 MB),plain-copy,2,0,25.11,85.7,1076.0,G: read+write; cold-ish
+2026-11-15,Cyberpunk Edgerunners S02E10 1080p.mp4 (1076 MB),ffmpeg-copy-faststart,1,0,37.52,57.4,1076.0,faststart rewrites the whole output
+2026-11-15,Cyberpunk Edgerunners S02E10 1080p.mp4 (1076 MB),ffmpeg-copy-faststart,2,0,27.63,77.9,1076.0,faststart rewrites the whole output
+2026-11-15,Cyberpunk Edgerunners S02E10 1080p.mp4 (1076 MB),ffmpeg-copy-faststart,3,0,33.02,65.2,1076.0,repeat of the same mode
+2026-11-15,Cyberpunk Edgerunners S02E10 1080p.mp4 (1076 MB),ffmpeg-copy-faststart,4,0,28.00,76.9,repeat of the same mode
+2026-11-15,Cyberpunk Edgerunners S02E10 1080p.mp4 (1076 MB),ffmpeg-copy-nofaststart,1,0,18.32,117.5,1076.0,adopted: moov at the end
+2026-11-15,Cyberpunk Edgerunners S02E10 1080p.mp4 (1076 MB),ffmpeg-copy-nofaststart,2,0,17.29,124.5,1076.0,adopted: moov at the end
