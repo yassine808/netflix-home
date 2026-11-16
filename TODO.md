@@ -4,9 +4,17 @@
 
   *Not done - queueing a download still calls `openDownloads()` (`public/app.js:4013`, `4144`, `4981`).*
 
-- [ ] in idle screen add logo of the movie
+- [x] in idle screen add logo of the movie
 
-  *Not done - the pause screen draws the N badge and the backdrop, no title logo (`public/watch.html:135`).*
+  *Done - the paused screen draws `#idleLogo` from `/api/art/<id>/logo` and falls back to the text title when the title has no wordmark (`public/watch.html:138`, `public/watch.js:1505`).*
+
+- [x] add "skip intro" button if the movie have intro
+
+  *Done - `fromMoviesDb()` in `server/intro.js:233` asks IntroDB's movie segments, then TheIntroDB; the button only appears for a film one of them actually timed (The Matrix 0-40 s, Inception 0-38 s), and a `no_intro` flag or a window opening after 15 min drops it (Iron Man's sting is filed at 2 h 5 min).*
+
+- [ ] find a title the online catalogue does not carry (Hidden Love, 2023)
+
+  *Not done - Castle search for "hidden love" returns 462 loose matches and none is the drama (the channel parameter is ignored, every value answers the same catalogue), so there is no Castle id to open or queue. A Cinemeta search plus the existing Torrentio ranking would download it without Castle.*
 
 - [x] add player drag preview frames
 

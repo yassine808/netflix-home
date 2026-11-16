@@ -569,3 +569,19 @@
 - Verified (build): `node --check` clean on `downloads.js`, `torrentio.js`, `watch.js`, `app.js`; new EXE build `42b9fe757027f328` smoke-run from `dist` on port 3102 answered `/api/downloads` 200 and served `epSeasonMenu`, `is-missing`, `ep-season-menu` and `Converting audio`.
 - Deployed: `deploy.ps1` copied 259.2 MB to `G:\NETFLIX`, the EXE was relaunched (PID 63012) and `launcher.log` reports `restored 9 job(s), 7 queued, 0 paused`.
 - Next: the 7 Breaking Bad jobs disappeared from the queue at 13:27:44 with no log line - only a per-job cancel deletes an active job without logging, so this looks like "Cancel all" in the drawer. Needs Yassine to confirm; the `.cache\torrent` pieces went with them.
+
+### 2026-11-16 (afternoon, sixteenth pass) - the paused screen wears the catalogue wordmark
+- Goal: the home cards and the hero already draw the official wordmark; the player's idle card still printed the plain title name.
+- Done: `#idleLogo` sits beside the heading (`public/watch.html:138`); `.idle-logo` is hidden until the image fires `load`, then `.idle-title.has-logo` hides the text heading (`public/watch.css`); `setIdleLogo()` (`public/watch.js:1505`) asks `/api/art/<id>/logo` once when the player boots, not when the pause card opens, so the swap costs no flash, and drops the image on 404 so a title with no logo keeps its heading. The stagger delays were renumbered for the extra child.
+- Verified: CDP against the deployed EXE - Peaky Blinders (series) and Spirited Away (film) both show the wordmark on pause, and the 404 fallback keeps the text heading.
+- Deployed + committed: `npm run deploy` (259.2 MB), commit `f106740`.
+- Next: none.
+
+### 2026-11-16 (afternoon, seventeenth pass) - Skip Intro for films that actually have one
+- Goal: "add skip intro button if the movie have intro" - and only then. Yassine chose strict mode: a real timing or no button, never a guessed window over the cold open.
+- Done (server): `server/intro.js` keeps the series route untouched and adds a film branch. After the sidecar, the cached marker and the ffprobe chapters, `fromMoviesDb()` asks IntroDB's movie segments (`/segments?imdb_id=&is_movie=true`, keyless) and then TheIntroDB (`/v2/media?imdb_id=`). A null start counts as 0 because a film's logos open the picture; `no_intro: true` means the community knows there is nothing to skip; a window that opens after `MOVIE_INTRO_LIMIT` (900 s) is a mislabelled scene, not an intro; a confidence under 0.5 is rejected. Markers are cached with the database they actually came from.
+- Verified (resolver, temp `initIntro` dir): The Matrix 0-40 s `theintrodb`, Inception 0-38 s, Interstellar 0-53 s, A Quiet Place and Spirited Away nothing, Iron Man nothing (its sting is filed at 7512-7545 s and is dropped), Cyberpunk S01E01 nothing (`no_intro: true`), S01E02 71-161 s `introdb`, S01E03 5.7-95.6 s.
+- Verified (live): a 60 s black fixture at `G:\NETFLIX\Movies\_introtest\The Matrix (1999) 1080p.mp4` answered `/api/intro/...` with `{"startSec":0,"endSec":40,"source":"theintrodb"}` in 1010 ms on the deployed EXE. In the player over CDP the button was up at 20 s (fill 52.6%), a click seeked to 41.2 s and hid it, it stayed hidden at 51 s, and it came back when the playhead was rewound to 6 s. A Quiet Place - the control with no timing anywhere - never showed it at 4, 16 or 46 s.
+- Cleanup: the fixture folder was deleted, the library is back to 34 titles and no `intro` row mentions it.
+- Deployed: build `3487ce3eb9c5ee6d`, 259.2 MB; the EXE was relaunched with the queue restored.
+- Next: coverage is data-dependent - none of Yassine's three films has a timing, so no film in the library shows the button yet. A `<name>.intro.json` sidecar fixes any title in seconds; otherwise the button waits for a community submission.

@@ -10,10 +10,18 @@ const CHAPTER_INTRO = /\b(intro|opening|opening credits|main title|recap)\b/i;
 const chapterCache = new Map();
 
 /* IntroDB (https://api.introdb.app) is a free, keyless, community-run database
- * of intro timestamps. It returns real start/end times for a series episode,
- * which is what the player needs to offer "Skip Intro" at the right moment. */
+ * of intro timestamps. It returns real start/end times for a series episode or
+ * a film, which is what the player needs to offer "Skip Intro" at the right
+ * moment. TheIntroDB (https://api.theintrodb.org) carries the same windows for
+ * films IntroDB has no submission for; its null start means "from the first
+ * frame", which is exactly where a film's studio logos sit. */
 const INTRODB_BASE = 'https://api.introdb.app';
+const THEINTRODB_BASE = 'https://api.theintrodb.org';
 const INTRODB_TIMEOUT = 8000;
+/* A film's intro is the studio logos and title sequence, so it opens near the
+ * first frame. A window that starts later is a mislabelled scene (Iron Man's
+ * sting is filed at 2 h 5 min), not an intro: the button is not offered for it. */
+const MOVIE_INTRO_LIMIT = 900;
 const lookupCache = new Map();
 
 let cacheFile = null;
@@ -126,7 +134,8 @@ async function fromChapters(item, full) {
 }
 
 async function fromIntroDb(item) {
-  if (!item.isSeries || isOffline()) return null;
+  if (isOffline()) return null;
+  if (!item.isSeries) return fromMoviesDb(item);
   const season = Number(item.season) || 0;
   const episode = Number(item.episode) || 0;
   if (!season || !episode) return null;
@@ -161,6 +170,85 @@ async function fromIntroDb(item) {
   return promise;
 }
 
+/* Film intro window: a null start counts as 0 (the logos open the picture), and
+ * a window that begins too late is a scene, not an intro. */
+function movieWindow(start, end, duration, confidence) {
+  const value = normalize(start ?? 0, end, duration);
+  if (!value) return null;
+  if (value.startSec > MOVIE_INTRO_LIMIT) return null;
+  if (confidence != null && Number(confidence) < 0.5) return null;
+  return value;
+}
+
+async function fromIntroDbMovie(imdbId, item) {
+  try {
+    const url = `${INTRODB_BASE}/segments?imdb_id=${encodeURIComponent(imdbId)}&is_movie=true`;
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(INTRODB_TIMEOUT),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    // The community confirmed this film has no intro: there is nothing to skip.
+    if (data?.no_intro) return null;
+    const intro = data?.intro;
+    if (!intro || intro.end_ms == null) return null;
+    return movieWindow(
+      intro.start_ms == null ? 0 : Number(intro.start_ms) / 1000,
+      Number(intro.end_ms) / 1000,
+      item.durationSec,
+      intro.confidence,
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function fromTheIntroDbMovie(imdbId, item) {
+  try {
+    const url = `${THEINTRODB_BASE}/v2/media?imdb_id=${encodeURIComponent(imdbId)}`;
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(INTRODB_TIMEOUT),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const intro = Array.isArray(data?.intro)
+      ? data.intro.find((segment) => segment && segment.end_ms != null)
+      : null;
+    if (!intro) return null;
+    return movieWindow(
+      intro.start_ms == null ? 0 : Number(intro.start_ms) / 1000,
+      Number(intro.end_ms) / 1000,
+      item.durationSec,
+      null,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/* Films have no season, so their windows are keyed per title and asked of both
+ * community databases before the button is dropped. */
+async function fromMoviesDb(item) {
+  const imdbId = await resolveImdbId(item);
+  if (!imdbId) return null;
+
+  const key = `${imdbId}:movie`;
+  if (lookupCache.has(key)) return lookupCache.get(key);
+
+  const promise = (async () => {
+    const introdb = await fromIntroDbMovie(imdbId, item);
+    if (introdb) return { ...introdb, source: 'introdb' };
+    const theintrodb = await fromTheIntroDbMovie(imdbId, item);
+    if (theintrodb) return { ...theintrodb, source: 'theintrodb' };
+    return null;
+  })();
+
+  lookupCache.set(key, promise);
+  return promise;
+}
+
 export async function getIntroMarkers(item, full) {
   const sidecar = readSidecar(full);
   if (sidecar) return { ...sidecar, source: 'sidecar' };
@@ -177,8 +265,9 @@ export async function getIntroMarkers(item, full) {
   const detected = await fromIntroDb(item);
   if (detected) {
     // Keep it on disk so an offline play still gets the same window.
-    saveIntroMarkers(item, detected.startSec, detected.endSec, 'introdb');
-    return { ...detected, source: 'introdb' };
+    const source = detected.source || 'introdb';
+    saveIntroMarkers(item, detected.startSec, detected.endSec, source);
+    return { ...detected, source };
   }
 
   // No reliable window: show no button rather than skipping the cold open.
