@@ -10,7 +10,7 @@ import { initDb, dbStats, analyzeDb, purgeOrphans, maybeVacuum,
 } from './db.js';
 import { notePlayback, playbackActive } from './proc.js';
 import { initCache, scanLibrary, getLibrary, getItem, resolveItemFile,
-  ensureThumb, artPath, isScanning,
+  refreshItem, ensureThumb, artPath, isScanning,
 } from './library.js';
 import { initArtwork, officialArt, cachedArt, artWidth, sizedArt, warmArtwork } from './artwork.js';
 import {
@@ -1034,8 +1034,13 @@ app.get('/api/art/:id/:kind', async (req, res) => {
   return sendArt(req, res, art, true);
 });
 
-app.get('/api/item/:id', (req, res) => {
-  const item = getItem(req.params.id);
+app.get('/api/item/:id', async (req, res) => {
+  let item = null;
+  try {
+    item = await refreshItem(req.params.id);
+  } catch {
+    item = getItem(req.params.id);
+  }
   if (!item) return res.status(404).json({ error: 'not found' });
   const { posterPath, backdropPath, ...safe } = item;
   res.json({ ...safe, hasPoster: Boolean(posterPath), hasBackdrop: Boolean(backdropPath) });

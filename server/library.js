@@ -548,6 +548,53 @@ export function resolveItemFile(id) {
   return { item, full };
 }
 
+/* The player fetched one item right before it opened the stream, so this is the
+ * moment the catalog has to be right. A repair, a re-download or a remux can
+ * replace the file between two folder scans; re-probe when size or mtime moved,
+ * so the player never trusts the old duration or colour range. */
+export async function refreshItem(id) {
+  const item = itemsById.get(id);
+  if (!item) return null;
+  const rel = relFromId(id);
+  if (!rel) return item;
+  const base = path.resolve(library.root);
+  const full = path.resolve(base, rel);
+  if (!full.toLowerCase().startsWith(base.toLowerCase() + path.sep)) return item;
+
+  let stat;
+  try {
+    stat = await fsp.stat(full);
+  } catch {
+    return item;
+  }
+  const size = stat.size;
+  const mtime = Math.round(stat.mtimeMs);
+  if (size === Number(item.size) && mtime === Number(item.mtime)) return item;
+
+  const probed = await probe(full);
+  Object.assign(item, {
+    size,
+    mtime,
+    durationSec: probed.durationSec,
+    width: probed.width,
+    height: probed.height,
+    videoCodec: probed.videoCodec,
+    audioCodec: probed.audioCodec,
+    colorRange: probed.colorRange || null,
+  });
+  const db = getDb();
+  if (db) {
+    try {
+      db.prepare(`UPDATE items SET size = ?, mtime = ?, payload = ?, updated_at = ? WHERE id = ?`)
+        .run(size, mtime, JSON.stringify(item), Date.now(), item.id);
+    } catch {
+      /* the next folder scan rewrites the row */
+    }
+  }
+  library = { ...library, updatedAt: Date.now() };
+  return item;
+}
+
 /* ---------- thumbnails ---------- */
 
 /* Frame picking, the picture database (pictures.db) and the JPEG files all

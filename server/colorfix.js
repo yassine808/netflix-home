@@ -122,7 +122,7 @@ export function prioritizeColorFix(relPath, title) {
   save();
 
   const rest = queue.filter((entry) => entry.relPath !== wanted);
-  queue = [{ relPath: wanted, title: label }, ...rest];
+  queue = [{ relPath: wanted, title: label, priority: true }, ...rest];
   pump();
   return true;
 }
@@ -142,9 +142,11 @@ function enqueue(entry) {
 function pump() {
   if (retryTimer) return;
   while (jobs.length < MAX_PARALLEL && queue.length) {
-    if (playbackActive()) {
-      /* Nothing new starts while something plays; a repair already running is
-       * allowed to finish, since it only replaces files it is not streaming. */
+    if (playbackActive() && !queue[0].priority) {
+      /* Nothing new starts while something plays, with one exception: the file
+       * the viewer just opened. That is the one being watched through the wrong
+       * colours, and the swap is a rename an open player survives (it reopens
+       * the stream when the file version changes). Everything else waits. */
       if (!jobs.length) {
         retryTimer = setTimeout(() => {
           retryTimer = null;
