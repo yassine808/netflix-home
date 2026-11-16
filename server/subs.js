@@ -308,11 +308,16 @@ export async function ensureEnglishSubtitle(full, item = {}) {
   const stem = full.slice(0, full.length - path.extname(full).length);
   const target = `${stem}.en.vtt`;
   const durationSec = await videoDurationSec(full, item);
-  const enough = durationSec > 0 ? durationSec * 0.9 : 0;
-  // A dialogue track keeps a cue every few seconds; a forced track (foreign
-  // dialogue only) can span the whole episode with a few dozen lines, which an
-  // end-time check alone happily accepts.
-  const enoughCues = durationSec > 0 ? Math.max(24, durationSec / 20) : 0;
+  /* 90 % of the container was too strict: a feature's last line lands before
+   * the end credits start, so a correct track on an 87-minute file (credits
+   * from 80:35, last line 77:12) ends at 89 % and was thrown away - and the
+   * replacement fetched for it was timed to another cut. 85 % still rejects the
+   * first half of a two-CD rip (it stops at 50 %). */
+  const enough = durationSec > 0 ? durationSec * 0.85 : 0;
+  /* A cue every 20 s is a talkative film; A Quiet Place legitimately carries
+   * 137 in 87 minutes. A forced track (foreign dialogue only) is a few dozen
+   * lines for the whole runtime, so one cue a minute still tells them apart. */
+  const enoughCues = durationSec > 0 ? Math.max(24, durationSec / 60) : 0;
 
   /* An existing sidecar is only good while it covers the video and carries a
    * real dialogue track. The old check was "any file bigger than 40 bytes is
