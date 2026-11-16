@@ -1432,7 +1432,7 @@ async function attemptRelease(job, release, dir, controller) {
     const speed = durationSec ? `${(durationSec / Math.max(seconds, 0.001)).toFixed(1)}x realtime` : 'duration unknown';
     console.log(direct
       ? `[download] ${job.title}: kept ${probe.video?.codec || 'video'}+aac as ${extension} in ${seconds.toFixed(1)} s (no conversion, ${speed})`
-      : `[download] ${job.title}: remuxed ${(durationSec / 60).toFixed(0)} min to H.264 in ${seconds.toFixed(1)} s (${speed})`);
+      : `[download] ${job.title}: remuxed ${(durationSec / 60).toFixed(0)} min to ${probe.video?.transcode ? 'H.264' : (probe.video?.codec || 'video').toUpperCase()} in ${seconds.toFixed(1)} s (${speed})`);
   }
 
   /* Install the episode before touching subtitles. A season pack carries 30+
