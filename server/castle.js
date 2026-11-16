@@ -919,11 +919,16 @@ function persistTitle(title) {
 /* The sheet persists only the season it showed, so opening a series must also
  * pull every other season. One fetch per missing season, merged into the saved
  * row, ensures the offline catalogue has the whole episode list and artwork
- * before the viewer ever scrolls to that tab. */
+ * before the viewer ever scrolls to that tab.
+ *
+ * `refresh: true` is the seven-day pass: every season is fetched again (the
+ * active one already came with the base row) instead of only the empty ones, so
+ * episode names, durations and new episodes are updated too. A season Castle
+ * fails on keeps whatever is already saved; nothing is deleted either way. */
 const seasonFills = new Map();
 
-function fillAllSeasons(id) {
-  const key = String(id);
+function fillAllSeasons(id, { refresh = false } = {}) {
+  const key = `${String(id)}:${refresh ? 'refresh' : 'fill'}`;
   if (seasonFills.has(key)) return seasonFills.get(key);
   const task = (async () => {
     let saved = getCastleTitleSaved(id);
@@ -946,8 +951,11 @@ function fillAllSeasons(id) {
       }
     }
     if (!saved?.seasons?.length) return saved;
+    const active = saved.activeSeason;
     for (const row of saved.seasons) {
-      if (row.filled || row.episodes?.length) continue;
+      const complete = Boolean(row.filled || row.episodes?.length);
+      if (!refresh && complete) continue;
+      if (refresh && row.season === active) continue;
       try {
         const fresh = await fetchTitle(id, row.season);
         saved = mergeTitle(getCastleTitleSaved(id) || saved, fresh);
@@ -998,23 +1006,22 @@ export async function getCastleTitle(id, { season, refresh = false } = {}) {
   }
 }
 
-/* Sync: refetch the base row and every season, then merge without dropping
- * values Castle left empty. Returns the saved payload and the fresh one-side
- * copy for change detection. */
+/* Sync: refetch the base row, then let `fillAllSeasons` refresh every season
+ * through the same loop the sheet uses. The base row is persisted before the
+ * season pass, so a season that fails keeps the saved copy instead of losing
+ * the whole refresh. Returns the saved payload and the fresh base for change
+ * detection. */
 export async function refreshCastleTitle(id) {
   if (!isCastleId(id)) throw httpError('invalid castle id', 400);
   const before = getCastleTitleSaved(id);
   const first = await fetchTitle(id);
-  let merged = mergeTitle(before, first);
-  for (const row of first.seasons || []) {
-    if (row.season === first.activeSeason) continue;
-    const detail = await fetchTitle(id, row.season);
-    merged = mergeTitle(merged, detail);
-  }
+  const merged = mergeTitle(before, first);
   merged.fetchedAt = Date.now();
   persistTitle(merged);
-  const images = await warmCastleMedia(merged);
-  return { before, title: merged, fresh: first, images };
+  await fillAllSeasons(id, { refresh: true });
+  const title = getCastleTitleSaved(id) || merged;
+  const images = await warmCastleMedia(title);
+  return { before, title, fresh: first, images };
 }
 
 /* Every season with its full episode list, from the saved row when possible.

@@ -30,7 +30,7 @@ import {
   isCastleId, castleArt, castleEpisodeArt, castleEpisodeArtForSeries, castleTrailerItem,
   savedCastleTitles, backfillSavedCastle,
 } from './castle.js';
-import { castleSyncStatus, startCastleSync } from './castle-sync.js';
+import { castleSyncStatus, startCastleSync, startCastleSyncIfDue, scheduleCastleSync } from './castle-sync.js';
 import { initSettings, getSettings, isOffline, setOffline, isCastleFallback, setCastleFallback,
   setAutoplaySound, setDownloadLimits } from './settings.js';
 import { initConfig, getLibraryRootSetting, setLibraryRootSetting } from './config.js';
@@ -1868,10 +1868,20 @@ function listen(port, attempt = 0) {
     // Serve the saved index immediately; verify folder mtimes in the background
     // and let the watcher take it from there.
     setTimeout(() => refreshLibrary('startup'), 1200).unref?.();
-    // Fill any season or picture the saved catalogue is still missing, so a
-    // later offline run shows every episode for every title, not only the ones
-    // opened since the fix. Quiet and sequential; boot does not wait for it.
-    if (!isOffline()) setTimeout(() => backfillSavedCastle().catch(() => {}), 8000).unref?.();
+    // Fill any season or picture the saved catalogue is still missing, then
+    // run the seven-day refresh when the stored timestamp says it is due.
+    // Both are background work; boot never waits for either.
+    if (!isOffline()) {
+      setTimeout(() => {
+        backfillSavedCastle()
+          .catch(() => {})
+          .finally(() => { startCastleSyncIfDue({ reason: 'boot' }); });
+      }, 8000).unref?.();
+    }
+    // An app left open for weeks still refreshes: the hourly check reads the
+    // same timestamp and stays silent until it is seven days old. It skips
+    // offline without touching the timestamp.
+    scheduleCastleSync();
     watchLibrary();
   });
 

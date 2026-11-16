@@ -165,6 +165,15 @@ CREATE TABLE IF NOT EXISTS castle_titles (
 CREATE INDEX IF NOT EXISTS castle_titles_series ON castle_titles(series_key);
 CREATE INDEX IF NOT EXISTS castle_titles_search ON castle_titles(search_key);
 
+/* When the last complete Castle refresh finished. One row, so a launch can
+ * decide whether the seven-day window is open without any network call. The
+ * row is never deleted: no row simply means "never synced". */
+CREATE TABLE IF NOT EXISTS castle_sync (
+  id TEXT PRIMARY KEY,
+  last_sync_at INTEGER NOT NULL,
+  result TEXT
+);
+
 /* Castle artwork downloaded through the server. The address is the upstream
  * CDN location; the blob is the saved copy. Rows exist as soon as a title is
  * saved, even before the bytes arrive, so the art route knows where to fetch
@@ -415,6 +424,46 @@ export function castleTitleCount() {
     return db.prepare('SELECT COUNT(*) AS n FROM castle_titles').get()?.n || 0;
   } catch {
     return 0;
+  }
+}
+
+const CASTLE_SYNC_KEY = 'castle';
+
+/* Timestamp of the last completed refresh pass, 0 when the saved catalogue
+ * was never refreshed. It is the only input the seven-day rule reads, so it
+ * has to survive a restart: a module variable would reset on every launch and
+ * refresh the whole catalogue each time. */
+export function getCastleSyncState() {
+  if (!db) return { lastSyncAt: 0, result: null };
+  try {
+    const row = db.prepare('SELECT last_sync_at, result FROM castle_sync WHERE id = ?')
+      .get(CASTLE_SYNC_KEY);
+    if (!row) return { lastSyncAt: 0, result: null };
+    let result = null;
+    try {
+      result = row.result ? JSON.parse(row.result) : null;
+    } catch {
+      result = null;
+    }
+    return { lastSyncAt: Number(row.last_sync_at) || 0, result };
+  } catch {
+    return { lastSyncAt: 0, result: null };
+  }
+}
+
+export function putCastleSyncState({ lastSyncAt, result = null } = {}) {
+  if (!db) return null;
+  const at = Number(lastSyncAt) || Date.now();
+  try {
+    db.prepare(`INSERT INTO castle_sync (id, last_sync_at, result)
+      VALUES (?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        last_sync_at = excluded.last_sync_at,
+        result = excluded.result`)
+      .run(CASTLE_SYNC_KEY, at, result ? JSON.stringify(result) : null);
+    return { lastSyncAt: at, result };
+  } catch {
+    return null;
   }
 }
 
