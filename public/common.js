@@ -228,6 +228,18 @@ export async function setCastleFallback(castleFallback) {
   return res.json();
 }
 
+/* Torrentio quality switch: '1080p' keeps files small, '2160p' accepts 4K
+ * releases only. The server filters with it, so the answer is authoritative. */
+export async function setTorrentQuality(quality) {
+  const res = await fetch('/api/settings/torrent-quality', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quality: String(quality || '') }),
+  });
+  if (!res.ok) throw new Error(`torrent quality ${res.status}`);
+  return res.json();
+}
+
 /* The folder the app scans. Saved beside the app, because the catalog, the
  * artwork cache and the download queue all live inside the library itself —
  * the answer says whether a restart is still needed (`libraryRootPending`). */

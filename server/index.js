@@ -32,7 +32,7 @@ import {
 } from './castle.js';
 import { castleSyncStatus, startCastleSync, startCastleSyncIfDue, scheduleCastleSync } from './castle-sync.js';
 import { initSettings, getSettings, isOffline, setOffline, isCastleFallback, setCastleFallback,
-  setAutoplaySound, setDownloadLimits } from './settings.js';
+  setAutoplaySound, setDownloadLimits, getTorrentQuality, setTorrentQuality } from './settings.js';
 import { initConfig, getLibraryRootSetting, setLibraryRootSetting } from './config.js';
 import { initFrames, frameMeta, ensureSprite } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
@@ -350,6 +350,17 @@ app.post('/api/settings/castle-fallback', (req, res) => {
     return res.status(400).json({ error: 'pass {"castleFallback": true|false}' });
   }
   res.json(setCastleFallback(req.body.castleFallback));
+});
+
+/* Torrentio quality switch. '1080p' keeps downloads small; '2160p' accepts 4K
+ * releases only. Enforced in planTorrentRelease, so a stale open sheet cannot
+ * slip the other quality through. */
+app.post('/api/settings/torrent-quality', (req, res) => {
+  const quality = String(req.body?.quality || '').toLowerCase();
+  if (quality !== '1080p' && quality !== '2160p') {
+    return res.status(400).json({ error: 'pass {"quality": "1080p"|"2160p"}' });
+  }
+  res.json(setTorrentQuality(quality));
 });
 
 /* Sound default for the trailers the app starts by itself: the hero preview and
@@ -1299,7 +1310,7 @@ function sendCastleImage(req, res, row) {
 }
 
 app.get('/api/castle/art/:id/:kind', async (req, res) => {
-  const kind = req.params.kind === 'poster' ? 'poster' : req.params.kind === 'backdrop' ? 'backdrop' : '';
+  const kind = ['poster', 'backdrop', 'logo'].includes(req.params.kind) ? req.params.kind : '';
   if (!kind || !isCastleId(req.params.id)) return res.status(404).end();
   try {
     sendCastleImage(req, res, await castleArt(req.params.id, kind));
@@ -1395,13 +1406,20 @@ app.get('/api/releases', async (req, res) => {
   const episode = Number(req.query.episode) || 0;
   try {
     const streams = await findReleases({ imdbId, isSeries, season, episode });
+    /* ?quality= lets the inspector show what the other setting would pick
+     * without flipping it; the downloader itself reads the saved setting. */
+    const quality = ['1080p', '2160p'].includes(String(req.query.quality || ''))
+      ? String(req.query.quality)
+      : getTorrentQuality();
     const ranked = rankReleases(streams, {
       originalLanguage: String(req.query.original || ''),
       copyVideo: req.query.copyVideo === 'true' || req.query.copyVideo === '1',
+      quality,
     });
     res.setHeader('Cache-Control', 'no-store');
     res.json({
       imdbId,
+      quality,
       streams: streams.length,
       count: ranked.length,
       releases: ranked.slice(0, 15).map((release) => ({
@@ -1487,7 +1505,9 @@ app.get('/api/castle/plan', async (req, res) => {
     }
 
     const rows = await eachLimit(episodes, 4, async (episode) => {
-      const key = `${imdbId}:${season}:${episode}:${original}:${copyVideo ? 'copy' : 'transcode'}`;
+      /* The quality setting is part of the key: a sheet opened before the
+       * switch must not keep labelling 1080p rows after it moves to 2160p. */
+      const key = `${imdbId}:${season}:${episode}:${original}:${copyVideo ? 'copy' : 'transcode'}:${getTorrentQuality()}`;
       const plan = cachedPlan(key);
       if (plan) {
         const { release } = plan;
@@ -1551,7 +1571,10 @@ app.get('/api/castle/plan', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({
       source: rows.some((row) => row?.quality) ? 'torrentio' : 'castle',
-      fallback: isCastleFallback(),
+      /* Castle's fallback is 720p, which is not a fallback for a 2160p-only
+       * setting; the sheet then says "Torrentio only" instead of promising a
+       * download that the route will refuse. */
+      fallback: isCastleFallback() && getTorrentQuality() !== '2160p',
       partial: rows.some((row) => row?.failed),
       failedEpisodes: rows.filter((row) => row?.failed).map((row) => row.episode),
       imdbId,
@@ -1651,10 +1674,15 @@ app.post('/api/castle/download', async (req, res) => {
 
     /* Torrentio-only mode: nothing above produced a job, so say so instead of
      * quietly downloading Castle's 720p file. An explicit source: 'castle'
-     * request (tests, deep links) still means Castle. */
-    if (!isCastleFallback() && body.source !== 'castle') {
+     * request (tests, deep links) still means Castle. The 2160p setting is the
+     * same kind of rule: Castle has no 4K file, so falling back would download
+     * a quarter of the detail that was asked for. */
+    const wants4K = getTorrentQuality() === '2160p';
+    if ((!isCastleFallback() || wants4K) && body.source !== 'castle') {
       return res.status(409).json({
-        error: 'no Torrentio release with English audio and Castle fallback is off',
+        error: wants4K
+          ? 'no 2160p Torrentio release for this title; Castle has no 4K file, so nothing was downloaded'
+          : 'no Torrentio release with English audio and Castle fallback is off',
       });
     }
 

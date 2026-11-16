@@ -53,6 +53,34 @@ function Open-App {
     Start-Process "http://localhost:$Port"
 }
 
+# Windows has no API for "keep this icon out of the overflow": the switch is
+# stored per exe under HKCU\Control Panel\NotifyIconSettings as IsPromoted.
+# Explorer creates that key when the icon is added, so the flag is written just
+# before the icon appears - an entry left from an earlier run is promoted, and a
+# fresh one starts promoted because the value is there before the first add.
+# The 3 s watchdog re-checks it: Explorer rewrites the key on its own schedule.
+function Set-TrayPromoted {
+    param([string]$ExePath)
+    if (-not $ExePath) { return 0 }
+    $root = 'HKCU:\Control Panel\NotifyIconSettings'
+    if (-not (Test-Path -LiteralPath $root)) { return 0 }
+    $written = 0
+    foreach ($key in Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue) {
+        $props = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
+        if (-not $props -or $props.ExecutablePath -ne $ExePath) { continue }
+        if ($props.IsPromoted -eq 1) { continue }
+        New-ItemProperty -LiteralPath $key.PSPath -Name 'IsPromoted' `
+            -Value 1 -PropertyType DWord -Force | Out-Null
+        $written += 1
+    }
+    return $written
+}
+
+$exePath = ''
+if ($ServerPid -gt 0) {
+    try { $exePath = (Get-Process -Id $ServerPid -ErrorAction Stop).Path } catch { $exePath = '' }
+}
+
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $iconObject = $null
 if ($Icon -and (Test-Path -LiteralPath $Icon)) {
@@ -62,6 +90,8 @@ if ($Icon -and (Test-Path -LiteralPath $Icon)) {
     $notify.Icon = [System.Drawing.SystemIcons]::Application
 }
 $notify.Text = $Title
+# Always outside the overflow, whatever the user last chose in Settings.
+Set-TrayPromoted $exePath
 $notify.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
@@ -127,6 +157,7 @@ $exitItem.add_Click({
 # gone, and an icon that disappears then is worse than one that lingers 3 s.
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 3000
+$lastReAdd = [datetime]::MinValue
 $timer.add_Tick({
     $gone = $false
     if ($ServerPid -gt 0) {
@@ -141,6 +172,17 @@ $timer.add_Tick({
     if ($gone) {
         $notify.Visible = $false
         [System.Windows.Forms.Application]::Exit()
+        return
+    }
+    # Still running: keep the icon out of the overflow. The setting is applied
+    # when Explorer adds the icon, so a re-added value gets a re-add - throttled
+    # so a stubborn key cannot make the icon blink.
+    if ((Set-TrayPromoted $exePath) -gt 0) {
+        if (((Get-Date) - $lastReAdd).TotalSeconds -gt 20) {
+            $lastReAdd = Get-Date
+            $notify.Visible = $false
+            $notify.Visible = $true
+        }
     }
 })
 $timer.Start()

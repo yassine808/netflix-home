@@ -6,7 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { spawnNice } from './proc.js';
 import { ensureEnglishSubtitle, retimeEnglishSidecar, vttFromSubtitle } from './subs.js';
-import { getDownloadMaxActive, getDownloadLimitMBps } from './settings.js';
+import { getDownloadMaxActive, getDownloadLimitMBps, getTorrentQuality } from './settings.js';
 import { findReleases, rankReleases, magnetFor, releaseLabel } from './torrentio.js';
 import {
   fetchTorrentFiles, matchEpisodeFile, downloadTorrentFile,
@@ -791,6 +791,9 @@ export async function addHlsDownload(body = {}) {
 /* ---------- Torrentio releases (Castle metadata, BitTorrent video) ---------- */
 
 const MAX_CANDIDATES = 4;
+/* The two qualities the downloader understands. A 4K file is 4-7x the size of
+ * a 1080p one on most swarms, so the choice is a setting, not a guess. */
+const TORRENT_QUALITIES = new Set(['1080p', '2160p']);
 /* An episode above this is a multi-hour download on a home line; prefer any
  * normal-sized release that the ranking already finds acceptable. A movie is
  * naturally bigger, so it gets a wider band. */
@@ -836,12 +839,16 @@ function qualityFromHeight(height, width = 0) {
  * shows the same numbers, so its quality label cannot drift from the job.
  * Returns null when Torrentio has nothing usable (Castle is the fallback).
  */
-export async function planTorrentRelease({ imdbId, season = 0, episode = 0, originalLanguage = '', copyVideo = false } = {}) {
+export async function planTorrentRelease({ imdbId, season = 0, episode = 0, originalLanguage = '', copyVideo = false, quality = '' } = {}) {
   if (!/^tt\d{4,10}$/.test(String(imdbId || '').trim())) return null;
 
   const streams = await findReleases({ imdbId: String(imdbId).trim(), isSeries: Number(season) > 0, season, episode });
   if (!streams.length) return null;
-  const ranked = rankReleases(streams, { originalLanguage: text(originalLanguage), copyVideo: copyVideo === true });
+  /* The settings switch is a hard rule, not a preference: 1080p never takes a
+   * 4K file and 2160p never takes a 1080p one. `quality` lets a caller (the
+   * release inspector, a test) ask for one explicitly. */
+  const wantedQuality = TORRENT_QUALITIES.has(quality) ? quality : getTorrentQuality();
+  const ranked = rankReleases(streams, { originalLanguage: text(originalLanguage), copyVideo: copyVideo === true, quality: wantedQuality });
   if (!ranked.length) return null;
 
   /* The rule is hard now: a release must carry the show's original audio AND
@@ -870,14 +877,15 @@ export async function planTorrentRelease({ imdbId, season = 0, episode = 0, orig
   const untagged = eligible.filter((release) => !declaresLanguages(release));
   const pool = [...declared, ...untagged];
 
-  /* 1080p is the floor (rankReleases already dropped everything lower), and a
-   * sane file size beats a 29 GiB season pack: the click should fetch one
-   * episode, not hours of someone else's season. A giant 1080p still stays
-   * ahead of any pack, because a pack is the less predictable download. */
+  /* `wantedQuality` is the floor and the ceiling at once: a 1080p setting
+   * keeps files small, a 2160p setting takes only 4K copies. A sane file size
+   * still beats a 29 GiB season pack: the click should fetch one episode, not
+   * hours of someone else's season. A giant file of the chosen quality still
+   * stays ahead of any pack, because a pack is the less predictable download. */
   const limit = Number(season) > 0 ? MAX_EPISODE_BYTES : MAX_MOVIE_BYTES;
-  const hd = pool.filter((release) => release.quality === '1080p' || release.quality === '2160p');
+  const hd = pool.filter((release) => release.quality === wantedQuality);
   if (!hd.length) {
-    return { release: null, candidates: [], reason: 'no 1080p release is left after the audio filter' };
+    return { release: null, candidates: [], reason: `no ${wantedQuality} release is left after the audio filter` };
   }
   const saneSize = (release) => !release.sizeBytes || release.sizeBytes <= limit;
   const single = hd.filter((release) => !release.moviePack);

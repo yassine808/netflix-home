@@ -5,8 +5,9 @@
  *   1. esbuild turns server\index.js into a single CommonJS script
  *   2. Node's single-executable support packs that script plus the UI files and
  *      the two media binaries into a blob
- *   3. the blob is injected into a copy of node.exe
- *   4. the PE subsystem is switched to GUI so no console window opens
+ *   3. the copy of node.exe takes the UI's favicon as its icon group and gets
+ *      its PE subsystem switched to GUI so no console window opens
+ *   4. the blob is injected on top of that
  *
  * On launch the exe unpacks its UI + media tools once into
  * <library>\.cache\app and starts the server from memory.
@@ -17,6 +18,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import * as esbuild from 'esbuild';
+import * as ResEdit from 'resedit';
 
 const root = path.resolve(import.meta.dirname, '..');
 const buildDir = path.join(root, '.build');
@@ -117,13 +119,6 @@ fs.writeFileSync(seaConfigFile, JSON.stringify({
 execFileSync(nodeExe, ['--experimental-sea-config', seaConfigFile], { stdio: 'inherit', cwd: root });
 
 fs.copyFileSync(nodeExe, outFile);
-execFileSync(nodeExe, [
-  path.join(root, 'node_modules', 'postject', 'dist', 'cli.js'),
-  outFile,
-  'NODE_SEA_BLOB',
-  blobFile,
-  '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
-], { stdio: 'inherit', cwd: root });
 
 /* Console exe -> GUI exe: double-clicking must not open a black window. */
 function setWindowedSubsystem(file) {
@@ -134,6 +129,33 @@ function setWindowedSubsystem(file) {
   fs.writeFileSync(file, buf);
 }
 setWindowedSubsystem(outFile);
+
+/* Taskbar and Explorer must show the same picture as the browser tab, so the
+ * favicon becomes the exe's icon group. Done before the blob is injected: the
+ * resource rewrite regenerates the whole PE, and the injection after it only
+ * appends a section on top. */
+function setAppIcon(file, iconPath) {
+  const exe = ResEdit.NtExecutable.from(fs.readFileSync(file), { ignoreCert: true });
+  const res = ResEdit.NtExecutableResource.from(exe);
+  const iconFile = ResEdit.Data.IconFile.from(fs.readFileSync(iconPath));
+  const icons = iconFile.icons.map((icon) => icon.data);
+  const groups = ResEdit.Resource.IconGroupEntry.fromEntries(res.entries);
+  const targets = groups.length ? groups : [{ id: 1, lang: 1033 }];
+  for (const group of targets) {
+    ResEdit.Resource.IconGroupEntry.replaceIconsForResource(res.entries, group.id, group.lang, icons);
+  }
+  res.outputResource(exe);
+  fs.writeFileSync(file, Buffer.from(exe.generate()));
+}
+setAppIcon(outFile, path.join(root, 'public', 'favicon.ico'));
+
+execFileSync(nodeExe, [
+  path.join(root, 'node_modules', 'postject', 'dist', 'cli.js'),
+  outFile,
+  'NODE_SEA_BLOB',
+  blobFile,
+  '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
+], { stdio: 'inherit', cwd: root });
 
 const sizeMb = (fs.statSync(outFile).size / (1024 * 1024)).toFixed(1);
 console.log(`built ${outFile} (${sizeMb} MB, build ${buildId})`);

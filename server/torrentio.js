@@ -346,7 +346,9 @@ function languageCode(value) {
  *   1. Drop releases with no seeders at all; 1-2 seeder releases stay as
  *      last-resort fallbacks behind every healthy one (a niche episode often
  *      has one slow peer and nothing else).
- *   2. Drop CAM/TS rips and anything under 1080p: 1080p or 2160p only.
+ *   2. Drop CAM/TS rips and anything under 1080p: 1080p or 2160p only, and
+ *      only the quality the caller asks for when one is given (the settings
+ *      switch: 1080p keeps files small, 2160p accepts 4K only).
  *   3. Quality: 1080p and 2160p score the same +300.
  *   4. Video: a release whose video can be stream-copied is preferred, but an
  *      HEVC release without a HEVC-capable client takes -120, because it would
@@ -361,16 +363,17 @@ function languageCode(value) {
  *   8. Packs cost -60: the same download for one episode, less predictable.
  *   9. originalLanguage +40 when its 2-letter form is advertised.
  */
-export function rankReleases(releases, { originalLanguage = '', copyVideo = false } = {}) {
+export function rankReleases(releases, { originalLanguage = '', copyVideo = false, quality = '' } = {}) {
   if (!Array.isArray(releases)) return [];
   const wanted = languageCode(originalLanguage);
+  const only = ACCEPTED_QUALITY.has(quality) ? quality : '';
   const ranked = [];
 
   for (const release of releases) {
     if (!release) continue;
     const health = num(release.seeders);
     if (!health) continue;
-    if (!ACCEPTED_QUALITY.has(release.quality)) continue;
+    if (only ? release.quality !== only : !ACCEPTED_QUALITY.has(release.quality)) continue;
 
     let score = 0;
     const reasons = [];

@@ -9,7 +9,7 @@ import {
   getSavedCastle,
   deleteLibraryItem, deleteLibraryItems, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   pauseDownload, resumeDownload,
-  getSettings, setOfflineMode, setCastleFallback, setAutoplaySound, setDownloadLimits,
+  getSettings, setOfflineMode, setCastleFallback, setAutoplaySound, setDownloadLimits, setTorrentQuality,
   setLibraryRoot, restartApp,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
   setImg, skel, skelLines, skelMeta, skelCards, skelPoster, skelEpisodes, skelDownload,
@@ -41,6 +41,9 @@ const state = {
   castleFallback: true,
   // Mirrors the server's sound setting: false = preview and player start muted.
   autoplaySound: true,
+  // Mirrors the server's Torrentio quality switch: '1080p' keeps files small,
+  // '2160p' accepts 4K releases only.
+  torrentQuality: '1080p',
   // Mirrors the server's download queue: parallel transfers and the combined
   // speed cap in MB/s (0 = no limit).
   downloadMaxActive: 3,
@@ -169,6 +172,7 @@ const els = {
   refreshBtn: $('refreshBtn'),
   modal: $('modal'),
   modalImg: $('modalImg'),
+  modalLogo: $('modalLogo'),
   modalTitle: $('modalTitle'),
   modalMeta: $('modalMeta'),
   modalPlot: $('modalPlot'),
@@ -185,6 +189,7 @@ const els = {
   onlineModal: $('onlineModal'),
   onlineBackdrop: $('onlineBackdrop'),
   onlineKicker: $('onlineKicker'),
+  onlineLogo: $('onlineLogo'),
   onlineTitle: $('onlineTitle'),
   onlineMeta: $('onlineMeta'),
   onlinePlot: $('onlinePlot'),
@@ -214,6 +219,7 @@ const els = {
   settingsModal: $('settingsModal'),
   castleFallbackBtn: $('castleFallbackBtn'),
   castleFallbackLabel: $('castleFallbackLabel'),
+  torrentQualitySwitch: $('torrentQualitySwitch'),
   autoplaySoundBtn: $('autoplaySoundBtn'),
   autoplaySoundLabel: $('autoplaySoundLabel'),
   dlMaxActiveInput: $('dlMaxActiveInput'),
@@ -363,6 +369,8 @@ async function boot() {
       applyCastleFallbackUi();
       state.autoplaySound = settings.autoplaySound !== false;
       applyAutoplaySoundUi();
+      state.torrentQuality = settings.torrentQuality === '2160p' ? '2160p' : '1080p';
+      applyTorrentQualityUi();
       state.libraryRoot = settings.libraryRoot || '';
       state.libraryRootSetting = settings.libraryRootSetting || state.libraryRoot;
       state.libraryRestartPending = Boolean(settings.libraryRootPending);
@@ -1394,6 +1402,11 @@ async function showSavedCatalogue() {
   const token = ++savedCatalogueToken;
   els.onlineEmpty.hidden = true;
   els.onlineLoading.hidden = true;
+  // The saved catalogue is local, but reading it still takes a moment on a
+  // cold start: keep the same poster placeholders the online grid uses.
+  if (!state.onlineBrowse.length) {
+    els.onlineGrid.replaceChildren(...Array.from({ length: 18 }, skelPoster));
+  }
   try {
     const data = await getSavedCastle();
     if (token !== savedCatalogueToken) return;
@@ -1434,11 +1447,17 @@ function showOnlineNote(message) {
   els.onlineNote.hidden = false;
 }
 
+/* The catalogue's loading state is the grid itself: poster-shaped shimmer
+ * cards in the exact slots the results will take, so the page never jumps from
+ * a spinner to a full grid. A Shuffle with cards already on screen keeps them
+ * and only marks the grid busy. */
 function setOnlineBusy(busy) {
   state.onlineBrowseLoading = busy;
-  els.onlineLoading.hidden = !busy;
+  els.onlineLoading.hidden = true;
   els.onlineGrid.setAttribute('aria-busy', String(busy));
-  if (busy && !state.onlineBrowse.length) els.onlineGrid.replaceChildren();
+  if (busy && !state.onlineBrowse.length) {
+    els.onlineGrid.replaceChildren(...Array.from({ length: 18 }, skelPoster));
+  }
 }
 
 async function loadOnlineBrowse({ fresh = false } = {}) {
@@ -2411,9 +2430,17 @@ function applyCastleFallbackUi() {
     : 'Torrentio only — no Castle fallback';
 }
 
+function applyTorrentQualityUi() {
+  const current = state.torrentQuality === '2160p' ? '2160p' : '1080p';
+  els.torrentQualitySwitch.querySelectorAll('[data-torrent-quality]').forEach((btn) => {
+    btn.setAttribute('aria-checked', String(btn.dataset.torrentQuality === current));
+  });
+}
+
 function openSettings() {
   closeProfile();
   applyCastleFallbackUi();
+  applyTorrentQualityUi();
   applyAutoplaySoundUi();
   applyDownloadLimitUi();
   applyLibraryRootUi();
@@ -2427,12 +2454,14 @@ function openSettings() {
     .then((settings) => {
       state.castleFallback = settings.castleFallback !== false;
       state.autoplaySound = settings.autoplaySound !== false;
+      state.torrentQuality = settings.torrentQuality === '2160p' ? '2160p' : '1080p';
       state.downloadMaxActive = Number(settings.downloadMaxActive) || state.downloadMaxActive;
       state.downloadLimitMBps = Number(settings.downloadLimitMBps) || 0;
       state.libraryRoot = settings.libraryRoot || state.libraryRoot;
       state.libraryRootSetting = settings.libraryRootSetting || state.libraryRoot;
       state.libraryRestartPending = Boolean(settings.libraryRootPending);
       applyCastleFallbackUi();
+      applyTorrentQualityUi();
       applyAutoplaySoundUi();
       applyDownloadLimitUi();
       applyLibraryRootUi();
@@ -2461,6 +2490,28 @@ async function toggleCastleFallback() {
     toast(`Could not change the download source: ${err.message}`);
   } finally {
     els.castleFallbackBtn.disabled = false;
+  }
+}
+
+async function chooseTorrentQuality(quality) {
+  const next = quality === '2160p' ? '2160p' : '1080p';
+  if (next === state.torrentQuality) return;
+  const buttons = [...els.torrentQualitySwitch.querySelectorAll('button')];
+  buttons.forEach((btn) => { btn.disabled = true; });
+  try {
+    const settings = await setTorrentQuality(next);
+    state.torrentQuality = settings.torrentQuality === '2160p' ? '2160p' : '1080p';
+    applyTorrentQualityUi();
+    // The open sheet's picks, sizes and source line depend on the quality.
+    state.castlePlanCache.clear();
+    if (!els.castleModal.hidden && state.castleTitle) renderCastleDownloads(state.castleTitle);
+    toast(state.torrentQuality === '2160p'
+      ? 'Torrent downloads now take 2160p releases only'
+      : 'Torrent downloads now take 1080p releases');
+  } catch (err) {
+    toast(`Could not change the torrent quality: ${err.message}`);
+  } finally {
+    buttons.forEach((btn) => { btn.disabled = false; });
   }
 }
 
@@ -2979,7 +3030,7 @@ function populateOnlineModal(item, { loading = false } = {}) {
   state.onlineTitle = item;
   setImg(els.onlineBackdrop, item.background || item.poster || '');
   els.onlineBackdrop.hidden = !(item.background || item.poster);
-  els.onlineTitle.textContent = item.title;
+  setOnlineLogo(item);
   els.onlineKicker.textContent = item.type === 'series' ? 'SERIES' : 'FILM';
 
   const seasonCount = Array.isArray(item.seasons) ? item.seasons.length : 0;
@@ -3232,7 +3283,11 @@ function populateCastleModal(item, { loading = false } = {}) {
   setImg(els.castleBackdrop, remoteArt);
   els.castleBackdrop.hidden = !remoteArt;
   setCastleLogo(item);
-  els.castleKicker.textContent = 'DOWNLOAD';
+  // A title already saved in the catalogue says so next to its facts; an
+  // unsaved one keeps the download label above the wordmark.
+  const inLibrary = Boolean(savedShowRow(item.title)) || Boolean(item.saved);
+  els.castleKicker.hidden = inLibrary;
+  els.castleKicker.textContent = inLibrary ? '' : 'DOWNLOAD';
   if (!item.description && loading) els.castlePlot.replaceChildren(skelLines(3));
   else els.castlePlot.textContent = item.description || 'No overview available for this title yet.';
   els.castleModal.scrollTop = 0;
@@ -3247,8 +3302,9 @@ function populateCastleModal(item, { loading = false } = {}) {
   ].filter(Boolean);
 
   els.castleMeta.replaceChildren();
+  if (inLibrary) els.castleMeta.append(createEl('span', 'lib-chip', 'IN YOUR LIBRARY'));
   bits.forEach((bit, index) => {
-    if (index > 0) els.castleMeta.append(createEl('span', 'dot', '•'));
+    if (index > 0 || inLibrary) els.castleMeta.append(createEl('span', 'dot', '•'));
     els.castleMeta.append(createEl('span', index === 0 ? 'year' : '', bit));
   });
   if (loading && !bits.length) els.castleMeta.append(skelMeta());
@@ -4414,7 +4470,9 @@ function populateSeriesHero(group, detail) {
   setImg(img, thumbUrl(group, 0));
   img.hidden = false;
   setCastleLogo(group);
-  els.castleKicker.textContent = 'IN YOUR LIBRARY';
+  // The state lives with the facts now, not above the wordmark.
+  els.castleKicker.hidden = true;
+  els.castleKicker.textContent = '';
   els.castlePlot.textContent = group.plot
     || detail?.description
     || 'A title from your personal library, streamed directly from your drive.';
@@ -4429,21 +4487,20 @@ function populateSeriesHero(group, detail) {
     Array.isArray(group.genres) ? group.genres.slice(0, 3).join(' · ') : '',
   ].filter(Boolean);
 
-  els.castleMeta.replaceChildren();
+  els.castleMeta.replaceChildren(createEl('span', 'lib-chip', 'IN YOUR LIBRARY'));
   bits.forEach((bit, index) => {
-    if (index > 0) els.castleMeta.append(createEl('span', 'dot', '•'));
+    els.castleMeta.append(createEl('span', 'dot', '•'));
     els.castleMeta.append(createEl('span', index === 0 ? 'year' : '', bit));
   });
   updateCastleListButton(group);
 }
 
-/* Official wordmark for the sheet hero. Remotes fall back to the text title. */
-function setCastleLogo(item) {
-  const logo = els.castleLogo;
-  const title = els.castleTitle;
-  title.textContent = item?.title || '';
-  logo.classList.remove('loaded');
+/* One wordmark, three sheets: the library title, the IMDb sheet and the
+ * download catalogue. The win is the same everywhere - the real logo replaces
+ * the text name, and the text simply stays when no logo exists. */
+function applyHeroLogo(logo, title, src) {
   title.classList.remove('has-logo');
+  logo.classList.remove('loaded');
   logo.onload = () => {
     logo.classList.add('loaded');
     title.classList.add('has-logo');
@@ -4453,7 +4510,6 @@ function setCastleLogo(item) {
     title.classList.remove('has-logo');
     logo.removeAttribute('src');
   };
-  const src = item?.id ? logoUrl(item) : '';
   if (!src) {
     logo.removeAttribute('src');
     return;
@@ -4464,6 +4520,32 @@ function setCastleLogo(item) {
     return;
   }
   logo.src = src;
+}
+
+/* Castle ids are plain numbers: their wordmark is resolved from IMDb once and
+ * cached in catalog.db by the server. A file in the library keeps the library
+ * route, which reaches the same picture through its own metadata. */
+function castleLogoUrl(item) {
+  const id = String(item?.id || '');
+  if (!id) return '';
+  return /^\d{6,20}$/.test(id)
+    ? `/api/castle/art/${encodeURIComponent(id)}/logo?v=${CASTLE_ART_VERSION}`
+    : logoUrl(item);
+}
+
+function setCastleLogo(item) {
+  els.castleTitle.textContent = item?.title || '';
+  applyHeroLogo(els.castleLogo, els.castleTitle, castleLogoUrl(item));
+}
+
+function setModalLogo(item) {
+  els.modalTitle.textContent = item?.title || '';
+  applyHeroLogo(els.modalLogo, els.modalTitle, item?.id ? logoUrl(item) : '');
+}
+
+function setOnlineLogo(item) {
+  els.onlineTitle.textContent = item?.title || '';
+  applyHeroLogo(els.onlineLogo, els.onlineTitle, item?.logo || '');
 }
 
 /* The sheet trailer is the same cached file as the billboard. The server
@@ -4819,13 +4901,19 @@ function openLibraryModal(id) {
   state.modalPlayId = episode.id;
   state.seriesSeason = episode.season || (group.episodes?.[0]?.season) || 0;
   els.modal.hidden = false;
+  els.modal.classList.toggle('is-movie', !isSeries);
   syncBodyLock();
   els.modal.scrollTop = 0;
   setImg(els.modalImg, thumbUrl(group, 960));
   els.modalImg.alt = group.title;
-  els.modalTitle.textContent = group.title;
+  setModalLogo(group);
 
   els.modalMeta.replaceChildren();
+  // The saved catalogue knows the real synopsis and genres even when the file
+  // on disk carries none, so a downloaded film no longer falls back to the
+  // boilerplate line that made the sheet look empty.
+  const savedRow = isSeries ? null : savedShowRow(group.title);
+  const genres = group.genres?.length ? group.genres : (Array.isArray(savedRow?.genres) ? savedRow.genres : []);
   const seasons = isSeries ? [...new Set(group.episodes.map((entry) => entry.season))].sort((a, b) => a - b) : [];
   const metaBits = isSeries
     ? [
@@ -4840,14 +4928,15 @@ function openLibraryModal(id) {
     els.modalMeta.append(createEl('span', i === 0 ? 'year' : '', bit));
   });
   if (group.rating) els.modalMeta.append(createEl('span', 'chip', group.rating));
-  if (group.genres?.length) els.modalMeta.append(createEl('span', '', group.genres.slice(0, 3).join(' · ')));
+  if (genres.length) els.modalMeta.append(createEl('span', '', genres.slice(0, 3).join(' · ')));
 
   els.modalPlot.textContent = group.plot
-    || `A title from your personal library, streamed directly from your drive. ${group.genres?.length ? `Genres: ${group.genres.join(', ')}.` : ''}`.trim();
+    || savedRow?.description
+    || `A title from your personal library, streamed directly from your drive. ${genres.length ? `Genres: ${genres.join(', ')}.` : ''}`.trim();
 
   els.modalSide.replaceChildren();
   els.modalSide.append(createEl('h3', '', 'Details'));
-  const dl = document.createElement('dl');
+  const dl = isSeries ? document.createElement('dl') : createEl('div', 'spec-strip');
   const totalSize = isSeries ? group.episodes.reduce((sum, entry) => sum + (entry.size || 0), 0) : group.size;
   const details = isSeries
     ? [
@@ -4871,8 +4960,17 @@ function openLibraryModal(id) {
     ];
   for (const [k, v] of details) {
     if (!v) continue;
-    dl.append(createEl('dt', '', k), createEl('dd', '', v));
+    if (isSeries) dl.append(createEl('dt', '', k), createEl('dd', '', v));
+    else {
+      // A film has no episode list under the body, so its facts sit in one
+      // strip across the sheet instead of a column that stretched the row and
+      // left the plot's half empty.
+      const cell = createEl('div', 'spec');
+      cell.append(createEl('span', 'spec-k', k), createEl('span', 'spec-v', v));
+      dl.append(cell);
+    }
   }
+  if (!isSeries) dl.className = 'spec-strip';
   els.modalSide.append(dl);
 
   updateModalPlayLabel(episode);
@@ -5614,6 +5712,10 @@ function bindStaticEvents() {
   els.castleModal.querySelectorAll('[data-close-castle]').forEach((el) => el.addEventListener('click', closeCastleModal));
   els.settingsModal.querySelectorAll('[data-close-settings]').forEach((el) => el.addEventListener('click', closeSettings));
   els.castleFallbackBtn.addEventListener('click', toggleCastleFallback);
+  els.torrentQualitySwitch.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-torrent-quality]');
+    if (btn) chooseTorrentQuality(btn.dataset.torrentQuality);
+  });
   els.autoplaySoundBtn.addEventListener('click', toggleAutoplaySound);
   els.dlMaxActiveSave.addEventListener('click', saveDownloadMaxActive);
   els.dlSpeedSave.addEventListener('click', saveDownloadSpeedLimit);

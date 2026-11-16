@@ -21,6 +21,11 @@ import path from 'node:path';
  * 46-82 s and made Castle return 502, so the queue is capped and the rest wait
  * in "queued". `downloadLimitMBps` caps the combined speed (0 = unlimited) and
  * is split evenly between the transfers that are running.
+ *
+ * `torrentQuality` is the video quality a Torrentio download may pick: '1080p'
+ * (the default, small files) or '2160p' (4K releases only, usually 4-8x the
+ * size). It is a hard filter, not a preference: the other quality is never
+ * downloaded, and releases below 1080p stay excluded either way.
  */
 const DEFAULTS = {
   offline: false,
@@ -28,10 +33,12 @@ const DEFAULTS = {
   autoplaySound: true,
   downloadMaxActive: 3,
   downloadLimitMBps: 0,
+  torrentQuality: '1080p',
 };
 
 const MAX_ACTIVE_LIMIT = 20;
 const MAX_SPEED_LIMIT = 1000;
+const TORRENT_QUALITIES = new Set(['1080p', '2160p']);
 
 let settingsFile = '';
 let state = { ...DEFAULTS };
@@ -48,6 +55,9 @@ export function initSettings(cacheDir) {
     }
     if (raw && Number.isFinite(Number(raw.downloadLimitMBps))) {
       state.downloadLimitMBps = clampSpeed(raw.downloadLimitMBps);
+    }
+    if (raw && TORRENT_QUALITIES.has(raw.torrentQuality)) {
+      state.torrentQuality = raw.torrentQuality;
     }
   } catch {
     /* first run or unreadable file: keep defaults */
@@ -99,6 +109,19 @@ export function setDownloadLimits({ maxActive, limitMBps } = {}) {
   if (maxActive !== undefined) next.downloadMaxActive = clampMaxActive(maxActive);
   if (limitMBps !== undefined) next.downloadLimitMBps = clampSpeed(limitMBps);
   return save(next);
+}
+
+/* The video quality a Torrentio download may pick. Always one of the two:
+ * anything else is treated as 1080p, so a corrupt settings file cannot leave
+ * the downloader without a rule. */
+export function getTorrentQuality() {
+  return TORRENT_QUALITIES.has(state.torrentQuality) ? state.torrentQuality : DEFAULTS.torrentQuality;
+}
+
+export function setTorrentQuality(value) {
+  const wanted = String(value || '').toLowerCase();
+  if (!TORRENT_QUALITIES.has(wanted)) return getSettings();
+  return save({ ...state, torrentQuality: wanted });
 }
 
 function clampMaxActive(value) {

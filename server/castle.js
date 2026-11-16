@@ -740,6 +740,9 @@ async function ensureCastleMedia(key) {
  * many files were newly saved, which the Sync summary reports. */
 async function warmCastleMedia(title) {
   if (!title || isOffline()) return 0;
+  // The sheet shows the title's own wordmark when it can, so fetch it in the
+  // same pass; it is cached once and then costs nothing.
+  castleWordmark(title.id, title).catch(() => null);
   const entries = [];
   if (title.poster) entries.push(titleMediaKey(title.id, 'poster'));
   if (title.background) entries.push(titleMediaKey(title.id, 'backdrop'));
@@ -838,6 +841,52 @@ async function wideBackdrop(id, saved) {
   return task;
 }
 
+/* Catalogue titles have no file on disk, so their sheet used to fall back to
+ * the plain text name. The transparent wordmark comes from the same Cinemeta
+ * record the local library uses: resolve the IMDb id once, cache the PNG in
+ * catalog.db, and the sheet shows the real logo - offline too, afterwards. */
+const LOGO_MISS_TTL = 10 * 60 * 1000;
+const logoTasks = new Map();
+const logoMisses = new Map();
+
+async function castleWordmark(id, saved) {
+  const key = titleMediaKey(id, 'logo');
+  const cached = getCastleMedia(key);
+  if (cached?.blob && Number(cached.bytes) > 1024) return cached;
+  if (isOffline()) return null;
+  const missedAt = logoMisses.get(id);
+  if (missedAt && Date.now() - missedAt < LOGO_MISS_TTL) return null;
+  if (logoTasks.has(key)) return logoTasks.get(key);
+
+  const task = (async () => {
+    try {
+      const imdbId = await resolveImdbId({
+        id: `castle:${id}`,
+        title: saved.title,
+        year: saved.year,
+        isSeries: saved.type === 'series',
+      });
+      if (!imdbId) return null;
+      const type = saved.type === 'series' ? 'series' : 'movie';
+      const meta = await getOnlineTitle(type, imdbId).catch(() => null);
+      const url = String(meta?.logo || '');
+      if (!url) return null;
+      indexCastleMedia({ key, castleId: id, kind: 'logo', url });
+      const row = await ensureCastleMedia(key);
+      if (!row?.blob) return null;
+      logoMisses.delete(id);
+      return row;
+    } catch {
+      return null;
+    } finally {
+      logoTasks.delete(key);
+      if (!getCastleMedia(key)?.blob) logoMisses.set(id, Date.now());
+    }
+  })();
+  logoTasks.set(key, task);
+  return task;
+}
+
 async function savedBackdrop(id, saved) {
   if (!saved.background) return null;
   const key = titleMediaKey(id, 'backdrop');
@@ -854,6 +903,7 @@ export async function castleArt(id, kind) {
     if (own?.blob && isLandscape(own.blob)) return own;
     return (await wideBackdrop(id, saved)) || own;
   }
+  if (kind === 'logo') return castleWordmark(id, saved);
   if (kind !== 'poster' || !saved.poster) return null;
   const key = titleMediaKey(id, 'poster');
   indexCastleMedia({ key, castleId: id, kind: 'poster', url: saved.poster });

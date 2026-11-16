@@ -275,6 +275,7 @@
         <img id="modalImg" alt="">
         <div class="modal-hero-grad"></div>
         <div class="modal-hero-content">
+          <img class="castle-logo modal-logo" id="modalLogo" alt="" draggable="false">
           <h1 id="modalTitle"></h1>
           <div class="modal-actions">
             <button class="btn btn-play" id="modalPlay">
@@ -319,6 +320,7 @@
         <div class="modal-hero-grad"></div>
         <div class="modal-hero-content">
           <span class="online-kicker" id="onlineKicker"></span>
+          <img class="castle-logo online-logo" id="onlineLogo" alt="" draggable="false">
           <h1 id="onlineTitle"></h1>
           <div class="modal-meta" id="onlineMeta"></div>
           <div class="modal-actions">
@@ -356,7 +358,7 @@
           <p class="modal-plot" id="castlePlot" title="Click to expand"></p>
           <div class="modal-actions">
             <button class="btn btn-play" id="castleResume" hidden>Play</button>
-            <button class="btn btn-info castle-list-btn" id="castleList" type="button">+ Favourite</button>
+            <button class="btn btn-round castle-list-btn" id="castleList" type="button" aria-label="Add to Favourite" title="Add to Favourite"><svg class="i-plus" viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>
             <button class="mute-btn castle-mute-btn" id="castleMute" type="button" aria-label="Mute trailer" title="Mute trailer"><svg class="vol-ico" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4V5z" fill="currentColor" stroke="none"/><path class="wave w1" d="M15.5 9a4 4 0 0 1 0 6"/><path class="wave w2" d="M18 6.5a8 8 0 0 1 0 11"/><path class="xmark" d="m16 9.5 5 5m0-5-5 5"/></svg></button>
           </div>
         </div>
@@ -460,6 +462,16 @@
           </div>
           <p class="settings-hint" id="dlSpeedHint">0 means no limit. Applies to torrent downloads and is split evenly between the ones running.</p>
           <p class="settings-error" id="dlLimitError" hidden></p>
+        </div>
+        <div class="settings-row">
+          <div class="settings-copy">
+            <strong>Torrent quality</strong>
+            <span>1080p keeps files at 1-3 GB. 2160p accepts 4K releases only, usually 4-7x larger. The app never downloads the other quality; releases below 1080p are excluded either way.</span>
+          </div>
+          <div class="quality-switch" id="torrentQualitySwitch" role="radiogroup" aria-label="Torrent quality">
+            <button class="quality-option" type="button" role="radio" aria-checked="true" data-torrent-quality="1080p" title="1080p releases - the small, fast default">1080p</button>
+            <button class="quality-option" type="button" role="radio" aria-checked="false" data-torrent-quality="2160p" title="4K releases only - much larger files">2160p</button>
+          </div>
         </div>
         <div class="settings-row">
           <div class="settings-copy">

@@ -122,6 +122,36 @@ code { font-family: Consolas, "Courier New", monospace; }
   transition: transform 0.24s var(--spring), background 0.22s var(--ease);
 }
 .net-switch-label { min-width: 44px; text-align: left; }
+
+/* Two-way quality switch: both grades stay visible, the active one is red, so
+ * the setting reads as a choice instead of an on/off toggle. */
+.quality-switch {
+  flex: none;
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.quality-option {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 14px;
+  background: transparent;
+  color: #b3b3b3;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+.quality-option:hover { color: #fff; }
+.quality-option[aria-checked="true"] { background: var(--red); color: #fff; }
+.quality-option:disabled { opacity: 0.5; cursor: progress; }
+.quality-option:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .net-switch.is-offline { color: #9a9a9a; }
 .net-switch.is-offline .net-switch-track,
 .net-switch.is-off .net-switch-track { background: #4a4a4a; }
@@ -967,6 +997,23 @@ code { font-family: Consolas, "Courier New", monospace; }
 }
 .castle-logo.loaded { display: block; }
 .castle-modal #castleTitle.has-logo { display: none; }
+/* The library sheet and the IMDb sheet use the same wordmark slot. */
+.modal-hero-content h1.has-logo { display: none; }
+.modal-logo { max-height: 96px; }
+.online-logo { max-height: 88px; }
+/* "In your library" reads as a state chip beside the facts instead of a label
+ * above the wordmark. */
+.modal-meta .lib-chip {
+  padding: 3px 9px;
+  border: 1px solid rgba(70, 211, 105, 0.42);
+  border-radius: 4px;
+  background: rgba(70, 211, 105, 0.14);
+  color: #7ee2a0;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  line-height: 1.5;
+}
 .online-hero::after {
   content: "";
   position: absolute;
@@ -1340,6 +1387,24 @@ code { font-family: Consolas, "Courier New", monospace; }
 .modal-side dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
 .modal-side dt { color: #777; }
 .modal-side dd { margin: 0; color: #cfcfcf; overflow-wrap: anywhere; }
+
+/* A film has no episode list under the body, so the two-column layout left the
+ * plot's half empty while the seven-row details column set the row height.
+ * Its facts become one strip under the plot and the body takes the full width,
+ * which also brings "More Like This" up. */
+.modal.is-movie .modal-body { display: block; padding-bottom: 18px; }
+.modal.is-movie .modal-main { max-width: 740px; }
+.modal.is-movie .modal-side {
+  margin-top: 22px;
+  padding: 16px 0 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-left: 0;
+}
+.modal.is-movie .modal-side h3 { display: none; }
+.spec-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 26px; }
+.spec-k { display: block; margin-bottom: 2px; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: #777; }
+.spec-v { display: block; font-size: 13px; line-height: 1.5; color: #cfcfcf; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .spec-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .modal-more { padding: 8px 46px 46px; }
 .modal-more h2 { font-size: 22px; margin: 12px 0 22px; }
 .modal-more .grid { grid-template-columns: repeat(3, 1fr); gap: 26px 8px; }
@@ -2650,10 +2715,10 @@ body.modal-open .hero-media img, body.modal-open .hero-media video { animation-p
 .castle-modal #castleResume[data-mode="download"]:hover { background: rgba(255, 255, 255, 0.86); color: #000; transform: translateY(-1px); }
 
 
-/* Square-ish buttons (no pills): Play / Resume / Download and Favourite share one shape. */
+/* Square-ish buttons (no pills): Play / Resume / Download share one shape;
+   the round Favourite button keeps the icon-button shape used by the film sheet. */
 .castle-modal #castleResume,
 .castle-modal #castleResume[data-mode="download"] { border-radius: 6px; }
-.castle-modal .castle-list-btn { border-radius: 6px; }
 .season-trigger { border-radius: 8px; }
 .season-pop { border-radius: 12px; }
 .season-opt { border-radius: 8px; }
