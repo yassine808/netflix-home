@@ -489,15 +489,13 @@ body.leaving .player {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 10px 8px 6px;
+  padding: 8px 10px;
   border-radius: 10px;
   text-align: left;
   transition: background 0.15s;
 }
 .ep-item:hover { background: rgba(255, 255, 255, 0.1); }
 .ep-item.current { background: rgba(255, 255, 255, 0.14); box-shadow: inset 3px 0 0 var(--red); }
-.ep-num { flex: 0 0 22px; text-align: center; font-size: 15px; font-weight: 700; color: rgba(255, 255, 255, 0.6); }
-.ep-item.current .ep-num { color: #fff; }
 .ep-thumb { position: relative; flex: 0 0 124px; aspect-ratio: 16 / 9; border-radius: 6px; overflow: hidden; background: #111; }
 .ep-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .ep-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(255, 255, 255, 0.3); }
@@ -514,7 +512,7 @@ body.leaving .player {
   text-transform: uppercase;
 }
 .ep-info { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.ep-info b { font-size: 14.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ep-info b { min-width: 0; font-size: 14.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ep-info small { font-size: 12px; font-weight: 500; color: rgba(255, 255, 255, 0.65); }
 
 /* ---------- animated mute icon ---------- */
@@ -974,7 +972,6 @@ body.leaving .player {
 .ep-panel.is-loading .ep-season { visibility: hidden; }
 .ep-sk { pointer-events: none; }
 .ep-sk:hover { background: none; }
-.ep-sk-num { flex: 0 0 22px; border-radius: 4px; margin: 0 4px 0 0; }
 .ep-sk-thumb { flex: 0 0 124px; aspect-ratio: 16 / 9; border-radius: 6px; }
 .ep-sk-lines { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .ep-thumb:has(img[src]:not(.img-ready))::before {

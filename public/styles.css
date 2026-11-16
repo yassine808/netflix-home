@@ -2634,3 +2634,20 @@ body.modal-open .hero-media img, body.modal-open .hero-media video { animation-p
 .season-trigger { border-radius: 8px; }
 .season-pop { border-radius: 12px; }
 .season-opt { border-radius: 8px; }
+
+/* Billboard buttons: Play and More Info are the same height. More Info is an
+ * icon-only square, so it never looks like the smaller sibling. */
+.hero-actions { align-items: center; }
+.hero-actions .btn-info { width: 64px; min-width: 64px; height: 64px; padding: 0; gap: 0; border-radius: 10px; flex: 0 0 auto; }
+.hero-actions .btn-info svg { width: 30px; height: 30px; }
+.sk-hero-btn.alt { width: 64px; }
+@media (max-width: 900px) {
+  .hero-actions .btn-info { width: 54px; min-width: 54px; height: 54px; }
+  .hero-actions .btn-info svg { width: 24px; height: 24px; }
+  .sk-hero-btn.alt { width: 54px; }
+}
+
+/* Series sheet: the description gets its own breathing room above the buttons
+ * instead of sitting right on top of them. */
+.castle-modal .modal-hero-content .modal-plot { margin: 12px 0 22px; }
+.castle-modal .modal-hero-content .modal-plot:empty { margin: 0; }

@@ -1,6 +1,6 @@
 import {
   formatClock, formatDuration, progressFor, saveProgress, thumbUrl, readJson, writeJson, getSeries,
-  skel,
+  getSeriesCatalog, getCastleSeriesEpisodes, skel,
 } from './common.js';
 
 const $ = (id) => document.getElementById(id);
@@ -69,6 +69,8 @@ let lastSeekAt = 0;
 let seriesSeasons = [];
 let seriesArt = {};
 let episodesLoading = false;
+/* "SxE" -> real episode name from the download catalog. */
+const episodeNames = new Map();
 let subtitlesLoading = false;
 
 const UI_HIDE_DELAY = 3000;
@@ -514,6 +516,37 @@ async function loadEpisodes() {
   epSeason.value = String(item.season);
   if (!epSeason.value) epSeason.selectedIndex = 0;
   if (!epPanel.hidden) renderEpisodes(Number(epSeason.value));
+  loadEpisodeNames();
+}
+
+/* Local files often carry only the series title, so the real episode names come
+ * from the download catalog, the same source the series sheet lists. Names are
+ * patched into the open list in place: no re-render, so the scroll stays put. */
+async function loadEpisodeNames() {
+  const key = item?.seriesKey;
+  if (!key) return;
+  const put = (season, rows) => {
+    for (const row of rows || []) {
+      const name = String(row?.title || row?.name || '').trim();
+      const number = Number(row?.episode);
+      if (name && number) episodeNames.set(`${Number(season)}x${number}`, name);
+    }
+  };
+  try {
+    const catalog = await getSeriesCatalog(key);
+    for (const s of catalog?.seasons || []) put(s.season, s.episodes);
+    if (!episodeNames.size && catalog?.catalogId) {
+      const full = await getCastleSeriesEpisodes(catalog.catalogId);
+      for (const s of full?.seasons || []) put(s.season, s.episodes);
+    }
+  } catch {
+    return; // offline or not in the catalog: the local names stay
+  }
+  for (const btn of epList.querySelectorAll('.ep-item[data-key]')) {
+    const name = episodeNames.get(btn.dataset.key);
+    const el = btn.querySelector('.ep-name');
+    if (name && el) el.textContent = name;
+  }
 }
 
 function renderEpisodesSkeleton(count = 5) {
@@ -524,7 +557,7 @@ function renderEpisodesSkeleton(count = 5) {
     const lines = document.createElement('div');
     lines.className = 'ep-sk-lines';
     lines.append(skel('', '60%', '13px'), skel('', '34%', '10px'));
-    row.append(skel('ep-sk-num', '14px', '14px'), skel('ep-sk-thumb'), lines);
+    row.append(skel('ep-sk-thumb'), lines);
     return row;
   }));
 }
@@ -544,9 +577,7 @@ function renderEpisodes(season) {
     btn.type = 'button';
     btn.className = `ep-item${isCurrent ? ' current' : ''}`;
 
-    const num = document.createElement('span');
-    num.className = 'ep-num';
-    num.textContent = String(ep.episode);
+    btn.dataset.key = `${entry.season}x${ep.episode}`;
 
     const thumb = document.createElement('span');
     thumb.className = 'ep-thumb';
@@ -579,16 +610,18 @@ function renderEpisodes(season) {
     }
 
     const raw = (ep.title || '').trim();
-    const name = raw && raw.toLowerCase() !== base ? raw : `Episode ${ep.episode}`;
+    const name = episodeNames.get(btn.dataset.key)
+      || (raw && raw.toLowerCase() !== base ? raw : `Episode ${ep.episode}`);
     const info = document.createElement('span');
     info.className = 'ep-info';
     const title = document.createElement('b');
+    title.className = 'ep-name';
     title.textContent = name;
     const meta = document.createElement('small');
     meta.textContent = [`S${ep.season}:E${ep.episode}`, ep.durationSec ? formatDuration(ep.durationSec) : ''].filter(Boolean).join(' · ');
     info.append(title, meta);
 
-    btn.append(num, thumb, info);
+    btn.append(thumb, info);
     btn.addEventListener('click', () => {
       if (isCurrent) { toggleEpPanel(false); return; }
       saveNow();
