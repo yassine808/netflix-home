@@ -151,8 +151,10 @@ function snapshot() {
   for (const job of jobs.values()) {
     const copy = {};
     for (const [key, value] of Object.entries(job)) {
-      /* Runtime handles cannot be serialized; everything else is plain data. */
-      if (key === 'controller' || key === 'ffmpeg') continue;
+      /* Runtime handles cannot be serialized; everything else is plain data.
+       * `slot` is live queue accounting: a restored job takes a fresh slot when
+       * it starts, and a stale `true` would make takeSlot() skip it. */
+      if (key === 'controller' || key === 'ffmpeg' || key === 'slot') continue;
       copy[key] = value;
     }
     /* Position in the waiting line, so a promoted job comes back in front. */
@@ -851,18 +853,27 @@ export async function planTorrentRelease({ imdbId, season = 0, episode = 0, orig
   const ranked = rankReleases(streams, { originalLanguage: text(originalLanguage), copyVideo: copyVideo === true, quality: wantedQuality });
   if (!ranked.length) return null;
 
-  /* The rule is hard now: a release must carry the show's original audio AND
-   * an English dub, and a release that lists its languages without either one
-   * is never downloaded - an Italian-only rip of a Thai show, or a French dub
-   * of a Korean show, would only waste the download. Releases that declare
-   * nothing are kept because Torrentio often has no tags at all (RARBG packs,
-   * for one); ffprobe decides those after the download (pickTracks). Releases
-   * that do declare both are tried first, since the evidence is already there. */
+  /* The rule is hard on the *evidence*: a release that lists a language set
+   * without the show's original audio or without English is never downloaded -
+   * an Italian-only rip of a Thai show, or a French dub of a Korean show, would
+   * only waste the download. Dual audio is the one exception, because its tag
+   * list is unreliable (see below). Releases that declare nothing are kept
+   * because Torrentio often has no tags at all (RARBG packs, for one); ffprobe
+   * decides those after the download (pickTracks). Releases that do declare
+   * both are tried first, since the evidence is already there. */
   const originalIso = toIso2(originalLanguage) || '';
   const contradicts = (release) => {
     const declared = Array.isArray(release.languages) ? release.languages : [];
     if (!declared.length) return false;
-    if (originalIso && !declared.includes(originalIso)) return true;
+    /* A dual-audio release that declares English is kept even when it does not
+     * name the original language. Anime rips tag only "en" for a file that
+     * really carries jpn + eng, so the tag alone was throwing away the releases
+     * whose audio is AAC - exactly the ones the browser can keep untouched
+     * instead of paying a 200 s re-encode. pickTracks still rejects the file
+     * after the probe when the original track is missing, and the job moves on
+     * to the next candidate. A single-audio English dub of a non-English show
+     * is still dropped here. */
+    if (originalIso && !declared.includes(originalIso) && release.dualAudio !== true) return true;
     return !declared.includes('en');
   };
   const eligible = ranked.filter((release) => !contradicts(release));
@@ -1248,18 +1259,34 @@ export function retryDownload(id) {
   return publicJob(job);
 }
 
+/* A slot is a *transfer*, not a whole job. The cap exists because every running
+ * job is its own aria2c swarm, and a job that is only verifying, remuxing or
+ * fetching subtitles holds no swarm. Releasing the slot the moment the file is
+ * on disk lets the next queued episode start downloading instead of waiting out
+ * a 200 s audio re-encode, and the remux itself is already serialized by the
+ * media lane in proc.js. */
+function takeSlot(job) {
+  if (job.slot) return;
+  job.slot = true;
+  activeCount++;
+}
+
+function releaseSlot(job) {
+  if (!job.slot) return;
+  job.slot = false;
+  activeCount = Math.max(0, activeCount - 1);
+  pump();
+}
+
 function pump() {
   const cap = Math.max(1, getDownloadMaxActive());
   while (activeCount < cap && queue.length) {
     const job = queue.shift();
-    activeCount++;
+    takeSlot(job);
     const task = job.kind === 'torrent' ? runTorrentJob(job) : runHlsJob(job);
     task
       .catch(() => {})
-      .finally(() => {
-        activeCount--;
-        pump();
-      });
+      .finally(() => releaseSlot(job));
   }
 }
 
@@ -1530,6 +1557,10 @@ async function attemptRelease(job, release, dir, controller) {
     job.progressValue = Math.min(0.8, (job.bytes / job.total) * 0.8);
   }
   scheduleSave(0);
+  /* A retry after a failed remux starts a new transfer, and the slot was handed
+   * back when the previous download finished. Re-taking it here (a no-op while
+   * the job still holds one) keeps the swarm count honest. */
+  takeSlot(job);
   let downloaded;
   try {
     downloaded = await downloadTorrentFile({
@@ -1560,6 +1591,9 @@ async function attemptRelease(job, release, dir, controller) {
   job.bytes = downloaded.bytes;
   job.total = downloaded.bytes;
   scheduleSave(0);
+  /* The swarm is gone: this job is now pure local work (probe, remux, subtitles)
+   * and must not keep the next episode waiting for a transfer slot. */
+  releaseSlot(job);
 
   job.stage = 'verifying';
   job.progressValue = 0.82;
@@ -1584,7 +1618,10 @@ async function attemptRelease(job, release, dir, controller) {
   const part = `${dest}.part`;
   const durationSec = Number(probe.durationSec) || 0;
 
-  job.stage = direct ? 'installing' : 'remuxing';
+  /* With the video copied the job only re-encodes the audio track: calling that
+   * "Remuxing to MP4" made a pure container rewrite look like a video
+   * transcode. The drawer names the phase that is really running. */
+  job.stage = direct ? 'installing' : (picked.video?.transcode ? 'remuxing' : 'converting');
   job.progressValue = direct ? 0.97 : 0.84;
   job.part = part;
   scheduleSave(0);

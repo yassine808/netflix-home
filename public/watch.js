@@ -30,6 +30,7 @@ const epBtn = $('epBtn');
 const epPanel = $('epPanel');
 const epList = $('epList');
 const epSeason = $('epSeason');
+const epMenu = $('epSeasonMenu');
 const back10Btn = $('back10');
 const fwd10Btn = $('fwd10');
 const resumeToast = $('resumeToast');
@@ -69,6 +70,9 @@ let lastSeekAt = 0;
 let seriesSeasons = [];
 let seriesArt = {};
 let episodesLoading = false;
+/* Season the panel is showing; the trigger is a button + glass listbox because
+ * a native <select> popup is drawn by the OS and cannot follow the panel. */
+let seasonValue = 0;
 /* "SxE" -> real episode name from the download catalog. */
 const episodeNames = new Map();
 let subtitlesLoading = false;
@@ -254,7 +258,7 @@ function bindEvents() {
   fwd10Btn.addEventListener('click', () => skip(10));
   epBtn.addEventListener('click', () => toggleEpPanel());
   $('epClose').addEventListener('click', () => toggleEpPanel(false));
-  epSeason.addEventListener('change', () => renderEpisodes(Number(epSeason.value)));
+  wireSeasonDropdown();
   nextCard.addEventListener('click', openNextEpisode);
   document.addEventListener('pointerdown', (e) => {
     if (!ccPanel.hidden && !ccPanel.contains(e.target) && !ccBtn.contains(e.target)) toggleCcPanel(false, true);
@@ -493,13 +497,24 @@ async function loadEpisodes() {
   episodesLoading = true;
   epBtn.hidden = false;
   epPanel.classList.add('is-loading');
+  let data = null;
   try {
-    const data = await getSeries(item.seriesKey);
-    seriesSeasons = (data.seasons || []).filter((s) => s.episodes?.length);
-    seriesArt = data.art || {};
+    data = await getSeries(item.seriesKey);
   } catch {
-    seriesSeasons = [];
+    data = null;
   }
+  /* The season is listed in full even when only a few files are on disk: the
+   * catalog knows every episode, and one that has no local file is drawn greyed
+   * out. A failure here (offline, title not in the catalog) leaves the local
+   * list exactly as before. */
+  let catalog = null;
+  try {
+    catalog = await getSeriesCatalog(item.seriesKey);
+  } catch {
+    catalog = null;
+  }
+  seriesSeasons = mergeSeasons(data?.seasons || [], catalog?.seasons || []);
+  seriesArt = data?.art || {};
   episodesLoading = false;
   epPanel.classList.remove('is-loading');
   if (!seriesSeasons.length) {
@@ -507,22 +522,148 @@ async function loadEpisodes() {
     toggleEpPanel(false, true);
     return;
   }
-  epSeason.replaceChildren(...seriesSeasons.map((s) => {
-    const opt = document.createElement('option');
-    opt.value = String(s.season);
-    opt.textContent = `Season ${s.season}`;
-    return opt;
+  buildSeasonMenu();
+  selectSeason(Number(item.season) || seriesSeasons[0].season, { render: !epPanel.hidden });
+  if (catalog) loadEpisodeNames(catalog);
+}
+
+/* ---------- season dropdown ---------- */
+
+/* The panel is frosted glass; the native <select> popup is not, it is drawn by
+ * Windows with its own blue highlight. Same control, rebuilt: a button that
+ * shows the season and a glass listbox under it. */
+function wireSeasonDropdown() {
+  epSeason.addEventListener('click', () => {
+    const open = epMenu.hidden;
+    setSeasonMenu(open);
+    if (open) highlightSeason(seasonValue);
+  });
+
+  epSeason.addEventListener('keydown', (event) => {
+    const items = [...epMenu.querySelectorAll('.ep-season-item')];
+    if (!items.length) return;
+    if (event.key === 'Escape') {
+      setSeasonMenu(false);
+      return;
+    }
+    if (epMenu.hidden) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        setSeasonMenu(true);
+        highlightSeason(seasonValue);
+      }
+      return;
+    }
+    const active = items.findIndex((item) => item.classList.contains('is-active'));
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      const from = active < 0 ? (step > 0 ? -1 : items.length) : active;
+      const next = Math.min(items.length - 1, Math.max(0, from + step));
+      highlightSeason(Number(items[next].dataset.season));
+      items[next].scrollIntoView({ block: 'nearest' });
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      const picked = items[active] || items.find((item) => item.classList.contains('is-selected'));
+      if (picked) {
+        selectSeason(Number(picked.dataset.season));
+        setSeasonMenu(false);
+      }
+    }
+  });
+
+  document.addEventListener('click', (event) => {
+    if (epMenu.hidden) return;
+    if (event.target === epSeason || epMenu.contains(event.target)) return;
+    setSeasonMenu(false);
+  });
+}
+
+function setSeasonMenu(open) {
+  const expanded = Boolean(open);
+  epSeason.setAttribute('aria-expanded', String(expanded));
+  epMenu.hidden = !expanded;
+  if (expanded) epMenu.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' });
+}
+
+function highlightSeason(season) {
+  for (const item of epMenu.querySelectorAll('.ep-season-item')) {
+    item.classList.toggle('is-active', Number(item.dataset.season) === season);
+  }
+}
+
+function buildSeasonMenu() {
+  epMenu.replaceChildren(...seriesSeasons.map((s) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'ep-season-item';
+    row.dataset.season = String(s.season);
+    row.setAttribute('role', 'option');
+    row.textContent = `Season ${s.season}`;
+    row.addEventListener('click', () => {
+      selectSeason(s.season);
+      setSeasonMenu(false);
+      epSeason.focus();
+    });
+    return row;
   }));
-  epSeason.value = String(item.season);
-  if (!epSeason.value) epSeason.selectedIndex = 0;
-  if (!epPanel.hidden) renderEpisodes(Number(epSeason.value));
-  loadEpisodeNames();
+}
+
+function selectSeason(season, { render = true } = {}) {
+  const exists = seriesSeasons.some((s) => s.season === season);
+  seasonValue = exists ? season : (seriesSeasons[0]?.season || 0);
+  epSeason.textContent = `Season ${seasonValue}`;
+  for (const item of epMenu.querySelectorAll('.ep-season-item')) {
+    const on = Number(item.dataset.season) === seasonValue;
+    item.classList.toggle('is-selected', on);
+    item.setAttribute('aria-selected', String(on));
+  }
+  highlightSeason(seasonValue);
+  if (render) renderEpisodes(seasonValue);
+}
+
+/* Local episodes plus every episode the catalog knows, in season/episode order.
+ * A row that exists only in the catalog has no id, so the player cannot open it:
+ * it is drawn greyed out instead of being missing from the season. */
+function mergeSeasons(localSeasons, catalogSeasons) {
+  const seasons = new Map();
+  const add = (season, row) => {
+    const list = seasons.get(season) || new Map();
+    list.set(Number(row.episode), row);
+    seasons.set(season, list);
+  };
+  for (const season of localSeasons) {
+    const number = Number(season.season) || 0;
+    for (const ep of season.episodes || []) add(number, { ...ep, missing: false });
+  }
+  for (const season of catalogSeasons) {
+    const number = Number(season.season) || 0;
+    const list = seasons.get(number);
+    for (const ep of season.episodes || []) {
+      const key = Number(ep.episode);
+      if (list?.has(key)) continue;
+      add(number, {
+        id: '',
+        season: number,
+        episode: key,
+        title: ep.title || '',
+        durationSec: Number(ep.duration) || 0,
+        missing: true,
+      });
+    }
+  }
+  return [...seasons.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([season, list]) => ({
+      season,
+      episodes: [...list.values()].sort((a, b) => a.episode - b.episode),
+    }));
 }
 
 /* Local files often carry only the series title, so the real episode names come
  * from the download catalog, the same source the series sheet lists. Names are
  * patched into the open list in place: no re-render, so the scroll stays put. */
-async function loadEpisodeNames() {
+async function loadEpisodeNames(knownCatalog) {
   const key = item?.seriesKey;
   if (!key) return;
   const put = (season, rows) => {
@@ -533,7 +674,7 @@ async function loadEpisodeNames() {
     }
   };
   try {
-    const catalog = await getSeriesCatalog(key);
+    const catalog = knownCatalog || await getSeriesCatalog(key);
     for (const s of catalog?.seasons || []) put(s.season, s.episodes);
     if (!episodeNames.size && catalog?.catalogId) {
       const full = await getCastleSeriesEpisodes(catalog.catalogId);
@@ -572,34 +713,45 @@ function renderEpisodes(season) {
   if (!entry) return;
   const base = videoTitle.textContent.trim().toLowerCase();
   for (const ep of entry.episodes) {
-    const isCurrent = ep.id === item.id;
+    const isCurrent = Boolean(ep.id) && ep.id === item.id;
+    /* A catalog-only row: the episode exists, the file does not. It stays in
+     * the list, greyed out and not clickable, so the season always reads
+     * complete. */
+    const missing = ep.missing === true || !ep.id;
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = `ep-item${isCurrent ? ' current' : ''}`;
+    btn.className = `ep-item${isCurrent ? ' current' : ''}${missing ? ' is-missing' : ''}`;
+    if (missing) {
+      btn.disabled = true;
+      btn.title = 'Not downloaded yet';
+    }
 
     btn.dataset.key = `${entry.season}x${ep.episode}`;
 
     const thumb = document.createElement('span');
     thumb.className = 'ep-thumb';
-    const img = document.createElement('img');
-    img.loading = 'lazy';
-    img.alt = '';
     // Catalog picture saved in catalog.db; a missing row falls back to a
     // still grab from the local file so the row is never empty.
     const savedArt = seriesArt[`${entry.season}x${ep.episode}`] || '';
-    const fallback = thumbUrl(ep, 320);
-    img.src = savedArt || fallback;
-    img.addEventListener('error', () => {
-      if (savedArt && img.src !== fallback) img.src = fallback;
-    }, { once: true });
-    thumb.append(img);
+    const fallback = missing ? '' : thumbUrl(ep, 320);
+    const src = savedArt || fallback;
+    if (src) {
+      const img = document.createElement('img');
+      img.loading = 'lazy';
+      img.alt = '';
+      img.src = src;
+      img.addEventListener('error', () => {
+        if (savedArt && img.src !== fallback && fallback) img.src = fallback;
+      }, { once: true });
+      thumb.append(img);
+    }
     if (isCurrent) {
       const now = document.createElement('span');
       now.className = 'ep-playing';
       now.textContent = 'Playing';
       thumb.append(now);
     }
-    const prog = progressFor(ep.id);
+    const prog = missing ? null : progressFor(ep.id);
     if (prog && prog.d > 0 && prog.t > 5) {
       const bar = document.createElement('span');
       bar.className = 'ep-bar';
@@ -618,12 +770,17 @@ function renderEpisodes(season) {
     title.className = 'ep-name';
     title.textContent = name;
     const meta = document.createElement('small');
-    meta.textContent = [`S${ep.season}:E${ep.episode}`, ep.durationSec ? formatDuration(ep.durationSec) : ''].filter(Boolean).join(' · ');
+    meta.textContent = [
+      `S${ep.season}:E${ep.episode}`,
+      ep.durationSec ? formatDuration(ep.durationSec) : '',
+      missing ? 'Not downloaded' : '',
+    ].filter(Boolean).join(' · ');
     info.append(title, meta);
 
     btn.append(thumb, info);
     btn.addEventListener('click', () => {
       if (isCurrent) { toggleEpPanel(false); return; }
+      if (missing) return;
       saveNow();
       location.href = `/watch.html?id=${encodeURIComponent(ep.id)}`;
     });
@@ -637,10 +794,11 @@ function toggleEpPanel(force, quiet) {
   if (open) toggleCcPanel(false, true);
   epPanel.hidden = !open;
   epBtn.setAttribute('aria-expanded', String(open));
+  if (!open) setSeasonMenu(false);
   clearTimeout(hideTimer);
   if (open) {
     showUi();
-    renderEpisodes(Number(epSeason.value));
+    renderEpisodes(seasonValue);
   } else if (!quiet) {
     armHideUi();
   }

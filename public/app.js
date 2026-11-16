@@ -1519,6 +1519,9 @@ const STAGE_LABELS = {
   verifying: 'Checking tracks…',
   installing: 'Installing…',
   remuxing: 'Remuxing to MP4…',
+  /* The video is copied and only the audio track is re-encoded; saying "remux"
+   * here made every AC3 release look like a full transcode. */
+  converting: 'Converting audio…',
   subtitles: 'Extracting subtitles…',
 };
 

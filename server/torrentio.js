@@ -354,7 +354,7 @@ function languageCode(value) {
  *      HEVC release without a HEVC-capable client takes -120, because it would
  *      be a full GPU transcode instead of a container copy.
  *   5. Audio: dual audio +120; +80 when English plus another language is
- *      offered, +40 when English is the only one. An AAC first track adds +80
+ *      offered, +40 when English is the only one. An AAC first track adds +180
  *      (when the video is copyable): that release needs no conversion at all.
  *   6. Seeders: min(700, seeders * 10). A healthy swarm is what finishes the
  *      episode; 70+ seeders reach the cap.
@@ -437,17 +437,17 @@ export function rankReleases(releases, { originalLanguage = '', copyVideo = fals
 
     /* An AAC first track is what lets the whole episode skip the remux: with a
      * copyable video the release is installed by renaming it (0 s). Without it
-     * the remux either copies the audio (a 26 min HEVC/AAC release: 10.1 s) or
-     * has to encode it (two E-AC3 tracks: 28.6 s). 80 points wins against a
-     * same-size, same-health release (health is 10 per seeder, capped at 70
-     * peers), but never against a swarm that is clearly healthier - a
-     * 20-seeder deficit is worth more than the encode.
+     * the remux has to encode the audio into a new file (two E-AC3 tracks on a
+     * 1 GB episode: ~200 s and a second full write). 180 points is worth 18
+     * seeders - enough that a known-AAC release beats an untagged one of the
+     * same size whose audio may or may not be AC3, but never a swarm that is
+     * clearly healthier (the health term caps at 700).
      *
      * Only when the video can be copied too: an HEVC release that has to be
-     * transcoded costs far more than the audio encode saves, so the bonus waits
-     * for the client that decodes HEVC in hardware. */
+     * transcoded costs far more than the audio encode it saves, so the bonus
+     * waits for the client that decodes HEVC in hardware. */
     if (release.audio === 'aac' && (release.codec !== 'hevc' || copyVideo)) {
-      score += 80;
+      score += 180;
       reasons.push('aac audio');
     }
 

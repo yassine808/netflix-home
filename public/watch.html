@@ -158,7 +158,10 @@
         <h2>Episodes</h2>
         <button class="cc-close" id="epClose" aria-label="Close episodes">✕</button>
       </div>
-      <div class="ep-season-wrap"><select class="ep-season" id="epSeason" aria-label="Season"></select></div>
+      <div class="ep-season-wrap">
+        <button class="ep-season" id="epSeason" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="epSeasonMenu">Season 1</button>
+        <div class="ep-season-menu" id="epSeasonMenu" role="listbox" aria-label="Season" hidden></div>
+      </div>
       <div class="ep-list" id="epList"></div>
     </div>
 
