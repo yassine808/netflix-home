@@ -1552,18 +1552,36 @@ async function refreshDownloads({ initial = false } = {}) {
 }
 
 function updateDownloadsBadge() {
-  const active = state.downloads.filter((job) => ACTIVE_STATUSES.has(job.status)).length;
+  const running = state.downloads.filter((job) => job.status === 'downloading').length;
+  const queued = state.downloads.filter((job) => job.status === 'queued').length;
   const paused = state.downloads.filter((job) => job.status === 'paused').length;
+  const active = state.downloads.filter((job) => ACTIVE_STATUSES.has(job.status)).length;
   els.downloadsBadge.hidden = active === 0;
   els.downloadsBadge.textContent = active > 9 ? '9+' : String(active);
   els.downloadsBtn.classList.toggle('busy', active > 0);
-  if (active) {
-    els.downloadsCount.textContent = `${active} active download${active === 1 ? '' : 's'}`
-      + (paused ? ` · ${paused} paused` : '');
-  } else if (paused) {
-    els.downloadsCount.textContent = `${paused} paused download${paused === 1 ? '' : 's'}`;
+
+  /* The header answers "what is happening right now" and "what are my limits"
+   * without opening Settings: how many transfers are running against the cap,
+   * how many are waiting, the speed they add up to, and the limit they obey.
+   * It used to say "100 active downloads" because every queued job counted as
+   * active; queued work is waiting, not running. */
+  const cap = Math.max(1, Number(state.downloadMaxActive) || 3);
+  const limit = Number(state.downloadLimitMBps) || 0;
+  const speed = state.downloads.reduce((sum, job) => (
+    job.status === 'downloading' ? sum + (Number(job.speed) || 0) : sum
+  ), 0);
+
+  const parts = [];
+  if (running) parts.push(`${running} of ${cap} downloading`);
+  else if (queued || paused) parts.push(`0 of ${cap} downloading`);
+  if (queued) parts.push(`${queued} queued`);
+  if (paused) parts.push(`${paused} paused`);
+  if (speed) parts.push(formatSpeed(speed));
+  if (running || queued || paused) {
+    parts.push(limit > 0 ? `limit ${limit} MB/s` : 'no speed limit');
+    els.downloadsCount.textContent = parts.join(' · ');
   } else {
-    els.downloadsCount.textContent = 'No active downloads';
+    els.downloadsCount.textContent = `No active downloads · up to ${cap} at a time · ${limit > 0 ? `limit ${limit} MB/s` : 'no speed limit'}`;
   }
 }
 
@@ -2460,6 +2478,8 @@ function applyDownloadLimitUi() {
   if (document.activeElement !== els.dlSpeedInput) els.dlSpeedInput.value = String(limit);
   els.dlMaxActiveInput.placeholder = '3';
   els.dlSpeedInput.placeholder = '0';
+  /* The drawer header shows both limits, so it has to follow a change at once. */
+  updateDownloadsBadge();
 }
 
 function showDlLimitError(message) {
