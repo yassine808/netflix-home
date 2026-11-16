@@ -797,16 +797,10 @@ const MAX_CANDIDATES = 4;
 const MAX_EPISODE_BYTES = 3 * 1024 * 1024 * 1024;
 const MAX_MOVIE_BYTES = 6 * 1024 * 1024 * 1024;
 
-/* Torrentio tags most releases with the audio languages they ship. When the
- * indexer lists languages for this title but English is never among them, the
- * show simply has no English audio there (Thai-only rips, for example) and
- * Castle's HLS dub is the better answer. Releases with no tag at all stay in
- * the pool and are verified by ffprobe after the download. */
-function hasEnglish(release) {
-  const declared = Array.isArray(release.languages) ? release.languages : [];
-  return declared.includes('en');
-}
-
+/* Torrentio tags most releases with the audio languages they ship, and those
+ * tags are the only thing known before the download starts. A tagged release
+ * must list the show's original language and English; an untagged one is kept
+ * and verified by ffprobe after the download. */
 function declaresLanguages(release) {
   return Array.isArray(release.languages) && release.languages.length > 0;
 }
@@ -850,22 +844,31 @@ export async function planTorrentRelease({ imdbId, season = 0, episode = 0, orig
   const ranked = rankReleases(streams, { originalLanguage: text(originalLanguage), copyVideo: copyVideo === true });
   if (!ranked.length) return null;
 
-  /* The rule is "never a dub, English when it exists". A release is only
-   * dropped when the indexer tags it with languages that are neither English
-   * nor the title's original (an Italian-only rip of a Thai show). Releases
-   * tagged with the original language are kept and queued after the English
-   * ones; untagged releases stay as fallbacks and ffprobe decides after the
-   * download. English subtitles are added afterwards, so a Thai-only release is
-   * still watchable. */
+  /* The rule is hard now: a release must carry the show's original audio AND
+   * an English dub, and a release that lists its languages without either one
+   * is never downloaded - an Italian-only rip of a Thai show, or a French dub
+   * of a Korean show, would only waste the download. Releases that declare
+   * nothing are kept because Torrentio often has no tags at all (RARBG packs,
+   * for one); ffprobe decides those after the download (pickTracks). Releases
+   * that do declare both are tried first, since the evidence is already there. */
   const originalIso = toIso2(originalLanguage) || '';
-  const keepsOriginal = (release) => originalIso
-    && Array.isArray(release.languages)
-    && release.languages.includes(originalIso);
-  const english = ranked.filter(hasEnglish);
-  const originalOnly = ranked.filter((release) => !hasEnglish(release) && keepsOriginal(release));
-  const untagged = ranked.filter((release) => !declaresLanguages(release));
-  const pool = [...english, ...originalOnly, ...untagged];
-  if (!pool.length) return null;
+  const contradicts = (release) => {
+    const declared = Array.isArray(release.languages) ? release.languages : [];
+    if (!declared.length) return false;
+    if (originalIso && !declared.includes(originalIso)) return true;
+    return !declared.includes('en');
+  };
+  const eligible = ranked.filter((release) => !contradicts(release));
+  if (!eligible.length) {
+    return {
+      release: null,
+      candidates: [],
+      reason: `none of the ${ranked.length} release${ranked.length === 1 ? '' : 's'} carries the original audio and an English dub`,
+    };
+  }
+  const declared = eligible.filter(declaresLanguages);
+  const untagged = eligible.filter((release) => !declaresLanguages(release));
+  const pool = [...declared, ...untagged];
 
   /* 1080p is the floor (rankReleases already dropped everything lower), and a
    * sane file size beats a 29 GiB season pack: the click should fetch one
@@ -873,7 +876,9 @@ export async function planTorrentRelease({ imdbId, season = 0, episode = 0, orig
    * ahead of any pack, because a pack is the less predictable download. */
   const limit = Number(season) > 0 ? MAX_EPISODE_BYTES : MAX_MOVIE_BYTES;
   const hd = pool.filter((release) => release.quality === '1080p' || release.quality === '2160p');
-  if (!hd.length) return null;
+  if (!hd.length) {
+    return { release: null, candidates: [], reason: 'no 1080p release is left after the audio filter' };
+  }
   const saneSize = (release) => !release.sizeBytes || release.sizeBytes <= limit;
   const single = hd.filter((release) => !release.moviePack);
   const packs = hd.filter((release) => release.moviePack);
@@ -921,6 +926,13 @@ export async function addTorrentDownload(body = {}) {
   });
   if (!plan) return null;
   const candidates = plan.candidates;
+  if (!candidates.length) {
+    /* Every release was filtered out before a download started: no original
+     * audio, or no English dub. The caller turns this into an explicit
+     * "unavailable" answer instead of queueing something that cannot satisfy
+     * the rule. */
+    return { count: 0, jobs: [], unavailable: plan.reason || 'no qualifying release', source: 'torrentio' };
+  }
 
   const collection = sanitizeSegment(body.collection || 'Downloads', 'Downloads');
   const folder = body.folder ? sanitizeSegment(body.folder, '') : '';
@@ -1684,7 +1696,11 @@ async function finishSubtitles(job, dest, subtitles, prepared = null) {
     scheduleSave(0);
   }
   if (!tracks.some((track) => track.lang === 'en')) {
-    await ensureEnglishSubtitle(dest, {
+    /* Subtitles are the third half of the rule: embedded English, or an
+     * OpenSubtitles track. A failed fetch is said out loud instead of being
+     * swallowed - the episode is kept (the video and audio already passed),
+     * but the drawer should not pretend an English track is there. */
+    const added = await ensureEnglishSubtitle(dest, {
       /* The job already knows which title it downloaded: hand the id over so a
        * bare name like "Mousetrap" cannot resolve to another show. */
       imdbId: job.identifier,
@@ -1694,7 +1710,10 @@ async function finishSubtitles(job, dest, subtitles, prepared = null) {
       episode: job.episode,
       year: job.year,
       isSeries: job.season > 0,
-    }).catch(() => {});
+    }).catch(() => false);
+    if (!added) {
+      console.warn(`[download] ${job.title}: no English subtitle track could be added; the episode plays without subtitles`);
+    }
   }
 }
 

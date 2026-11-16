@@ -1527,6 +1527,14 @@ app.get('/api/castle/plan', async (req, res) => {
         return { episode, quality: '' };
       }
 
+      /* The audio rule emptied the pool: the episode is unavailable, and the
+       * sheet shows why ("no release carries the original audio and an English
+       * dub") instead of a Download button that would fail. */
+      if (!fetched.release) {
+        releasePlans.set(key, { at: Date.now(), value: null });
+        return { episode, quality: '', unavailable: fetched.reason || 'no qualifying release' };
+      }
+
       releasePlans.set(key, { at: Date.now(), value: fetched });
       const { release } = fetched;
       return {
@@ -1633,6 +1641,7 @@ app.post('/api/castle/download', async (req, res) => {
           if (torrent?.skipped) {
             return res.status(200).json({ ...torrent, source: 'torrentio', originalAudio });
           }
+          if (torrent?.unavailable) return res.status(409).json({ error: torrent.unavailable });
           if (torrent) return res.status(201).json({ ...torrent, originalAudio });
         }
       } catch (err) {

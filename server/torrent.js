@@ -937,10 +937,16 @@ export function pickTracks(probe, { originalLanguage = '', copyVideo = false, mk
   const originalIsEnglish = langOf(original) === 'en';
   if (originalIsEnglish) english = null;
 
-  if (!english && !originalIsEnglish && audio.length > 1) {
+  /* Hard rule: a non-English title must ship its original audio AND an English
+   * dub in the same file. A single-track Korean episode is the original with no
+   * dub - no use here, whatever else the release promised. The old check only
+   * fired when the file had more than one track, so those slipped through. */
+  if (!english && !originalIsEnglish) {
     return {
       error: 'no-english-audio',
-      reason: 'the file has no English audio track; only the original would be playable',
+      reason: audio.length > 1
+        ? 'the file has no English audio track; only the original would be playable'
+        : 'the file has only the original audio; no English dub',
     };
   }
 

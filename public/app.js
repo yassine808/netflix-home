@@ -3739,6 +3739,11 @@ function appendCastleAction(row, detail, episode, local, quality, plan) {
     btn.addEventListener('click', () => queueCastleEpisode(episode, btn));
   }
 
+  /* The audio rule turned every release down. The row already reads
+   * "Unavailable"; the tooltip says which rule did it, so the viewer is not left
+   * guessing whether it is the network or the release. */
+  if (!state.offline && !available && plan?.unavailable) btn.title = plan.unavailable;
+
   action.prepend(btn);
   row.append(action);
 }
