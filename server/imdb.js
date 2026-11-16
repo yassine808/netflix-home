@@ -14,7 +14,7 @@ export function isImdbId(value) {
 }
 
 export async function resolveImdbId(item) {
-  const direct = String(item.tmdbId || '');
+  const direct = String(item.imdbId || item.tmdbId || '');
   if (isImdbId(direct)) return direct;
   // Offline means no lookup and no cached negative: once the switch is back on
   // the same title can still resolve.
@@ -25,7 +25,10 @@ export async function resolveImdbId(item) {
   const episode = Number(item.episode) || 0;
   // The season is part of the key: two series can share a title and still be
   // told apart by the episode on disk, so each season resolves on its own.
-  const key = `${item.seriesKey || item.id}:${year}:${season}`;
+  // The title itself is part of the key too: a caller that only knows the name
+  // (the download worker) has no series key, and "no key at all" used to be one
+  // shared entry - the first show to resolve handed its id to every other show.
+  const key = `${item.seriesKey || item.id || normalizeTitle(item.seriesTitle || item.title)}:${year}:${season}`;
   if (cache.has(key)) return cache.get(key);
 
   let id = '';

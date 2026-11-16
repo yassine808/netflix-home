@@ -352,8 +352,8 @@ app.post('/api/settings/castle-fallback', (req, res) => {
   res.json(setCastleFallback(req.body.castleFallback));
 });
 
-/* Sound default for video the app starts by itself: the hero preview and the
- * player. Off starts both muted. */
+/* Sound default for the trailers the app starts by itself: the hero preview and
+ * the catalogue sheet. Off starts both muted; the player is not affected. */
 app.post('/api/settings/autoplay-sound', (req, res) => {
   if (typeof req.body?.autoplaySound !== 'boolean') {
     return res.status(400).json({ error: 'pass {"autoplaySound": true|false}' });

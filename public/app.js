@@ -2452,8 +2452,8 @@ function applyAutoplaySoundUi() {
   els.autoplaySoundBtn.classList.toggle('is-off', !on);
   els.autoplaySoundLabel.textContent = on ? 'On' : 'Off';
   els.autoplaySoundBtn.title = on
-    ? 'Preview and player start with sound'
-    : 'Preview and player start muted';
+    ? 'Trailers start with sound'
+    : 'Trailers start muted';
 }
 
 async function toggleAutoplaySound() {
@@ -2466,10 +2466,13 @@ async function toggleAutoplaySound() {
     if (!state.autoplaySound) {
       els.heroVideo.muted = true;
       syncHeroMute(false);
+      state.castleMuted = true;
+      els.castleTrailer.muted = true;
+      syncCastleMute(false);
     }
     toast(state.autoplaySound
       ? 'Auto-play sound on'
-      : 'Auto-play sound off — videos start muted');
+      : 'Auto-play sound off — trailers start muted');
   } catch (err) {
     toast(`Could not change the sound setting: ${err.message}`, { type: 'warn' });
   } finally {
@@ -4464,8 +4467,12 @@ function stopCastleTrailer() {
 function playCastleTrailer(url) {
   const video = els.castleTrailer;
   if (!url) return;
+  // Settings → Auto-play sound is the default for trailers, here and on the
+  // billboard. The trailer's own speaker button overrides it for this visit.
+  if (state.autoplaySound === false) state.castleMuted = true;
   video.src = url;
   video.muted = state.castleMuted;
+  syncCastleMute();
   try { video.volume = 0; } catch { /* ignore */ }
   const attempt = (first) => {
     const playing = video.play();

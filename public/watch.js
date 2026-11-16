@@ -1,6 +1,6 @@
 import {
   formatClock, formatDuration, progressFor, saveProgress, thumbUrl, readJson, writeJson, getSeries,
-  getSettings, skel,
+  skel,
 } from './common.js';
 
 const $ = (id) => document.getElementById(id);
@@ -61,7 +61,6 @@ let idleTimer = null;
 let dragging = false;
 let pendingResume = 0;
 let lastVolume = 1;
-let autoplaySound = true;
 let dragRatio = 0;
 let raf = 0;
 let lastTimeLabel = '';
@@ -159,7 +158,6 @@ async function init() {
   document.body.style.background = '#000';
   video.poster = thumbUrl(item, 960);
   await initAudioTracks();
-  await loadAutoplaySound();
   video.src = streamUrl();
   video.load();
   bindEvents();
@@ -349,18 +347,6 @@ function attemptAutoplay() {
     return undefined;
   });
   return start();
-}
-
-/* Sound default from Settings: the player starts muted when auto-play sound is
- * off. */
-async function loadAutoplaySound() {
-  try {
-    const settings = await getSettings();
-    autoplaySound = settings?.autoplaySound !== false;
-  } catch {
-    /* older server: keep sound on */
-  }
-  if (!autoplaySound) video.muted = true;
 }
 
 function togglePlay() {

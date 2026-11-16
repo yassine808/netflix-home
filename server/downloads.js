@@ -1685,10 +1685,14 @@ async function finishSubtitles(job, dest, subtitles, prepared = null) {
   }
   if (!tracks.some((track) => track.lang === 'en')) {
     await ensureEnglishSubtitle(dest, {
+      /* The job already knows which title it downloaded: hand the id over so a
+       * bare name like "Mousetrap" cannot resolve to another show. */
+      imdbId: job.identifier,
       seriesTitle: job.seriesTitle || job.title,
       title: job.title,
       season: job.season,
       episode: job.episode,
+      year: job.year,
       isSeries: job.season > 0,
     }).catch(() => {});
   }

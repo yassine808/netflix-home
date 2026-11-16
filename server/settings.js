@@ -11,9 +11,10 @@ import path from 'node:path';
  * English audio: true downloads Castle's 720p HLS file instead, false keeps the
  * download Torrentio-only and refuses instead of quietly lowering the quality.
  *
- * `autoplaySound` is the sound default for video the app starts by itself: the
- * hero preview on the home page and the player when an episode opens. Off means
- * both start muted and the viewer unmutes them.
+ * `autoplaySound` is the sound default for trailers the app starts by itself:
+ * the hero preview on the home page and the trailer in the catalogue sheet.
+ * Off means both start muted and the viewer unmutes them. The watch player is
+ * never affected: a show always opens with sound.
  *
  * `downloadMaxActive` is how many transfers run at once. Every one is its own
  * torrent swarm with its own aria2c: 41 at a time answered /api/downloads in
