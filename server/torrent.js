@@ -983,7 +983,12 @@ export function pickTracks(probe, { originalLanguage = '', copyVideo = false, mk
        * that lists a dub first (Italian track 1, English track 2) must be
        * remuxed so the original language becomes track 1 - and the dub is
        * dropped on the way - instead of being kept as-is and playing the dub. */
-      && selected[0]?.index === probe.audio[0]?.index,
+      && selected[0]?.index === probe.audio[0]?.index
+      /* Same rule for a dub behind the original: keeping the file untouched
+       * leaves the extra track in it, and the player's audio menu then offers a
+       * language the queue is not supposed to carry. `direct` only when the
+       * file holds exactly the picked tracks. */
+      && probe.audio.length === selected.length,
   };
 }
 

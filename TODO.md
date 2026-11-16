@@ -10,4 +10,4 @@
 - [ ] In catalogue , only show " > resume" no season or episode
 - [ ] Fix video prioritizing + seeds etc (best score)
 - [ ] The download speed is very low, forget format, as long as it's 1080p or above then download it, priority are for those who have higher seed etc + low size at the same time
-- [ ] 
+- [ ] ![](image.png) the default for all players should be original dub, always! unless the user changed it in that serie!

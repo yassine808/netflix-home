@@ -219,17 +219,12 @@ async function walkIndexed(root) {
       if (!entry.isFile() || !VIDEO_EXTS.has(path.extname(name).toLowerCase())) continue;
 
       const known = sameMtime ? cachedByName.get(name) : null;
-      if (known && !known.d) {
-        rows.push(known);
-        files.push({
-          rel: rel ? path.join(rel, name) : name,
-          full: path.join(full, name),
-          size: Number(known.s) || 0,
-          mtime: Number(known.m) || 0,
-        });
-        continue;
-      }
-
+      /* The folder's mtime is not enough: replacing a file in place (a rename
+       * over an existing name, which is how an episode is installed) leaves the
+       * directory timestamp alone, so a cached row kept the old size, duration
+       * and audio tracks. One stale row made the player offer an Italian dub
+       * for an English-only episode. A stat per video file costs microseconds;
+       * trusting the folder cost correctness. */
       let fst;
       try {
         fst = await fsp.stat(path.join(full, name));
@@ -238,6 +233,17 @@ async function walkIndexed(root) {
       }
       const size = fst.size;
       const fileMtime = Math.round(fst.mtimeMs);
+      if (known && !known.d && Number(known.s) === size && Number(known.m) === fileMtime) {
+        rows.push(known);
+        files.push({
+          rel: rel ? path.join(rel, name) : name,
+          full: path.join(full, name),
+          size,
+          mtime: fileMtime,
+        });
+        continue;
+      }
+
       rows.push({ n: name, d: 0, s: size, m: fileMtime });
       files.push({ rel: rel ? path.join(rel, name) : name, full: path.join(full, name), size, mtime: fileMtime });
     }
