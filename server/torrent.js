@@ -1439,6 +1439,13 @@ export async function extractSubtitles({ input, outStem, subtitles } = {}) {
     });
   }
 
-  if (!batchOk) console.warn('[torrent] subtitle batch pass reported a failure; kept the recovered tracks');
+  /* ffmpeg writes the tracks in order and stops at a track with no packets
+   * ("Output file #3 does not contain any stream"), so a failed batch still
+   * leaves most of its files on disk. The loop above already kept those and
+   * retried the missing ones one at a time; say how many needed that instead
+   * of calling a mostly successful pass a failure. */
+  if (!batchOk && written.length < wanted.length) {
+    console.warn(`[torrent] subtitle batch wrote ${written.length} of ${wanted.length} tracks; retried the rest one at a time`);
+  }
   return written;
 }

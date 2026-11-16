@@ -983,6 +983,25 @@ export function resumeDownloads() {
 }
 
 /**
+ * Move a waiting job to the head of the queue. The shows Yassine asked for
+ * should not wait behind a hundred season-pack episodes; a job that is already
+ * running is left alone. Paused jobs stay paused.
+ */
+export function promoteDownload(id) {
+  const job = jobs.get(String(id));
+  if (!job) return null;
+  if (job.status !== 'queued') return publicJob(job);
+  const index = queue.indexOf(job);
+  if (index > 0) {
+    queue.splice(index, 1);
+    queue.unshift(job);
+    scheduleSave(0);
+  }
+  pump();
+  return publicJob(job);
+}
+
+/**
  * Stop one transfer, keeping its partial payload. aria2c resumes from its
  * control file when the job is resumed; a half-written ffmpeg MP4 is rebuilt.
  */

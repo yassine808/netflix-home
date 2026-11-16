@@ -48,6 +48,22 @@ for (const level of ['log', 'info', 'warn', 'error']) {
   };
 }
 
+/* The exe has no console, so a quit from the tray, a stray signal or an
+ * exception would make the process vanish without a trace. Each of those paths
+ * leaves a line now; "the app closed by itself" then has an answer in
+ * launcher.log instead of a gap between two timestamps. */
+process.on('exit', (code) => log(`process exiting with code ${code}`));
+process.on('SIGINT', () => log('signal SIGINT received'));
+process.on('SIGTERM', () => log('signal SIGTERM received'));
+process.on('SIGBREAK', () => {
+  log('signal SIGBREAK received');
+  process.exit(0);
+});
+/* A single failed request must not take the whole server with it: log the
+ * error and keep serving, the queue and playback are still fine. */
+process.on('uncaughtException', (err) => log(`uncaught exception: ${err?.stack || err}`));
+process.on('unhandledRejection', (err) => log(`unhandled rejection: ${err?.stack || err}`));
+
 function hasExactDir(dir, name) {
   try {
     return fs.readdirSync(dir).includes(name);
@@ -116,6 +132,7 @@ function openBrowser(url) {
     stdio: 'ignore',
     windowsHide: true,
   }).unref();
+  log(`browser opened at ${url}`);
 }
 
 async function probe(port) {
@@ -234,7 +251,6 @@ async function main() {
 
   const port = await waitForServer(portFile);
   if (port) {
-    log(`browser opened at http://localhost:${port}`);
     openBrowser(`http://localhost:${port}`);
     startTray(port, appDir);
   } else {

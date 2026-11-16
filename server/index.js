@@ -19,7 +19,7 @@ import {
   addTorrentDownload,
   planTorrentRelease,
   listDownloads, cancelDownload, retryDownload,
-  pauseDownload, resumeDownload, applyDownloadLimits,
+  pauseDownload, resumeDownload, applyDownloadLimits, promoteDownload,
   pauseDownloads, resumeDownloads, startRestoredDownloads,
 } from './downloads.js';
 import { findReleases, rankReleases, releaseLabel } from './torrentio.js';
@@ -410,6 +410,7 @@ app.post('/api/restart', (req, res) => {
   }
   res.json({ ok: true });
   setTimeout(() => {
+    console.log('[app] restart requested');
     try {
       const env = { ...process.env };
       // The child has to re-read config.json instead of inheriting this
@@ -1677,6 +1678,13 @@ app.post('/api/downloads/:id/pause', (req, res) => {
   res.json(job);
 });
 
+/* Jump the queue: the next free slot goes to this job. */
+app.post('/api/downloads/:id/first', (req, res) => {
+  const job = promoteDownload(req.params.id);
+  if (!job) return res.status(404).json({ error: 'download not found' });
+  res.json(job);
+});
+
 app.post('/api/downloads/:id/resume', (req, res) => {
   const job = resumeDownload(req.params.id);
   if (!job) return res.status(404).json({ error: 'download not found' });
@@ -1698,6 +1706,7 @@ app.post('/api/quit', (req, res) => {
   }
   res.json({ ok: true });
   setTimeout(() => {
+    console.log('[app] quit requested');
     // Leave the file compact and the query plans fresh for the next start.
     try {
       analyzeDb();
