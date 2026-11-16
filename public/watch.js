@@ -1,6 +1,6 @@
 import {
   formatClock, formatDuration, progressFor, saveProgress, thumbUrl, readJson, writeJson, getSeries,
-  getSeriesCatalog, getCastleSeriesEpisodes, skel,
+  getSeriesCatalog, getCastleSeriesEpisodes, logoUrl, skel,
 } from './common.js';
 
 const $ = (id) => document.getElementById(id);
@@ -52,6 +52,8 @@ const skipIntroBtn = $('skipIntro');
 const skipIntroFill = $('skipIntroFill');
 const idleEl = $('idle');
 const idleFill = $('idleFill');
+const idleTitle = $('idleTitle');
+const idleLogo = $('idleLogo');
 
 let item = null;
 let nextEpisode = null;
@@ -161,6 +163,7 @@ async function init() {
   epTag.textContent = item.isSeries ? `S${item.season}:E${item.episode}` : '';
   videoTitle.classList.remove('sk-text');
   epTag.classList.remove('sk-text');
+  setIdleLogo();
   document.body.style.background = '#000';
   video.poster = thumbUrl(item, 960);
   await initAudioTracks();
@@ -1496,6 +1499,25 @@ function onKeyDown(e) {
 
 /* ---------- idle screen ---------- */
 
+/* The idle card shows the catalogue wordmark in place of the text title, the
+ * same rule as the home page. A title with no logo keeps its heading. The image
+ * is fetched now, not when the screen opens, so the swap costs no flash. */
+function setIdleLogo() {
+  idleLogo.alt = videoTitle.textContent;
+  idleLogo.classList.remove('loaded');
+  idleTitle.classList.remove('has-logo');
+  idleLogo.onload = () => {
+    idleLogo.classList.add('loaded');
+    idleTitle.classList.add('has-logo');
+  };
+  idleLogo.onerror = () => {
+    idleLogo.removeAttribute('src');
+    idleLogo.classList.remove('loaded');
+    idleTitle.classList.remove('has-logo');
+  };
+  idleLogo.src = logoUrl(item);
+}
+
 function armIdle() {
   clearTimeout(idleTimer);
   if (!item || !video.paused) return;
@@ -1507,7 +1529,7 @@ function showIdle() {
   const t = video.ended ? duration : (video.currentTime || 0);
   const r = duration ? Math.min(1, Math.max(0, t / duration)) : 0;
   const pct = Math.round(r * 100);
-  $('idleTitle').textContent = videoTitle.textContent;
+  idleTitle.textContent = videoTitle.textContent;
   $('idleEp').textContent = epTag.textContent;
   $('idleBg').style.backgroundImage = video.poster ? `url("${video.poster}")` : '';
   $('idlePct').textContent = `${pct}% watched`;
