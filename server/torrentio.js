@@ -301,19 +301,35 @@ export async function findReleases({ imdbId, isSeries = true, season = 0, episod
   return releases;
 }
 
-/* Smaller is better at the same quality and health. An episode around 700 MB
- * is the sweet spot; a 2.7 GB rip costs points and a 300 MB one is suspiciously
- * small. Unknown sizes stay neutral. */
+/* Quality first: a 57 min episode under ~900 MB is a 1-1.5 Mbps rip and looks
+ * it, and the old band (+20 for 300-700 MB) actively preferred those. A normal
+ * 1080p episode or film lands between 900 MB and 3 GB and scores nothing, so
+ * health and audio still decide; only a copy that is too small to hold the
+ * picture, or large enough to be a remux, costs points. Unknown sizes stay
+ * neutral. */
 function sizeScore(bytes) {
   if (!bytes) return 0;
   const sizeMb = bytes / MB;
-  if (sizeMb >= 8000) return -200;
-  if (sizeMb >= 4000) return -140;
-  if (sizeMb >= 2000) return -80;
-  if (sizeMb >= 1200) return -40;
-  if (sizeMb >= 700) return 0;
-  if (sizeMb >= 300) return 20;
-  return -20;
+  if (sizeMb >= 12000) return -200;
+  if (sizeMb >= 6000) return -140;
+  if (sizeMb >= 3000) return -40;
+  if (sizeMb >= 900) return 0;
+  if (sizeMb >= 500) return -40;
+  return -60;
+}
+
+/* How many episodes a pack holds, from the season range in its name. An exact
+ * count is not in the metadata and is not needed: eight episodes a season is
+ * enough to tell a 250 MB-an-episode pack from a 50 MB one. 0 means the name
+ * carries no range at all. */
+function packEpisodeEstimate(name) {
+  const text = String(name || '');
+  const match = /s(\d{1,2})\s*-\s*s?(\d{1,2})|season\s*(\d{1,2})\s*-\s*(\d{1,2})|сезон\s*:?\s*(\d{1,2})\s*-\s*(\d{1,2})/i.exec(text);
+  if (!match) return 0;
+  const from = Number(match[1] || match[3] || match[5]);
+  const to = Number(match[2] || match[4] || match[6]);
+  if (!from || !to || to < from) return 0;
+  return (to - from + 1) * 8;
 }
 
 function languageCode(value) {
@@ -340,7 +356,8 @@ function languageCode(value) {
  *      (when the video is copyable): that release needs no conversion at all.
  *   6. Seeders: min(700, seeders * 10). A healthy swarm is what finishes the
  *      episode; 70+ seeders reach the cap.
- *   7. Size: see sizeScore(). Smaller wins at equal health.
+ *   7. Size: see sizeScore(). A release too small to hold 1080p loses points;
+ *      between 900 MB and 3 GB size does not matter.
  *   8. Packs cost -60: the same download for one episode, less predictable.
  *   9. originalLanguage +40 when its 2-letter form is advertised.
  */
@@ -395,6 +412,24 @@ export function rankReleases(releases, { originalLanguage = '', copyVideo = fals
     if (size !== 0) {
       score += size;
       reasons.push(size > 0 ? 'small' : 'size');
+    }
+
+    /* A pack's size is the size of every episode in it, so the band above is
+     * measured against the wrong quantity: "Season 1-6" at 2.7 GB is 56 MB an
+     * episode, a picture that falls apart, but it reads as a reasonable single
+     * download. The season range in the name gives a per-episode share good
+     * enough to spot that, and it applies whether or not the release was
+     * flagged as a pack - Torrentio's filename hint for a season pack often
+     * names one episode. */
+    const episodes = release.isPack
+      ? (packEpisodeEstimate(release.name) || 8)
+      : packEpisodeEstimate(release.name);
+    if (episodes > 1) {
+      const perEpisode = num(release.sizeBytes) / episodes;
+      if (perEpisode > 0 && perEpisode < 400 * MB) {
+        score -= 80;
+        reasons.push('thin pack');
+      }
     }
 
     /* An AAC first track is what lets the whole episode skip the remux: with a
