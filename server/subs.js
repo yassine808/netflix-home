@@ -222,6 +222,173 @@ function lastCueSec(text) {
   return cueStats(text).end;
 }
 
+/* Cue start/end pairs, in seconds. */
+function cueSpans(body) {
+  const re = /(?:(\d{1,3}):)?(\d{1,2}):(\d{2})[.,](\d{1,3})\s*-->\s*(?:(\d{1,3}):)?(\d{1,2}):(\d{2})[.,](\d{1,3})/g;
+  const toSec = (h, m, s, ms) => (h ? Number(h) * 3600 : 0) + Number(m) * 60 + Number(s) + Number(String(ms).padEnd(3, '0')) / 1000;
+  const out = [];
+  let match;
+  while ((match = re.exec(String(body || '')))) {
+    out.push({ start: toSec(match[1], match[2], match[3], match[4]), end: toSec(match[5], match[6], match[7], match[8]) });
+  }
+  return out;
+}
+
+function parseStamp(value) {
+  const parts = String(value || '').trim().split(':').map(Number);
+  if (parts.some((n) => !Number.isFinite(n))) return 0;
+  let seconds = 0;
+  for (const part of parts) seconds = seconds * 60 + part;
+  return seconds;
+}
+
+function formatStamp(seconds) {
+  const total = Math.max(0, seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${s.toFixed(3).padStart(6, '0')}`;
+}
+
+/*
+ * A subtitle file is timed against one video. A release can carry a track that
+ * was timed against a different one - the usual case is a 23.976 fps subtitle
+ * inside a 25 fps PAL transfer, which lands later and later until it is minutes
+ * off by the end. The companion tracks of the same release are timed for the
+ * file that is actually on disk, so their cue starts give the correction:
+ * `video = slug * t + offset`, fitted by counting how many of this track's cues
+ * land inside the reference's cues.
+ *
+ * Only a slope that is really different from 1 is reported: two tracks of the
+ * same cut can differ by a small constant lead, and shifting those would break
+ * a file that was fine. Null means "leave the track alone".
+ */
+export function fitSubtitleTiming(body, reference) {
+  const cues = cueSpans(body);
+  const ref = cueSpans(reference).sort((a, b) => a.start - b.start);
+  if (cues.length < 20 || ref.length < 20) return null;
+  if (ref[ref.length - 1].end - ref[0].start < 600) return null; // a forced track covers scenes, not a film
+
+  const inside = (t) => {
+    let lo = 0;
+    let hi = ref.length - 1;
+    let at = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (ref[mid].start <= t) { at = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    for (let i = at; i >= 0 && ref[i].start >= t - 180; i -= 1) {
+      if (t <= ref[i].end + 0.5) return true;
+    }
+    return false;
+  };
+
+  let best = { slope: 1, offset: 0, hits: -1 };
+  for (let slope = 0.9; slope <= 1.1001; slope += 0.005) {
+    for (let offset = -40; offset <= 40.001; offset += 0.5) {
+      let hits = 0;
+      for (const cue of cues) if (inside(cue.start * slope + offset)) hits += 1;
+      if (hits > best.hits) best = { slope, offset, hits };
+    }
+  }
+  const seed = best;
+  for (let slope = seed.slope - 0.01; slope <= seed.slope + 0.0101; slope += 0.0005) {
+    for (let offset = seed.offset - 1; offset <= seed.offset + 1.001; offset += 0.05) {
+      let hits = 0;
+      for (const cue of cues) if (inside(cue.start * slope + offset)) hits += 1;
+      if (hits > best.hits) best = { slope, offset, hits };
+    }
+  }
+  /* How well the track already sits on the reference. A track that is right
+   * needs no help, and a *reference* that is the mistimed one must not be able
+   * to drag a good track away: without this number the fit has no idea which of
+   * the two sides is the odd one out. */
+  let baseline = 0;
+  for (const cue of cues) if (inside(cue.start)) baseline += 1;
+  if (Math.abs(best.slope - 1) < 0.02) return null;
+  if (best.hits < cues.length * 0.5) return null;
+  return { ...best, baseline, total: cues.length };
+}
+
+/* The same file, every cue moved by `t = t * slope + offset`. Cues that would
+ * land before the start of the film are dropped; the text is untouched. */
+export function retimeSubtitle(body, fit = {}) {
+  const slope = Number(fit.slope);
+  const offset = Number(fit.offset);
+  if (!Number.isFinite(slope) || !Number.isFinite(offset)) return null;
+  const out = [];
+  for (const block of String(body || '').replace(/\r/g, '').split(/\n{2,}/)) {
+    const lines = block.split('\n');
+    const idx = lines.findIndex((line) => line.includes('-->'));
+    if (idx < 0) continue;
+    const text = lines.slice(idx + 1).join('\n').trim();
+    if (!text) continue;
+    const [a, b] = lines[idx].split('-->');
+    const start = parseStamp(a) * slope + offset;
+    const end = parseStamp(String(b).trim().split(/\s+/)[0]) * slope + offset;
+    if (end <= 0) continue;
+    out.push(`${formatStamp(start)} --> ${formatStamp(end)}\n${text}`);
+  }
+  if (out.length < 10) return null;
+  return `WEBVTT\n\n${out.join('\n\n')}\n`;
+}
+
+/*
+ * Makes `<stem>.en.vtt` agree with the video by fitting it against the other
+ * subtitle tracks of the same release. Runs at install time, on the real file,
+ * so a re-download of the same title comes out right without anyone touching
+ * it. Returns the fit when the file was rewritten, null when it was left alone.
+ */
+export async function retimeEnglishSidecar(stem, tracks = [], { full = '' } = {}) {
+  const english = `${stem}.en.vtt`;
+  let body;
+  try {
+    body = await fsp.readFile(english, 'utf8');
+  } catch {
+    return null;
+  }
+  let best = null;
+  for (const track of Array.isArray(tracks) ? tracks : []) {
+    if (!track || track.lang === 'en' || !track.path) continue;
+    let reference;
+    try {
+      reference = await fsp.readFile(track.path, 'utf8');
+    } catch {
+      continue;
+    }
+    const fit = fitSubtitleTiming(body, reference);
+    /* Only a track that is measurably *worse* than its fitted version may be
+     * rewritten. Two tracks of the same cut score high at slope 1; a track
+     * timed to another cut scores low and jumps once the slope is applied. */
+    if (!fit || fit.hits < fit.baseline + fit.total * 0.15) continue;
+    if (!best || fit.hits > best.fit.hits) best = { fit, lang: track.lang };
+    /* A season pack can carry thirty languages. Once a reference explains most
+     * of the track, the next twenty fits cannot improve the answer. */
+    if (best.fit.hits >= best.fit.total * 0.8) break;
+  }
+  if (!best) return null;
+  const retimed = retimeSubtitle(body, best.fit);
+  if (!retimed) return null;
+  /* Subtitles cannot run past the end of the film, and the implied source
+   * frame rate has to be one that exists. A track timed to another cut maps
+   * onto a plausible fps (a 23.976 subtitle inside a 25 fps transfer fits at
+   * slope 23.976/25); a fit that would imply, say, 26.1 fps is the pair
+   * disagreeing in the other direction - there the sidecar was right. */
+  if (full) {
+    const probe = await probeMedia(full).catch(() => null);
+    const durationSec = Number(probe?.durationSec) || 0;
+    if (durationSec > 0 && cueStats(retimed).end > durationSec + 60) return null;
+    const fps = Number(probe?.video?.fps) || 0;
+    if (fps > 0) {
+      const implied = best.fit.slope * fps;
+      const known = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60];
+      if (!known.some((rate) => Math.abs(implied - rate) / rate <= 0.02)) return null;
+    }
+  }
+  await fsp.writeFile(english, retimed, 'utf8');
+  return { ...best.fit, lang: best.lang };
+}
+
 async function videoDurationSec(full, item) {
   const known = Number(item?.durationSec);
   if (known > 0) return known;

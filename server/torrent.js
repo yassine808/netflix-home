@@ -785,6 +785,19 @@ export async function downloadTorrentFile({
 }
 
 /**
+ * Frame rate from ffprobe's rational string ("24000/1001"). The average rate is
+ * the honest one for a file with a variable header; the real rate is the
+ * fallback for streams that report only one. 0 means "unknown".
+ */
+function frameRateOf(stream) {
+  for (const key of ['avg_frame_rate', 'r_frame_rate']) {
+    const parts = String(stream?.[key] || '').split('/').map(Number);
+    if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) return parts[0] / parts[1];
+  }
+  return 0;
+}
+
+/**
  * Probe with ffprobe. Returns the video stream, every audio stream and the
  * text subtitle streams; image subtitles (PGS/VobSub) are unusable as WebVTT.
  */
@@ -814,6 +827,7 @@ export async function probeMedia(file) {
     height: Number(videoStream.height) || 0,
     pixFmt: videoStream.pix_fmt || '',
     bitRate: Number(videoStream.bit_rate) || 0,
+    fps: frameRateOf(videoStream),
   } : null;
 
   const audio = streams

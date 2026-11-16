@@ -57,6 +57,7 @@ Invoke-WebRequest "http://localhost:3000/api/art/<id>/poster?w=480" -SkipHttpErr
 
 ## Conventions
 
+- **Fix the app, not the file - and fix it for every title.** A wrong result on disk (an out-of-sync subtitle, a retimed sidecar, a hand-edited row, a deleted episode) is a symptom. Never repair it by hand and stop there: find why the app produced it, change the code so the app produces the right result, and let the app redo the work. The fix must be generic - keyed to a pattern the app can detect (an fps mismatch, a missing track, a bad probe), never to the one title that was reported. A manual patch is undone by the next download, hides the bug, and leaves every other title broken.
 - Vanilla ES modules, no framework. The bundler is only for the single-file EXE.
 - **Everything metadata-ish lives in `catalog.db`.** One `node:sqlite` connection (`server/db.js`) owns the file, opened with WAL, `synchronous=NORMAL`, `busy_timeout=5000`, a 32 MB page cache and mmap. Small assets (posters, backdrops, logos, subtitle text) are rows in `assets` / `subtitles`; large media (pictures, hero stills/clips, trailers, dub MP4s) stay on disk and are indexed by path. Do not add a second database file for a new feature: add a table to `db.js` and a prepared statement in the owning module.
 - Scans write inside one `transaction()`; the HTTP side reads from memory, so a scan never blocks a request.

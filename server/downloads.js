@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { spawnNice } from './proc.js';
-import { ensureEnglishSubtitle, vttFromSubtitle } from './subs.js';
+import { ensureEnglishSubtitle, retimeEnglishSidecar, vttFromSubtitle } from './subs.js';
 import { getDownloadMaxActive, getDownloadLimitMBps } from './settings.js';
 import { findReleases, rankReleases, magnetFor, releaseLabel } from './torrentio.js';
 import {
@@ -1684,9 +1684,9 @@ async function attemptRelease(job, release, dir, controller) {
  * episode. Best effort: failures leave the video and the job as they were.
  */
 async function finishSubtitles(job, dest, subtitles, prepared = null) {
+  const stem = dest.slice(0, dest.length - path.extname(dest).length);
   let tracks = Array.isArray(prepared) ? prepared : [];
   if (!Array.isArray(prepared)) {
-    const stem = dest.slice(0, dest.length - path.extname(dest).length);
     try {
       tracks = await extractSubtitles({ input: dest, outStem: stem, subtitles });
     } catch {
@@ -1714,6 +1714,17 @@ async function finishSubtitles(job, dest, subtitles, prepared = null) {
     if (!added) {
       console.warn(`[download] ${job.title}: no English subtitle track could be added; the episode plays without subtitles`);
     }
+  }
+  /* A release can carry an English track timed to a different cut than the
+   * video it ships in - a 23.976 fps subtitle inside a 25 fps PAL transfer
+   * drifts minutes by the end. The companion tracks of the same release are
+   * timed for this file, so they measure the correction; a track that is
+   * already right scores well where it stands and is left alone. Every
+   * download goes through here, so no title needs a manual repair. */
+  const fit = await retimeEnglishSidecar(stem, tracks, { full: dest }).catch(() => null);
+  if (fit) {
+    const shift = `${fit.offset >= 0 ? '+' : ''}${fit.offset.toFixed(1)} s`;
+    console.log(`[subs] ${path.basename(dest)}: English track retimed to the video (x${fit.slope.toFixed(4)}, ${shift}, ${fit.hits}/${fit.total} cues match the ${fit.lang} track)`);
   }
 }
 
