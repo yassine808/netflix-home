@@ -1139,6 +1139,18 @@ function arrowButton(dir) {
   return btn;
 }
 
+/* Castle art comes from this app, and the route now revalidates instead of
+ * holding a picture for a week. A browser that fetched the old cover under the
+ * plain address keeps it anyway, so the address carries a version: bumping it
+ * refetches the corrected picture once and caches that. */
+const CASTLE_ART_VERSION = 2;
+
+function castleArtUrl(url) {
+  const value = String(url || '');
+  if (!value.startsWith('/api/castle/')) return value;
+  return `${value}${value.includes('?') ? '&' : '?'}v=${CASTLE_ART_VERSION}`;
+}
+
 function buildCard(item, { progress, width = 480, episode = '' } = {}) {
   const card = createEl('div', 'card');
   card.tabIndex = 0;
@@ -1158,7 +1170,7 @@ function buildCard(item, { progress, width = 480, episode = '' } = {}) {
   img.alt = '';
   // Catalog snapshots carry absolute CDN URLs. Offline mode must not touch the
   // network, not even for a picture, so the title fallback stays instead.
-  if (!remote || !state.offline) img.src = remote ? (item.background || item.poster || '') : thumbUrl(item, width);
+  if (!remote || !state.offline) img.src = remote ? castleArtUrl(item.background || item.poster || '') : thumbUrl(item, width);
   img.addEventListener('load', () => img.classList.add('loaded'));
   img.addEventListener('error', () => img.remove());
 
@@ -3207,7 +3219,7 @@ function syncCastleSheet() {
 function populateCastleModal(item, { loading = false } = {}) {
   // Saved titles point at this app's own art routes, which keep working
   // offline; only an unsaved CDN picture has to be dropped.
-  const art = item.background || item.poster || '';
+  const art = castleArtUrl(item.background || item.poster || '');
   const remoteArt = state.offline && !art.startsWith('/api/') ? '' : art;
   setImg(els.castleBackdrop, remoteArt);
   els.castleBackdrop.hidden = !remoteArt;

@@ -6,6 +6,8 @@ import {
   listCastleTitles,
 } from './db.js';
 import { isOffline } from './settings.js';
+import { resolveImdbId } from './imdb.js';
+import { getOnlineTitle } from './online.js';
 
 /**
  * Castle (api.hlowb.com) catalog client.
@@ -755,14 +757,106 @@ async function warmCastleMedia(title) {
   return added;
 }
 
+/* JPEG SOF/PNG headers carry the frame size; reading it costs nothing and tells
+ * a real horizontal cover from a vertical poster. SQLite hands BLOBs back as
+ * Uint8Array, so normalise before reading. */
+function imageSize(input) {
+  if (!input || typeof input.length !== 'number' || input.length < 24) return null;
+  const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input);
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xff) { offset += 1; continue; }
+      const marker = buffer[offset + 1];
+      if (marker === 0xff) { offset += 1; continue; }
+      if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { offset += 2; continue; }
+      const length = buffer.readUInt16BE(offset + 2);
+      if (length < 2) return null;
+      const frame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+      if (frame) return { width: buffer.readUInt16BE(offset + 7), height: buffer.readUInt16BE(offset + 5) };
+      offset += 2 + length;
+    }
+    return null;
+  }
+  if (buffer.toString('ascii', 1, 4) === 'PNG') {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+  }
+  return null;
+}
+
+function isLandscape(buffer) {
+  const size = imageSize(buffer);
+  return Boolean(size && size.width > size.height);
+}
+
+/* Castle sometimes points its horizontal cover at the vertical poster (The
+ * Boys is one: both cover fields are the same 375x562 file). A 16:9 card or the
+ * sheet hero then crops that portrait down to a band of legs, which reads as
+ * the wrong art. When the saved backdrop is not landscape, the title's
+ * Cinemeta backdrop - the same 16:9 key art the local library already uses -
+ * is fetched once and cached under its own key. */
+const WIDE_SUFFIX = ':backdrop:wide';
+const WIDE_MISS_TTL = 10 * 60 * 1000;
+const wideTasks = new Map();
+const wideMisses = new Map();
+
+async function wideBackdrop(id, saved) {
+  const key = `title:${id}${WIDE_SUFFIX}`;
+  const cached = getCastleMedia(key);
+  if (cached?.blob && Number(cached.bytes) > 1024) return cached;
+  if (isOffline()) return null;
+  const missedAt = wideMisses.get(id);
+  if (missedAt && Date.now() - missedAt < WIDE_MISS_TTL) return null;
+  if (wideTasks.has(key)) return wideTasks.get(key);
+
+  const task = (async () => {
+    try {
+      const imdbId = await resolveImdbId({
+        id: `castle:${id}`,
+        title: saved.title,
+        year: saved.year,
+        isSeries: saved.type === 'series',
+      });
+      if (!imdbId) return null;
+      const type = saved.type === 'series' ? 'series' : 'movie';
+      const meta = await getOnlineTitle(type, imdbId).catch(() => null);
+      const url = String(meta?.background || '');
+      if (!url) return null;
+      indexCastleMedia({ key, castleId: id, kind: 'backdrop', url });
+      const row = await ensureCastleMedia(key);
+      if (!row?.blob || !isLandscape(row.blob)) return null;
+      wideMisses.delete(id);
+      return row;
+    } catch {
+      return null;
+    } finally {
+      wideTasks.delete(key);
+      if (!getCastleMedia(key)?.blob) wideMisses.set(id, Date.now());
+    }
+  })();
+  wideTasks.set(key, task);
+  return task;
+}
+
+async function savedBackdrop(id, saved) {
+  if (!saved.background) return null;
+  const key = titleMediaKey(id, 'backdrop');
+  indexCastleMedia({ key, castleId: id, kind: 'backdrop', url: saved.background });
+  return ensureCastleMedia(key);
+}
+
 export async function castleArt(id, kind) {
   if (!isCastleId(id)) return null;
   const saved = getCastleTitleSaved(id);
   if (!saved) return null;
-  const url = kind === 'poster' ? saved.poster : kind === 'backdrop' ? saved.background : '';
-  if (!url) return null;
-  const key = titleMediaKey(id, kind);
-  indexCastleMedia({ key, castleId: id, kind, url });
+  if (kind === 'backdrop') {
+    const own = await savedBackdrop(id, saved);
+    if (own?.blob && isLandscape(own.blob)) return own;
+    return (await wideBackdrop(id, saved)) || own;
+  }
+  if (kind !== 'poster' || !saved.poster) return null;
+  const key = titleMediaKey(id, 'poster');
+  indexCastleMedia({ key, castleId: id, kind: 'poster', url: saved.poster });
   return ensureCastleMedia(key);
 }
 

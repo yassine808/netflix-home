@@ -1287,7 +1287,10 @@ app.get('/api/castle/saved', (req, res) => {
 function sendCastleImage(req, res, row) {
   if (!row?.blob) return res.status(404).end();
   res.setHeader('Content-Type', row.mime || 'image/jpeg');
-  res.setHeader('Cache-Control', 'public, max-age=604800');
+  /* Revalidate instead of a week of silence: a corrected cover (a portrait
+   * poster used as the 16:9 backdrop) has to reach a browser that already
+   * cached the old bytes. The ETag keeps an unchanged picture to a 304. */
+  res.setHeader('Cache-Control', 'no-cache');
   if (row.etag) {
     res.setHeader('ETag', row.etag);
     if (req.headers['if-none-match'] === row.etag) return res.status(304).end();
