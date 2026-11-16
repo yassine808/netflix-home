@@ -1996,6 +1996,7 @@ body.dl-dragging, body.dl-dragging * { cursor: grabbing !important; user-select:
   z-index: 300;
   background: #000;
   overflow: hidden;
+  cursor: pointer;
   transition: opacity 0.38s ease, visibility 0.38s ease;
 }
 #bootScreen.is-done { opacity: 0; visibility: hidden; pointer-events: none; }

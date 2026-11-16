@@ -99,6 +99,8 @@ const state = {
   castleLocal: null,
   castleCatalog: null,
   castleSig: '',
+  castleListReady: false,
+  castleNote: '',
   sheetTarget: null,
   heroPickId: null,
   heroVisible: true,
@@ -307,6 +309,10 @@ function initBoot() {
   const safety = setTimeout(finish, 6500);
   video.addEventListener('ended', finish, { once: true });
   video.addEventListener('error', finish, { once: true });
+
+  // The logo film is the one clip a click dismisses: tapping it goes straight
+  // to the site instead of waiting out the intro.
+  overlay.addEventListener('click', finish);
 
   const unmuteOnGesture = () => {
     video.muted = false;
@@ -974,13 +980,6 @@ function stopPreview() {
   video.classList.remove('playing');
 }
 
-/* Clicking the preview skips it and goes back to the still frame. */
-function skipPreview() {
-  if (!els.heroVideo.classList.contains('playing')) return;
-  stopPreview();
-  syncHeroMute(false);
-}
-
 function renderRows() {
   els.rows.replaceChildren();
   const items = state.items;
@@ -1545,6 +1544,7 @@ async function refreshDownloads({ initial = false } = {}) {
       completed.forEach((job) => notify('done', job.title || job.fileName, 'Download complete — ready to watch', {
         fileName: job.fileName,
         seriesTitle: job.seriesTitle,
+        poster: job.poster,
       }));
     }
     if (failed.length) {
@@ -1552,6 +1552,7 @@ async function refreshDownloads({ initial = false } = {}) {
       failed.forEach((job) => notify('fail', job.title || job.fileName, job.error || 'Download failed', {
         fileName: job.fileName,
         seriesTitle: job.seriesTitle,
+        poster: job.poster,
       }));
     }
   } catch {
@@ -1669,11 +1670,15 @@ function normalizeShowName(value) {
 /* The saved catalogue keeps a poster for every title opened once, which is the
  * only artwork left when a download's files were deleted and the library row
  * is gone. That is what a finished show with no picture falls back to. */
-function savedShowPoster(show) {
+function savedShowRow(show) {
   const saved = Array.isArray(state.savedTitles) ? state.savedTitles : [];
   const wanted = normalizeShowName(show);
-  if (!wanted) return '';
-  const hit = saved.find((row) => row?.poster && normalizeShowName(row.title) === wanted);
+  if (!wanted) return null;
+  return saved.find((row) => row?.poster && normalizeShowName(row.title) === wanted) || null;
+}
+
+function savedShowPoster(show) {
+  const hit = savedShowRow(show);
   return hit ? String(hit.poster) : '';
 }
 
@@ -3205,6 +3210,9 @@ function castleSignature() {
 
 function syncCastleSheet() {
   if (els.castleModal.hidden || !state.castleTitle) return;
+  // A sheet still on its skeleton has no rows to update: the first paint
+  // happens once, when the detail (and the season) has arrived.
+  if (!state.castleListReady) return;
   const sig = castleSignature();
   if (sig === state.castleSig) return;
   state.castleSig = sig;
@@ -3257,6 +3265,8 @@ async function openCastleModal(item) {
   state.castleLocal = null;
   state.castleSeason = 0;
   state.castleBusy = false;
+  state.castleListReady = false;
+  state.castleNote = '';
   resetCastleDeleteAll();
   const token = ++state.castleDetailToken;
   els.castleModal.hidden = false;
@@ -3798,11 +3808,15 @@ function buildSeasonMenu(seasons, active, onPick) {
 
 function renderCastleDownloads(detail) {
   clearCastleSkeleton();
+  // The rows below are painted from state.downloads, so the queue signature is
+  // current here: a poll that changes nothing must not paint them again.
+  state.castleSig = castleSignature();
+  state.castleListReady = true;
   const episodes = castleEpisodesOf(detail);
   els.castleDownloadBlock.hidden = false;
   els.castleEpisodes.replaceChildren();
   els.castleSeasonTabs.replaceChildren();
-  els.castleStatus.textContent = '';
+  els.castleStatus.textContent = state.castleNote || '';
   els.castleStatus.hidden = false;
   els.castleSource.textContent = state.offline
     ? 'Offline mode — showing the saved catalogue'
@@ -3865,6 +3879,13 @@ function renderCastleDownloads(detail) {
     : `Download every episode of season ${openSeason}`;
   els.castleSeasonOnlyDownload.classList.toggle('is-done', seasonDone);
   els.castleSeasonOnlyDownload.textContent = seasonDone ? 'Season downloaded' : 'Download season';
+
+  // A fallback sheet (offline, or no catalogue for this series) has nothing to
+  // download: keep the bulk actions hidden through queue repaints too.
+  if (state.castleNote) {
+    els.castleSeasonDownload.hidden = true;
+    els.castleSeasonOnlyDownload.hidden = true;
+  }
 
   const localCount = localMap ? localMap.size : 0;
   els.castleSeasonDelete.hidden = !localCount;
@@ -4061,7 +4082,10 @@ async function queueCastleEpisode(episode, btn) {
     btn.classList.add('queued');
     btn.querySelector('span').textContent = 'Queued';
     toast(`${label} queued — ${queuedQuality}`);
-    notify('start', label, `Queued — ${queuedQuality}${result?.source === 'torrentio' ? ' · Torrentio' : ''}`);
+    notify('start', label, `Queued — ${queuedQuality}${result?.source === 'torrentio' ? ' · Torrentio' : ''}`, {
+      seriesTitle: isSeries ? detail.title : '',
+      poster: detail.poster,
+    });
     openDownloads();
     refreshDownloads();
   } catch (err) {
@@ -4199,7 +4223,10 @@ async function queueCastleSeason({ everySeason = true, btn = els.castleSeasonDow
     const quality = lastQuality || qualityName(CASTLE_RESOLUTION);
     const mix = torrentio ? ` (${torrentio} Torrentio, ${queued - torrentio} Castle)` : '';
     toast(`${queued} episode${queued === 1 ? '' : 's'} queued${mix} — ${quality}`);
-    notify('start', detail.title, `${queued} episode${queued === 1 ? '' : 's'} queued${mix} — ${quality}`);
+    notify('start', detail.title, `${queued} episode${queued === 1 ? '' : 's'} queued${mix} — ${quality}`, {
+      seriesTitle: detail.title,
+      poster: detail.poster,
+    });
     openDownloads();
   }
   await refreshDownloads();
@@ -4695,6 +4722,8 @@ async function openSeriesSheet(group, focusId) {
   state.castleTitle = { type: 'series', title: group.title, seasons: [] };
   state.castleCatalog = null;
   state.castleSig = '';
+  state.castleListReady = false;
+  state.castleNote = '';
   state.castleSeason = state.sheetTarget?.season
     || (state.byId.get(focusId)?.season)
     || group.episodes[0]?.season
@@ -4717,12 +4746,10 @@ async function openSeriesSheet(group, focusId) {
   renderCastleSkeleton();
   setTimeout(() => els.castleModal.querySelector('.modal-close')?.focus(), 40);
 
-  // Draw the library's own episodes first; the catalog merge follows right after.
+  // The on-disk episodes are the fallback for an offline or failed catalogue.
+  // They are not painted here: the list is drawn once, after the merge, so an
+  // episode never appears alone first and then again with the rest of the season.
   const preview = localSheetDetail(group, state.castleSeason);
-  if (preview) {
-    state.castleTitle = preview;
-    renderCastleDownloads(preview);
-  }
 
   try {
     const catalog = state.seriesCatalog.get(group.seriesKey) || await getSeriesCatalog(group.seriesKey);
@@ -4739,10 +4766,14 @@ async function openSeriesSheet(group, focusId) {
     }
     state.castleCache.set(`${detail.id}:${detail.activeSeason || 0}`, detail);
     populateSeriesHero(group, detail);
-    if (state.castleSeason !== detail.activeSeason
-      && (merged.seasons || []).some((entry) => entry.season === state.castleSeason)) {
-      // Open on the season the clicked episode belongs to; this renders too.
-      await selectCastleSeason(state.castleSeason);
+    const openSeason = state.castleSeason;
+    if (openSeason !== detail.activeSeason
+      && (merged.seasons || []).some((entry) => entry.season === openSeason)) {
+      // Open on the season the clicked episode belongs to; it paints the list
+      // itself, once that season is on screen.
+      await selectCastleSeason(openSeason);
+      if (token !== state.castleDetailToken) return;
+      if (!state.castleListReady) throw new Error(`season ${openSeason} could not be loaded`);
     } else {
       renderCastleDownloads(merged);
     }
@@ -4756,6 +4787,11 @@ async function openSeriesSheet(group, focusId) {
     state.castleTitle = fallback || { ...state.castleTitle, seasons: [], episodes: [] };
     state.castleSeason = fallback?.activeSeason || state.castleSeason;
     state.castleCatalog = null;
+    // The explanation belongs to the sheet, not to one paint: a queue refresh
+    // must not wipe it, and there is nothing to download without the catalog.
+    state.castleNote = state.offline
+      ? 'Offline mode - showing the episodes on your drive.'
+      : `Download catalog unavailable (${err.message}) - showing the episodes on your drive.`;
     clearCastleSkeleton();
     els.castleModal.hidden = false;
     syncBodyLock();
@@ -4764,10 +4800,6 @@ async function openSeriesSheet(group, focusId) {
     // Download-only controls have nothing to act on without the catalog.
     els.castleSeasonDownload.hidden = true;
     els.castleSeasonOnlyDownload.hidden = true;
-    els.castleStatus.textContent = state.offline
-      ? 'Offline mode - showing the episodes on your drive.'
-      : `Download catalog unavailable (${err.message}) - showing the episodes on your drive.`;
-    els.castleStatus.hidden = false;
   }
 }
 
@@ -5038,7 +5070,10 @@ async function queueSeriesEpisode(group, entry, season, btn) {
     const quality = result?.quality || entry.quality.label;
     const sourceNote = result?.source === 'torrentio' ? ' · Torrentio' : '';
     toast(`${title} ${label} queued${quality ? ` — ${quality}${sourceNote}` : ''}`);
-    notify('start', `${title} ${label}`, 'Queued for download');
+    notify('start', `${title} ${label}`, 'Queued for download', {
+      seriesTitle: title,
+      poster: seriesCatalogFor(group)?.poster || '',
+    });
     openDownloads();
     refreshDownloads();
   } catch (err) {
@@ -5259,15 +5294,17 @@ function timeAgo(ts) {
 
 /* A notification only stores text, so find the library title it belongs to:
  * by file name, by exact title, or by the "Series S01E02" label the download
- * queue produces. The result feeds the thumbnail in the bell menu. */
+ * queue produces. Names are compared without punctuation, because the queue
+ * writes "Cyberpunk: Edgerunners S01E01" while the file on disk drops the
+ * colon. The result feeds the thumbnail in the bell menu. */
 function notifMatch(n) {
   const items = state.items || [];
   if (!items.length) return null;
-  const norm = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const norm = normalizeShowName;
 
-  const fileName = norm(n.fileName);
+  const fileName = String(n.fileName || '').trim().toLowerCase();
   if (fileName) {
-    const byFile = items.find((it) => norm(it.fileName) === fileName);
+    const byFile = items.find((it) => String(it.fileName || '').trim().toLowerCase() === fileName);
     if (byFile) return byFile;
   }
 
@@ -5277,8 +5314,8 @@ function notifMatch(n) {
   if (exact) return exact;
 
   const tag = /s(\d{1,2})\s*e(\d{1,2})\b/i.exec(n.title || '');
-  const seriesName = norm(tag ? String(n.title).slice(0, tag.index) : title).replace(/[\s·\-–—]+$/, '');
-  if (!seriesName || seriesName.length < 3) return null;
+  const seriesName = norm(n.seriesTitle) || norm(downloadShow({ title: n.title }));
+  if (seriesName.length < 3) return null;
   const episodes = items.filter((it) => it.isSeries && norm(it.seriesTitle || it.title) === seriesName);
   if (episodes.length) {
     if (!tag) return episodes[0];
@@ -5297,6 +5334,20 @@ function notifMatch(n) {
   return best;
 }
 
+/* One row's picture, most local first: the episode on disk, the artwork saved
+ * for its show when that show was opened once, then whatever the queue carried.
+ * A queued episode has no library row yet, so the saved artwork is what still
+ * fills the bell menu. */
+function notifArt(n) {
+  const sources = [];
+  const match = notifMatch(n);
+  if (match) sources.push(thumbUrl(match, 240));
+  const saved = savedShowRow(n.seriesTitle || downloadShow({ title: n.title }));
+  if (saved) sources.push(castleArtUrl(saved.background || saved.poster || ''));
+  if (n.poster) sources.push(castleArtUrl(n.poster));
+  return [...new Set(sources.filter(Boolean))];
+}
+
 function renderNotifs() {
   const unread = state.notifs.filter((n) => !n.read).length;
   els.notifBadge.hidden = unread === 0;
@@ -5306,15 +5357,27 @@ function renderNotifs() {
   state.notifs.forEach((n) => {
     const row = createEl('div', `notif-item${n.read ? '' : ' unread'}`);
     const ico = createEl('div', `notif-ico t-${n.type}`);
-    const match = notifMatch(n);
-    if (match) {
+    const sources = notifArt(n);
+    if (sources.length) {
       const img = document.createElement('img');
-      img.src = thumbUrl(match, 240);
       img.alt = '';
       img.loading = 'lazy';
-      img.onerror = () => { img.remove(); ico.innerHTML = NOTIF_ICONS[n.type] || NOTIF_ICONS.info; };
-      ico.append(img);
+      let next = 0;
+      const useIcon = () => {
+        img.remove();
+        ico.classList.remove('has-art');
+        ico.innerHTML = NOTIF_ICONS[n.type] || NOTIF_ICONS.info;
+      };
+      // A 404 on one candidate moves to the next, then the icon, instead of
+      // leaving the row blank.
+      const load = () => {
+        if (next >= sources.length) { useIcon(); return; }
+        img.src = sources[next++];
+      };
+      img.onerror = load;
       ico.classList.add('has-art');
+      ico.append(img);
+      load();
     } else {
       ico.innerHTML = NOTIF_ICONS[n.type] || NOTIF_ICONS.info;
     }
@@ -5455,13 +5518,6 @@ function bindStaticEvents() {
   });
   els.heroInfo.addEventListener('click', () => {
     if (state.heroId) openModal(state.heroId);
-  });
-  /* The picture itself is a skip target while the preview runs; the hero's own
-   * buttons keep their behaviour. */
-  els.hero.addEventListener('click', (e) => {
-    if (!els.heroVideo.classList.contains('playing')) return;
-    if (e.target.closest('button, a, input, label')) return;
-    skipPreview();
   });
   els.heroMute.addEventListener('click', () => {
     const video = els.heroVideo;
