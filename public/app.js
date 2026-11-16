@@ -202,6 +202,7 @@ const els = {
   castleMeta: $('castleMeta'),
   castlePlot: $('castlePlot'),
   castleSeasonDownload: $('castleSeasonDownload'),
+  castleSeasonOnlyDownload: $('castleSeasonOnlyDownload'),
   castleSeasonDelete: $('castleSeasonDelete'),
   castleList: $('castleList'),
   castleResume: $('castleResume'),
@@ -3168,11 +3169,16 @@ function renderCastleSkeleton(count = 5, { series = true } = {}) {
   els.castleSeasonDownload.disabled = true;
   els.castleSeasonDownload.textContent = 'Download all';
   els.castleSeasonDownload.classList.add('is-skeleton');
+  els.castleSeasonOnlyDownload.hidden = !series;
+  els.castleSeasonOnlyDownload.disabled = true;
+  els.castleSeasonOnlyDownload.textContent = 'Download season';
+  els.castleSeasonOnlyDownload.classList.add('is-skeleton');
   els.castleEpisodes.replaceChildren(...castleSkeletonRows(count));
 }
 
 function clearCastleSkeleton() {
   els.castleSeasonDownload.classList.remove('is-skeleton');
+  els.castleSeasonOnlyDownload.classList.remove('is-skeleton');
   els.castleSize.replaceChildren();
 }
 
@@ -3278,6 +3284,7 @@ async function openCastleModal(item) {
     els.castleEpisodes.replaceChildren();
     els.castleSeasonTabs.replaceChildren();
     els.castleSeasonDownload.hidden = true;
+    els.castleSeasonOnlyDownload.hidden = true;
     els.castleStatus.textContent = `Could not load download options (${err.message}).`;
     els.castleStatus.hidden = false;
   }
@@ -3790,13 +3797,30 @@ function renderCastleDownloads(detail) {
 
   const playTarget = castlePlayTarget();
   const isSeries = detail.type === 'series';
+  const openSeason = detail.activeSeason ?? state.castleSeason ?? 0;
+  const seriesLocal = seriesLocalEpisodes(detail);
+  // The hero button fetches one episode: the first of the open season that is
+  // not on disk yet and has no live job. "Download all"/"Download season" in
+  // the control bar are the bulk actions.
+  const heroEpisode = episodes.find((episode) => {
+    if (localFor(openSeason, episode.episode)) return false;
+    if (seriesLocal.has(`${openSeason}x${episode.episode}`)) return false;
+    const job = castleJobFor(detail, openSeason, episode.episode);
+    return !job || job.status === 'failed';
+  }) || episodes[0] || null;
   els.castleResume.hidden = false;
   els.castleResume.dataset.mode = playTarget ? 'play' : 'download';
   els.castleResume.innerHTML = playTarget
     ? `${EP_PLAY_ICON}<span>${playTarget.label}</span>`
-    : `${EP_DOWNLOAD_ICON}<span>${isSeries ? `Download Season ${detail.activeSeason || 1}` : 'Download'}</span>`;
+    : `${EP_DOWNLOAD_ICON}<span>${isSeries && heroEpisode ? `Download ep ${heroEpisode.episode}` : 'Download'}</span>`;
   els.castleResume.disabled = !playTarget && state.offline;
-  els.castleResume.title = !playTarget && state.offline ? 'Offline mode — go online to download' : '';
+  els.castleResume.title = playTarget
+    ? ''
+    : state.offline
+      ? 'Offline mode — go online to download'
+      : isSeries && heroEpisode
+        ? `Download episode ${heroEpisode.episode} of season ${openSeason}`
+        : 'Download this film';
 
   const selected = renderCastleSizes(detail, episodes);
 
@@ -3813,6 +3837,17 @@ function renderCastleDownloads(detail) {
   els.castleSeasonDownload.title = state.offline ? 'Offline mode — go online to download' : '';
   els.castleSeasonDownload.classList.toggle('is-done', allDone);
   els.castleSeasonDownload.textContent = allDone ? 'Everything downloaded' : 'Download all';
+
+  // The season button queues only the season on screen, next to "Download all".
+  const seasonDone = episodes.length > 0 && episodes.every((episode) => localFor(openSeason, episode.episode)
+    || seriesLocal.has(`${openSeason}x${episode.episode}`));
+  els.castleSeasonOnlyDownload.hidden = !(detail.type === 'series' && episodes.length);
+  els.castleSeasonOnlyDownload.disabled = state.castleBusy || seasonDone || state.offline;
+  els.castleSeasonOnlyDownload.title = state.offline
+    ? 'Offline mode — go online to download'
+    : `Download every episode of season ${openSeason}`;
+  els.castleSeasonOnlyDownload.classList.toggle('is-done', seasonDone);
+  els.castleSeasonOnlyDownload.textContent = seasonDone ? 'Season downloaded' : 'Download season';
 
   const localCount = localMap ? localMap.size : 0;
   els.castleSeasonDelete.hidden = !localCount;
@@ -4022,8 +4057,9 @@ async function queueCastleEpisode(episode, btn) {
   }
 }
 
-/* "Download all" covers every season of the series, not just the open tab. */
-async function queueCastleSeason() {
+/* "Download all" covers every season of the series; "Download season" queues
+ * only the season on screen. Both live in the sheet's control bar. */
+async function queueCastleSeason({ everySeason = true, btn = els.castleSeasonDownload } = {}) {
   const detail = state.castleTitle;
   if (!detail || detail.type !== 'series' || state.castleBusy) return;
   if (state.offline) {
@@ -4031,14 +4067,18 @@ async function queueCastleSeason() {
     return;
   }
 
+  const idleLabel = everySeason ? 'Download all' : 'Download season';
   state.castleBusy = true;
+  btn.disabled = true;
   els.castleSeasonDownload.disabled = true;
+  els.castleSeasonOnlyDownload.disabled = true;
 
-  let all = castleCatalogEpisodes();
-  if (!all.length) {
+  const openSeason = detail.activeSeason ?? state.castleSeason;
+  let catalogEpisodes = everySeason ? castleCatalogEpisodes() : [];
+  if (everySeason && !catalogEpisodes.length) {
     // The sheet renders before the catalog arrives; pull it in now so
     // "Download all" still covers every season, not just the open tab.
-    els.castleSeasonDownload.textContent = 'Loading episodes…';
+    btn.textContent = 'Loading episodes…';
     const group = state.castleLocal?.group;
     if (group?.seriesKey) {
       const catalog = state.seriesCatalog.get(group.seriesKey)
@@ -4046,28 +4086,29 @@ async function queueCastleSeason() {
       if (catalog) {
         state.seriesCatalog.set(group.seriesKey, catalog);
         state.castleCatalog = catalog;
-        all = castleCatalogEpisodes();
+        catalogEpisodes = castleCatalogEpisodes();
       }
     }
-    if (!all.length && /^\d{6,20}$/.test(String(detail.id || ''))) {
+    if (!catalogEpisodes.length && /^\d{6,20}$/.test(String(detail.id || ''))) {
       const full = await getCastleSeriesEpisodes(detail.id).catch(() => null);
       if (full && Array.isArray(full.seasons)) state.castleCatalog = { seasons: full.seasons };
-      all = castleCatalogEpisodes();
+      catalogEpisodes = castleCatalogEpisodes();
     }
   }
-  const episodes = all.length ? all : castleEpisodesOf(detail).map((episode) => ({
+  const episodes = catalogEpisodes.length ? catalogEpisodes : castleEpisodesOf(detail).map((episode) => ({
     ...episode,
-    season: detail.activeSeason ?? state.castleSeason,
+    season: openSeason,
   }));
   if (!episodes.length) {
     state.castleBusy = false;
-    els.castleSeasonDownload.disabled = false;
-    els.castleSeasonDownload.textContent = 'Download all';
+    btn.textContent = idleLabel;
+    renderCastleDownloads(detail);
     return;
   }
 
   state.castleBusy = true;
   els.castleSeasonDownload.disabled = true;
+  els.castleSeasonOnlyDownload.disabled = true;
   els.castleStatus.textContent = '';
   let queued = 0;
   let skipped = 0;
@@ -4089,7 +4130,7 @@ async function queueCastleSeason() {
       skipped += 1;
       continue;
     }
-    els.castleSeasonDownload.textContent = `Queueing ${index + 1}/${episodes.length}…`;
+    btn.textContent = `Queueing ${index + 1}/${episodes.length}…`;
     // Every download from this sheet is 720p; use the matching catalog entry
     // for its size estimate when the catalog lists one.
     const quality = (episode.resolutions || []).find((entry) => entry.resolution === CASTLE_RESOLUTION)
@@ -4129,7 +4170,8 @@ async function queueCastleSeason() {
   }
 
   state.castleBusy = false;
-  els.castleSeasonDownload.disabled = false;
+  btn.textContent = idleLabel;
+  btn.disabled = false;
   const summary = [
     queued ? `${queued} episode${queued === 1 ? '' : 's'} queued` : '',
     skipped ? `${skipped} already here or unavailable` : '',
@@ -4652,6 +4694,7 @@ async function openSeriesSheet(group, focusId) {
   els.castleEpisodes.replaceChildren();
   els.castleSeasonTabs.replaceChildren();
   els.castleSeasonDownload.hidden = true;
+  els.castleSeasonOnlyDownload.hidden = true;
   els.castleResume.hidden = true;
   els.castleStatus.hidden = false;
   renderCastleSkeleton();
@@ -4703,6 +4746,7 @@ async function openSeriesSheet(group, focusId) {
     renderCastleDownloads(state.castleTitle);
     // Download-only controls have nothing to act on without the catalog.
     els.castleSeasonDownload.hidden = true;
+    els.castleSeasonOnlyDownload.hidden = true;
     els.castleStatus.textContent = state.offline
       ? 'Offline mode - showing the episodes on your drive.'
       : `Download catalog unavailable (${err.message}) - showing the episodes on your drive.`;
@@ -5521,16 +5565,17 @@ function bindStaticEvents() {
     }
   });
   els.libraryRestartBtn.addEventListener('click', restartLibraryApp);
-  els.castleSeasonDownload.addEventListener('click', queueCastleSeason);
+  els.castleSeasonDownload.addEventListener('click', () => queueCastleSeason({ everySeason: true, btn: els.castleSeasonDownload }));
+  els.castleSeasonOnlyDownload.addEventListener('click', () => queueCastleSeason({ everySeason: false, btn: els.castleSeasonOnlyDownload }));
   bindCastleDeleteAll();
   els.castleList.addEventListener('click', toggleCastleList);
   els.castleResume.addEventListener('click', () => {
     const target = castlePlayTarget();
     if (target) { goWatch(target.id); return; }
-    const all = els.castleSeasonDownload;
+    // The hero button downloads one episode (the film itself for a movie);
+    // the bulk buttons in the control bar cover a whole season or series.
     const one = els.castleEpisodes.querySelector('.castle-dl-btn:not(:disabled):not(.queued):not(.is-paused):not(.is-play):not(.is-active)');
-    if (!all.hidden && !all.disabled) all.click();
-    else if (one) one.click();
+    if (one) one.click();
     else toast('Nothing available to download yet');
   });
   els.castlePlot.addEventListener('click', () => els.castlePlot.classList.toggle('is-open'));
