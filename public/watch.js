@@ -820,9 +820,12 @@ async function initAudioTracks() {
   audioTracks = tracks;
 
   const saved = Number(readJson(audioPrefsKey(), null)?.index);
-  const pick = tracks.find((track) => track.index === saved)
-    || tracks.find((track) => track.default)
-    || tracks[0];
+  /* Every episode the queue writes carries the original language as track 1
+   * (the picker remuxes a release whose dub comes first), so the first track is
+   * the right default. The container's `default` flag is not trusted: hand-made
+   * and dual-audio releases flag a dub there often enough that it played Italian
+   * on an English show. A choice saved for the series still wins. */
+  const pick = tracks.find((track) => track.index === saved) || tracks[0];
   audioIndex = pick ? pick.index : null;
   renderAudioTracks();
 }
