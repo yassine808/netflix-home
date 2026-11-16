@@ -1107,12 +1107,14 @@ app.get('/api/subtitles/:id', async (req, res) => {
   const found = resolveItemFile(req.params.id);
   if (!found) return res.status(404).json({ error: 'not found' });
   let tracks = syncSubtitleTracks(found.item, found.full);
-  // Old downloads may predate the English track. Fetch it once on demand so the
-  // player always offers English next to the original language.
-  if (!tracks.some((track) => track.lang === 'en') && !isOffline()) {
+  /* Old downloads may predate the English track, and some releases ship only a
+   * forced track (foreign dialogue) or half of a two-CD subtitle. The check
+   * itself is local and cheap; only a track that does not really cover the
+   * video costs a network round trip. */
+  if (!isOffline()) {
     try {
-      const added = await ensureEnglishSubtitle(found.full, found.item);
-      if (added) tracks = syncSubtitleTracks(found.item, found.full);
+      await ensureEnglishSubtitle(found.full, found.item);
+      tracks = syncSubtitleTracks(found.item, found.full);
     } catch {
       /* stay with whatever sidecars exist */
     }

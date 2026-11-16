@@ -196,20 +196,30 @@ export function vttFromSubtitle(text) {
   return `WEBVTT\n\n${body}\n`;
 }
 
-/* Where the last cue ends, in seconds. An OpenSubtitles entry is often the
- * first half of an old two-CD rip: it reads perfectly for an hour and then
- * leaves the rest of the film bare, which looks exactly like "subtitles are
- * broken" to the person watching. Every fetched track is measured against the
- * video's own length now. */
-function lastCueSec(text) {
+/* Where the last cue ends and how many cues there are. An OpenSubtitles entry
+ * is often the first half of an old two-CD rip: it reads perfectly for an hour
+ * and then leaves the rest of the film bare, which looks exactly like
+ * "subtitles are broken" to the person watching. The count matters too: a
+ * forced track carries only the foreign dialogue, so it can span the whole
+ * runtime with a few dozen lines. ffmpeg writes "MM:SS.mmm" below one hour and
+ * "HH:MM:SS.mmm" above it, so the hours part is optional - matching only the
+ * long form made every episode shorter than an hour look like it ended at
+ * zero. */
+function cueStats(text) {
+  const re = /(?:(\d{1,3}):)?(\d{1,2}):(\d{2})[,.]\d{1,3}\s*-->\s*(?:(\d{1,3}):)?(\d{1,2}):(\d{2})/g;
   let end = 0;
-  const re = /(\d{1,2}):(\d{2}):(\d{2})[,.]\d{1,3}\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})/g;
+  let cues = 0;
   let match;
   while ((match = re.exec(String(text || '')))) {
-    const seconds = Number(match[4]) * 3600 + Number(match[5]) * 60 + Number(match[6]);
+    cues += 1;
+    const seconds = (match[4] ? Number(match[4]) * 3600 : 0) + Number(match[5]) * 60 + Number(match[6]);
     if (seconds > end) end = seconds;
   }
-  return end;
+  return { end, cues };
+}
+
+function lastCueSec(text) {
+  return cueStats(text).end;
 }
 
 async function videoDurationSec(full, item) {
@@ -287,26 +297,45 @@ export async function fetchEnglishSubtitle({ imdbId, season = 0, episode = 0, la
   return best;
 }
 
+/* A failed lookup is retried only after a while: the player asks for the track
+ * list every time it opens, and a title with no usable English subtitle on
+ * OpenSubtitles must not pay two round trips per open. */
+const attempts = new Map();
+const ATTEMPT_TTL = 10 * 60 * 1000;
+
 export async function ensureEnglishSubtitle(full, item = {}) {
   if (!full || !item || isOffline()) return false;
   const stem = full.slice(0, full.length - path.extname(full).length);
   const target = `${stem}.en.vtt`;
   const durationSec = await videoDurationSec(full, item);
   const enough = durationSec > 0 ? durationSec * 0.9 : 0;
+  // A dialogue track keeps a cue every few seconds; a forced track (foreign
+  // dialogue only) can span the whole episode with a few dozen lines, which an
+  // end-time check alone happily accepts.
+  const enoughCues = durationSec > 0 ? Math.max(24, durationSec / 20) : 0;
 
-  /* An existing sidecar is only good while it covers the video. The old check
-   * was "any file bigger than 40 bytes is fine", which kept a first-half-only
-   * subtitle forever. */
+  /* An existing sidecar is only good while it covers the video and carries a
+   * real dialogue track. The old check was "any file bigger than 40 bytes is
+   * fine", which kept a first-half-only subtitle - and then a forced track -
+   * forever. */
   let have = null;
   try {
     have = fs.readFileSync(target, 'utf8');
   } catch {
     have = null;
   }
-  if (have && have.length > 40) {
-    if (!enough || lastCueSec(have) >= enough) return true;
-    console.log(`[subs] ${path.basename(target)} stops at ${(lastCueSec(have) / 60).toFixed(0)} of ${(durationSec / 60).toFixed(0)} min - fetching a full copy`);
+  const stats = have && have.length > 40 ? cueStats(have) : null;
+  if (stats && (!enough || (stats.end >= enough && stats.cues >= enoughCues))) return true;
+  if (stats) {
+    const reason = stats.end < enough
+      ? `stops at ${(stats.end / 60).toFixed(0)} of ${(durationSec / 60).toFixed(0)} min`
+      : `holds only ${stats.cues} cue(s) for ${(durationSec / 60).toFixed(0)} min (forced track?)`;
+    console.log(`[subs] ${path.basename(target)} ${reason} - fetching a full copy`);
   }
+
+  const attemptKey = `${target}:${stats?.end || 0}:${stats?.cues || 0}`;
+  const tried = attempts.get(attemptKey);
+  if (tried && Date.now() - tried < ATTEMPT_TTL) return Boolean(stats);
 
   const imdbId = await resolveImdbId({
     ...item,
@@ -319,8 +348,16 @@ export async function ensureEnglishSubtitle(full, item = {}) {
     episode: item.episode,
     durationSec,
   });
-  if (!text) return false;
-  if (have && lastCueSec(text) <= lastCueSec(have)) return have.length > 40;
+  if (!text) {
+    attempts.set(attemptKey, Date.now());
+    return false;
+  }
+  const next = cueStats(text);
+  if (stats && next.cues <= stats.cues && next.end <= stats.end) {
+    attempts.set(attemptKey, Date.now());
+    return true;
+  }
   await fsp.writeFile(target, text, 'utf8');
+  attempts.delete(attemptKey);
   return true;
 }
