@@ -33,7 +33,10 @@ const ffprobePath = ffprobeStatic.path;
 /* aria2c writes its console progress with \r; nothing here parses it. File
  * size polling is steadier across versions than the text output. */
 const MAX_CAPTURE = 64 * 1024;
-const METADATA_TIMEOUT_MS = 120000;
+/* A magnet with one or two peers can take minutes to hand over its metadata:
+ * a live 2-seeder 4K release answered at 142 s and was killed at the old 120 s
+ * mark, while genuinely dead swarms (PSA, BATGirl) never answered at all. */
+const METADATA_TIMEOUT_MS = 240000;
 const SHOW_FILES_TIMEOUT_MS = 30000;
 /* aria2c reports per-piece completion, so a slow swarm that keeps delivering
  * pieces never looks stalled; this only catches a download that has gone
@@ -951,7 +954,15 @@ export function pickTracks(probe, { originalLanguage = '', copyVideo = false, mk
   }
 
   // The original is English: one track is enough.
-  const originalIsEnglish = langOf(original) === 'en';
+  /* An untagged track proves nothing: YTS and similar muxes leave the audio
+   * language empty on English-only films. Reading that as "a foreign original
+   * with no dub" threw away a complete 4.9 GB release ("the file has only the
+   * original audio; no English dub"). When the title's own original language is
+   * English, an undecorated track is taken as English; a track tagged ita/fre/
+   * pl still falls through to the hard rule below. */
+  const declared = langOf(original);
+  const originalIsEnglish = declared === 'en' || (wanted === 'en' && !declared);
+  if (originalIsEnglish && !declared) warnings.push('the audio track has no language tag; taken as English');
   if (originalIsEnglish) english = null;
 
   /* Hard rule: a non-English title must ship its original audio AND an English
@@ -1392,6 +1403,15 @@ export async function remuxToMp4({ input, output, video, audio, onProgress } = {
   }
 }
 
+/* Demuxing subtitles means reading the whole container, because the cues are
+ * interleaved through it. Measured on a 5.3 GB 4K HEVC feature from the
+ * library HDD: 174 s for one three-track pass. The old 90 s batch / 20 s solo
+ * windows killed that pass, and the download then fell back to an online
+ * subtitle timed to another cut (Backrooms played with an OpenSubtitles track
+ * that opened on an ad card and ran 76 s off the film). */
+const SUBTITLE_TIMEOUT_MS = 300000;
+const SUBTITLE_SOLO_TIMEOUT_MS = 240000;
+
 /**
  * Phase 3b: pull every text subtitle stream out as `<outStem>.<iso2>.vtt`.
  * One broken track is skipped; the caller always gets the tracks that worked.
@@ -1410,7 +1430,11 @@ export async function extractSubtitles({ input, outStem, subtitles } = {}) {
     if (!iso) continue;
     if (wanted.some((entry) => entry.iso === iso)) continue;
 
-    wanted.push({ track, iso, index, file: `${stem}.${iso}.vtt` });
+    /* Write beside the target and rename only a finished track: a killed
+     * ffmpeg used to leave a half-written .vtt that the player served as if it
+     * were a complete subtitle. */
+    const file = `${stem}.${iso}.vtt`;
+    wanted.push({ track, iso, index, file, part: `${file}.part` });
   }
   if (!wanted.length) return [];
 
@@ -1420,8 +1444,11 @@ export async function extractSubtitles({ input, outStem, subtitles } = {}) {
    * `subs` is its own lane: demuxing text is I/O, not decode, so it never has
    * to wait behind a remux and three downloads can finish at once. */
   const batch = ['-y', '-v', 'error', '-i', source];
-  for (const entry of wanted) batch.push('-map', `0:${entry.index}`, '-c:s', 'webvtt', entry.file);
-  const batchOk = await run(ffmpegPath, batch, { lane: 'subs', timeout: 90000 })
+  for (const entry of wanted) {
+    await fsp.rm(entry.part, { force: true }).catch(() => {});
+    batch.push('-map', `0:${entry.index}`, '-c:s', 'webvtt', '-f', 'webvtt', entry.part);
+  }
+  const batchOk = await run(ffmpegPath, batch, { lane: 'subs', timeout: SUBTITLE_TIMEOUT_MS })
     .then(() => true)
     .catch(() => false);
 
@@ -1429,7 +1456,7 @@ export async function extractSubtitles({ input, outStem, subtitles } = {}) {
   for (const entry of wanted) {
     let body = '';
     try {
-      body = await fsp.readFile(entry.file, 'utf8');
+      body = await fsp.readFile(entry.part, 'utf8');
     } catch {
       body = '';
     }
@@ -1438,27 +1465,36 @@ export async function extractSubtitles({ input, outStem, subtitles } = {}) {
      * stream, so a missing file gets one solo retry - English only. Retrying
      * all 30 languages is what held finished episodes at 97 % for minutes. */
     if (body.length < 20 || !body.includes('-->')) {
-      await fsp.rm(entry.file, { force: true }).catch(() => {});
+      await fsp.rm(entry.part, { force: true }).catch(() => {});
       if (entry.iso !== 'en') continue;
       const solo = await run(ffmpegPath, [
         '-y', '-v', 'error',
         '-i', source,
         '-map', `0:${entry.index}`,
         '-c:s', 'webvtt',
-        entry.file,
-      ], { lane: 'subs', timeout: 20000 }).then(() => true).catch(() => false);
-      if (!solo) continue;
+        '-f', 'webvtt',
+        entry.part,
+      ], { lane: 'subs', timeout: SUBTITLE_SOLO_TIMEOUT_MS }).then(() => true).catch(() => false);
+      if (!solo) {
+        await fsp.rm(entry.part, { force: true }).catch(() => {});
+        continue;
+      }
       try {
-        body = await fsp.readFile(entry.file, 'utf8');
+        body = await fsp.readFile(entry.part, 'utf8');
       } catch {
         continue;
       }
       if (body.length < 20 || !body.includes('-->')) {
-        await fsp.rm(entry.file, { force: true }).catch(() => {});
+        await fsp.rm(entry.part, { force: true }).catch(() => {});
         continue;
       }
     }
 
+    const moved = await fsp.rename(entry.part, entry.file).then(() => true).catch(() => false);
+    if (!moved) {
+      await fsp.rm(entry.part, { force: true }).catch(() => {});
+      continue;
+    }
     written.push({
       lang: entry.iso,
       label: String(entry.track.title || '') || LANG_NAMES.get(entry.iso) || entry.iso.toUpperCase(),

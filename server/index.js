@@ -23,6 +23,7 @@ import {
   pauseDownloads, resumeDownloads, startRestoredDownloads,
 } from './downloads.js';
 import { findReleases, rankReleases, releaseLabel } from './torrentio.js';
+import { probeMedia, extractSubtitles } from './torrent.js';
 import { searchOnline, getOnlineTitle } from './online.js';
 import {
   searchCastle, browseCastle, getCastleTitle, getCastleSeries, getCastleStream,
@@ -40,7 +41,7 @@ import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
 import { initHero, heroStart, heroReady, ensureHero, warmHeroes } from './hero.js';
 import { initTrailers, trailerPathFor, trailerStatus, warmTrailer, warmTrailers } from './trailers.js';
 import { resolveImdbId } from './imdb.js';
-import { ensureEnglishSubtitle, fetchEnglishSubtitle, syncSubtitleTracks, subtitleBody } from './subs.js';
+import { ensureEnglishSubtitle, fetchEnglishSubtitle, retimeEnglishSidecar, syncSubtitleTracks, subtitleBody } from './subs.js';
 import { initAudio, probeAudioTracks, ensureAudioVariant } from './audio.js';
 import { initColorFix, syncColorFix, colorFixStatus, prioritizeColorFix, needsColorFix } from './colorfix.js';
 
@@ -1196,6 +1197,49 @@ app.get('/api/subtitle/:id/:lang', (req, res) => {
   res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
   res.setHeader('Cache-Control', 'private, max-age=3600');
   res.send(track.body);
+});
+
+/* Re-read the subtitles the film itself carries. An install whose extraction
+ * timed out used to keep the online track fetched as fallback, even when that
+ * track was timed to another cut; this runs the installer's own pass again and
+ * only fetches online when the file has no embedded English. The video is not
+ * touched. */
+app.post('/api/subtitles/:id/resync', async (req, res) => {
+  const found = resolveItemFile(req.params.id);
+  if (!found) return res.status(404).json({ error: 'not found' });
+
+  const probe = await probeMedia(found.full).catch(() => null);
+  if (!probe) return res.status(502).json({ error: 'the file could not be probed' });
+
+  /* One track per language, plain before forced before SDH - the same pick
+   * `pickTracks()` makes, so a resync cannot introduce a track the installer
+   * would have dropped. */
+  const byLang = new Map();
+  for (const track of probe.subtitles || []) {
+    if (!track.lang) continue;
+    const rank = (track.sdh ? 2 : 0) + (track.forced ? 1 : 0);
+    const current = byLang.get(track.lang);
+    if (!current || rank < current.rank) byLang.set(track.lang, { track, rank });
+  }
+  const embedded = [...byLang.values()].map((entry) => entry.track);
+
+  const stem = found.full.slice(0, found.full.length - path.extname(found.full).length);
+  const tracks = embedded.length
+    ? await extractSubtitles({ input: found.full, outStem: stem, subtitles: embedded }).catch(() => [])
+    : [];
+  const fit = tracks.some((track) => track.lang === 'en')
+    ? await retimeEnglishSidecar(stem, tracks, { full: found.full }).catch(() => null)
+    : null;
+  if (!tracks.some((track) => track.lang === 'en')) {
+    await ensureEnglishSubtitle(found.full, found.item).catch(() => false);
+  }
+
+  const after = syncSubtitleTracks(found.item, found.full);
+  res.json({
+    tracks: after.map(({ lang, label }) => ({ lang, label })),
+    extracted: tracks.map((track) => track.lang),
+    retimed: fit ? { lang: fit.lang, slope: fit.slope, offset: fit.offset } : null,
+  });
 });
 
 /* ---------- online catalog (metadata only) ---------- */

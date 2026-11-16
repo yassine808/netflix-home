@@ -1723,6 +1723,11 @@ async function attemptRelease(job, release, dir, controller) {
     mkv: job.mkv !== false,
   });
   if (picked.error) return `${release.name}: ${picked.reason || picked.error}`;
+  /* An acceptance has a reason too ("untagged audio, taken as English"), and
+   * the log is where a later "why did it keep that file" question gets answered. */
+  if (picked.warnings?.length) {
+    console.log(`[download] ${job.title}: ${picked.warnings.join('; ')}`);
+  }
 
   const quality = qualityFromHeight(probe.video?.height, probe.video?.width) || release.quality;
   job.quality = quality;
