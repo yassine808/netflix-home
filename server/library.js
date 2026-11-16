@@ -276,10 +276,11 @@ async function probe(filePath) {
       height: Number(video?.height) || 0,
       videoCodec: video?.codec_name || null,
       audioCodec: audio?.codec_name || null,
+      colorRange: String(video?.color_range || '').toLowerCase() || null,
       bitrate: Number(data.format?.bit_rate) || 0,
     };
   } catch {
-    return { durationSec: 0, width: 0, height: 0, videoCodec: null, audioCodec: null, bitrate: 0 };
+    return { durationSec: 0, width: 0, height: 0, videoCodec: null, audioCodec: null, colorRange: null, bitrate: 0 };
   }
 }
 
@@ -343,15 +344,23 @@ export async function scanLibrary(root) {
       const size = file.size;
       const mtime = file.mtime;
       const row = stored.get(rel);
+      let reuse = null;
       if (row && Number(row.size) === size && Number(row.mtime) === mtime) {
         try {
-          entries.push({ rel, item: JSON.parse(row.payload) });
-          continue;
+          reuse = JSON.parse(row.payload);
         } catch {
-          /* payload damaged; rebuild below */
+          reuse = null; /* payload damaged; rebuild below */
         }
       }
-      const cached = legacy[rel];
+      /* A payload written before the colour probe carries no range. Probe the
+       * file once more, so a full-range HEVC title can be repaired without
+       * waiting for the file itself to change. */
+      const staleColor = Boolean(reuse) && !('colorRange' in reuse);
+      if (reuse && !staleColor) {
+        entries.push({ rel, item: reuse });
+        continue;
+      }
+      const cached = staleColor ? null : legacy[rel];
       const probed = cached && cached.size === size && Math.round(cached.mtimeMs) === mtime ? cached : null;
       const entry = { rel, filePath: file.full, size, mtime, probed };
       entries.push(entry);
@@ -410,6 +419,9 @@ export async function scanLibrary(root) {
         height: probed.height,
         videoCodec: probed.videoCodec,
         audioCodec: probed.audioCodec,
+        /* Full-range HEVC replays washed out in the browser; the flag is stored
+         * so the repair queue and the player can both see it. */
+        colorRange: probed.colorRange || null,
         size,
         mtime,
       };

@@ -164,6 +164,8 @@ async function init() {
   videoTitle.classList.remove('sk-text');
   epTag.classList.remove('sk-text');
   setIdleLogo();
+  warnColorFix();
+  watchColorFix();
   document.body.style.background = '#000';
   video.poster = thumbUrl(item, 960);
   await initAudioTracks();
@@ -981,7 +983,13 @@ async function selectSubtitle(lang) {
 
 function streamUrl() {
   const base = `/api/stream/${encodeURIComponent(item.id)}`;
-  return audioIndex == null ? base : `${base}?audio=${audioIndex}`;
+  /* A repair replaces the file under the same id. The mtime in the query makes
+   * the URL a different resource, so no player or cache can hand back the copy
+   * it already opened. */
+  const query = [];
+  if (audioIndex != null) query.push(`audio=${audioIndex}`);
+  if (Number(item.mtime)) query.push(`v=${Math.round(Number(item.mtime))}`);
+  return query.length ? `${base}?${query.join('&')}` : base;
 }
 
 async function initAudioTracks() {
@@ -1151,6 +1159,73 @@ function toastInPlayer(message) {
   resumeToast.textContent = message;
   resumeToast.hidden = false;
   toastTimer = setTimeout(() => { resumeToast.hidden = true; }, 4000);
+}
+
+/* A full-range HEVC file plays washed out in every Chromium browser: the decoder
+ * ignores the flag the release wrote. The server re-encodes it into the legal
+ * range on its own, so the viewer is told why this one looks wrong today. */
+function warnColorFix() {
+  if (String(item.videoCodec || '').toLowerCase() !== 'hevc') return;
+  const range = String(item.colorRange || '').toLowerCase();
+  if (range !== 'pc' && range !== 'jpeg' && range !== 'full') return;
+  toastInPlayer('This file is full range, so the browser washes its colours out. Repairing it in the background.');
+}
+
+/* The repair replaces the file under the same stream URL, so once the library
+ * reports the limited range the player reopens it at the same second and the
+ * picture corrects itself without a reload. The title being watched also jumps
+ * the repair queue: it is the one file whose colour is wrong right now. */
+let colorFixTimer = null;
+
+function watchColorFix() {
+  if (String(item.videoCodec || '').toLowerCase() !== 'hevc') return;
+  const range = String(item.colorRange || '').toLowerCase();
+  if (range !== 'pc' && range !== 'jpeg' && range !== 'full') return;
+
+  fetch(`/api/colorfix/${encodeURIComponent(item.id)}`, { method: 'POST' }).catch(() => {});
+
+  clearInterval(colorFixTimer);
+  let checks = 0;
+  colorFixTimer = setInterval(async () => {
+    /* A repair is minutes of encoding; an hour of 5 s checks is only a fallback
+     * in case the server never reports the swap. */
+    if (++checks > 720) {
+      clearInterval(colorFixTimer);
+      colorFixTimer = null;
+      return;
+    }
+    try {
+      const res = await fetch(`/api/item/${encodeURIComponent(id)}`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const fresh = await res.json();
+      const now = String(fresh.colorRange || '').toLowerCase();
+      if (now === 'pc' || now === 'jpeg' || now === 'full') return;
+      clearInterval(colorFixTimer);
+      colorFixTimer = null;
+      /* The mtime changed with the swap, so streamUrl() now points at the new
+       * file instead of the one this element already opened. */
+      item.colorRange = fresh.colorRange;
+      item.mtime = fresh.mtime;
+      item.size = fresh.size;
+      reopenColorFix();
+      toastInPlayer('Colours repaired - reopening this title.');
+    } catch {
+      /* server busy; the next check tries again */
+    }
+  }, 5000);
+}
+
+function reopenColorFix() {
+  const at = Number(video.currentTime) || 0;
+  const playing = !video.paused;
+  const jump = () => {
+    video.removeEventListener('loadedmetadata', jump);
+    if (at > 0) video.currentTime = at;
+    if (playing) video.play().catch(() => {});
+  };
+  video.addEventListener('loadedmetadata', jump);
+  video.src = streamUrl();
+  video.load();
 }
 
 function toggleFullscreen() {

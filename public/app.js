@@ -8,7 +8,7 @@ import {
   searchOnline, getOnlineTitle, searchCastle, getCastleTitle, getCastleSeriesEpisodes, startCastleDownload,
   getSavedCastle,
   deleteLibraryItem, deleteLibraryItems, getDownloads, cancelDownload, retryDownload, reorderDownloads,
-  pauseDownload, resumeDownload,
+  pauseDownload, resumeDownload, getColorFix,
   getSettings, setOfflineMode, setCastleFallback, setAutoplaySound, setDownloadLimits, setTorrentQuality,
   setLibraryRoot, restartApp,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
@@ -73,6 +73,7 @@ const state = {
   downloadsSynced: false,
   downloadsLoaded: false,
   downloadPoll: null,
+  colorfix: { jobs: [], queued: [] },
   notifs: [],
   onlineResults: [],
   onlineLoading: false,
@@ -264,6 +265,9 @@ const els = {
   downloadsCount: $('downloadsCount'),
   downloadsRoot: $('downloadsRoot'),
   dlGroups: $('dlGroups'),
+  colorfixBox: $('colorfixBox'),
+  colorfixList: $('colorfixList'),
+  colorfixCount: $('colorfixCount'),
   dlClear: $('dlClear'),
   dlSettings: $('dlSettings'),
   notif: $('notif'),
@@ -1539,12 +1543,18 @@ function scheduleDownloadPoll() {
 
 async function refreshDownloads({ initial = false } = {}) {
   try {
-    const data = await getDownloads();
+    /* The colour repairs run next to the downloads and belong on this page, so
+     * both are fetched together: the panel never shows one without the other. */
+    const [data, repairs] = await Promise.all([
+      getDownloads(),
+      getColorFix().catch(() => null),
+    ]);
     const previous = new Map(state.downloads.map((job) => [job.id, job.status]));
     const jobs = data.jobs || [];
     state.downloads = jobs;
     state.downloadsLoaded = true;
     if (data.root) els.downloadsRoot.textContent = `Saving to ${data.root}`;
+    renderColorFix(repairs);
     renderDownloads();
     updateDownloadsBadge();
     syncCastleSheet();
@@ -2013,7 +2023,94 @@ function renderDownloads() {
   }
   els.dlClear.hidden = !state.downloads.some((j) => j.status === 'completed' && !dlDismissed.has(j.id));
   els.dlSkeleton.hidden = state.downloadsLoaded;
-  els.downloadsEmpty.hidden = jobs.length > 0 || !state.downloadsLoaded;
+  const repairing = state.colorfix.jobs.length + state.colorfix.queued.length;
+  els.downloadsEmpty.hidden = jobs.length > 0 || repairing > 0 || !state.downloadsLoaded;
+}
+
+/* ---------- full-range colour repairs ---------- */
+
+/* The server re-encodes a full-range HEVC file the browser paints washed out.
+ * It runs on its own and never asks anything, so the panel just reports it: the
+ * files encoding right now with their progress, then the ones waiting. */
+const cfRows = new Map();
+
+function renderColorFix(status) {
+  state.colorfix = {
+    jobs: Array.isArray(status?.jobs) ? status.jobs : [],
+    queued: Array.isArray(status?.queued) ? status.queued : [],
+  };
+  const rows = [
+    ...state.colorfix.jobs.map((job) => ({ ...job, running: true })),
+    ...state.colorfix.queued.map((entry) => ({ ...entry, running: false, progress: 0 })),
+  ];
+  els.colorfixBox.hidden = rows.length === 0;
+  if (!rows.length) {
+    cfRows.forEach((row) => row.remove());
+    cfRows.clear();
+    return;
+  }
+
+  const { jobs, queued } = state.colorfix;
+  els.colorfixCount.textContent = jobs.length && queued.length
+    ? `${jobs.length} repairing, ${queued.length} queued`
+    : jobs.length ? `${jobs.length} repairing` : `${queued.length} queued`;
+
+  const keep = new Set(rows.map((row) => row.relPath));
+  cfRows.forEach((row, key) => {
+    if (keep.has(key)) return;
+    row.remove();
+    cfRows.delete(key);
+  });
+
+  rows.forEach((entry, i) => {
+    let row = cfRows.get(entry.relPath);
+    if (!row) {
+      row = buildColorFixRow();
+      row.dataset.relPath = entry.relPath;
+      cfRows.set(entry.relPath, row);
+    }
+    updateColorFixRow(row, entry);
+    if (els.colorfixList.children[i] !== row) {
+      els.colorfixList.insertBefore(row, els.colorfixList.children[i] || null);
+    }
+  });
+}
+
+function buildColorFixRow() {
+  const row = createEl('div', 'colorfix-row');
+  const main = createEl('div', 'download-main');
+  const top = createEl('div', 'download-top');
+  const title = createEl('span', 'download-title');
+  const pct = createEl('span', 'download-pct');
+  top.append(title, pct);
+  const bar = createEl('div', 'download-bar');
+  const fillEl = document.createElement('i');
+  bar.append(fillEl);
+  const meta = createEl('div', 'download-meta');
+  const stage = createEl('span', 'download-stage');
+  meta.append(stage);
+  main.append(top, bar, meta);
+  row.append(main);
+  row._c = { title, pct, bar, fillEl, stage };
+  return row;
+}
+
+function updateColorFixRow(row, entry) {
+  const c = row._c;
+  c.title.textContent = entry.title || 'Untitled';
+  row.classList.toggle('is-repairing', entry.running);
+  if (entry.running) {
+    const percent = Math.round(Math.max(0, Math.min(1, Number(entry.progress) || 0)) * 100);
+    c.pct.hidden = false;
+    c.pct.textContent = `${percent}%`;
+    c.bar.hidden = false;
+    c.fillEl.style.width = `${percent}%`;
+    c.stage.textContent = 'Repairing colours - full range HEVC';
+  } else {
+    c.pct.hidden = true;
+    c.bar.hidden = true;
+    c.stage.textContent = 'Waiting for a free encoder';
+  }
 }
 
 function tweenNumber(el, to) {

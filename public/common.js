@@ -182,6 +182,13 @@ export async function getDownloads() {
   return res.json();
 }
 
+/* Full-range video repairs the server runs on its own (washed-out HEVC). */
+export async function getColorFix() {
+  const res = await fetch('/api/colorfix', { cache: 'no-store' });
+  if (!res.ok) throw new Error(`colorfix ${res.status}`);
+  return res.json();
+}
+
 export async function getSeries(key) {
   const res = await fetch(`/api/series/${encodeURIComponent(key)}`, { cache: 'no-store' });
   if (!res.ok) throw new Error(`series ${res.status}`);

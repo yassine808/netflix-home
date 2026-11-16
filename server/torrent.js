@@ -826,6 +826,9 @@ export async function probeMedia(file) {
     width: Number(videoStream.width) || 0,
     height: Number(videoStream.height) || 0,
     pixFmt: videoStream.pix_fmt || '',
+    /* 'pc' is full range: correct pictures, but Chromium decodes HEVC as if it
+     * were limited range, so those files look washed out until repaired. */
+    colorRange: String(videoStream.color_range || '').toLowerCase(),
     bitRate: Number(videoStream.bit_rate) || 0,
     fps: frameRateOf(videoStream),
   } : null;

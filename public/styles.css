@@ -2557,6 +2557,20 @@ body.modal-open .hero-media img, body.modal-open .hero-media video { animation-p
 .downloads-list { gap: 0; padding: 18px 18px 44px; }
 .dl-groups { display: flex; flex-direction: column; gap: 14px; }
 
+/* Full-range colour repairs: a quiet block above the download cards. */
+.colorfix { margin-bottom: 14px; padding: 12px 14px; border-radius: 18px; border: 1px solid rgba(255,255,255,.08); background: linear-gradient(160deg, rgba(255,255,255,.05), rgba(255,255,255,.015)); }
+.colorfix[hidden] { display: none; }
+.colorfix-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.colorfix-head h3 { margin: 0; color: #fff; font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.colorfix-head p { margin: 0; color: #9a97a3; font-size: 11.5px; }
+.colorfix-list { display: flex; flex-direction: column; gap: 6px; }
+.colorfix-row { padding: 10px 12px; border-radius: 12px; background: rgba(0,0,0,.28); border: 1px solid rgba(255,255,255,.06); animation: rise .4s var(--ease) both; }
+.colorfix-row .download-bar { height: 5px; margin-top: 8px; }
+.colorfix-row .download-meta { margin-top: 7px; }
+.colorfix-row .download-title { font-size: 13px; }
+.colorfix-row.is-repairing .download-bar i { background: linear-gradient(90deg, var(--red-deep), var(--red)); box-shadow: 0 0 10px rgba(255,42,54,.45); }
+.colorfix-row .download-bar[hidden] { display: none; }
+
 .dl-card { position: relative; padding: 14px; border-radius: 18px; border: 1px solid var(--glass-line); background: linear-gradient(160deg, rgba(255,255,255,.07), rgba(255,255,255,.025)); box-shadow: 0 14px 34px rgba(0,0,0,.35); animation: dl-card-in .45s var(--ease) both; transition: opacity .32s, transform .32s var(--ease), border-color .3s, box-shadow .3s; }
 @keyframes dl-card-in { from { opacity: 0; transform: translateY(12px); } }
 .dl-card[data-state="downloading"] { border-color: rgba(255,42,54,.38); box-shadow: 0 0 0 1px rgba(255,42,54,.1), 0 16px 40px rgba(255,42,54,.12); }

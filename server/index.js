@@ -41,6 +41,7 @@ import { initTrailers, trailerPathFor, trailerStatus, warmTrailer, warmTrailers 
 import { resolveImdbId } from './imdb.js';
 import { ensureEnglishSubtitle, fetchEnglishSubtitle, syncSubtitleTracks, subtitleBody } from './subs.js';
 import { initAudio, probeAudioTracks, ensureAudioVariant } from './audio.js';
+import { initColorFix, syncColorFix, colorFixStatus, prioritizeColorFix, needsColorFix } from './colorfix.js';
 
 /* In the single-file build there is no real file on disk, so the bundle passes
  * APP_ROOT (where the exe lives) and PUBLIC_DIR (extracted UI files). */
@@ -108,6 +109,7 @@ initSettings(cacheDir);
 initArtwork(cacheDir);
 initFrames(cacheDir);
 initIntro(cacheDir);
+initColorFix({ cacheDir, root: libraryRoot });
 initHero(cacheDir);
 initAudio(cacheDir);
 initTrailers(cacheDir, {
@@ -197,6 +199,8 @@ async function refreshLibrary(reason) {
   } else {
     console.log(`library ${reason}: unchanged, ${scan.dirs} folder(s) checked in ${scan.ms} ms`);
   }
+  /* Whatever the scan flagged as full-range HEVC joins the repair queue. */
+  syncColorFix(lib.items);
   return lib;
 }
 
@@ -509,6 +513,22 @@ app.post('/api/rescan', async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });
   }
+});
+
+/* Full-range HEVC repair queue: what is being repaired, what is waiting, and
+ * every file the queue has handled. No auth needed, it only reports state. */
+app.get('/api/colorfix', (req, res) => {
+  res.json(colorFixStatus());
+});
+
+/* The player opened this title, so its repair matters now: move it to the head
+ * of the queue. Also the manual retry for a file the queue already gave up on. */
+app.post('/api/colorfix/:id', (req, res) => {
+  const item = getItem(String(req.params.id || ''));
+  if (!item) return res.status(404).json({ error: 'title not found' });
+  if (!needsColorFix(item)) return res.status(409).json({ error: 'this file does not need a colour repair' });
+  prioritizeColorFix(item.relPath, item.displayTitle || item.title || item.fileName);
+  res.json({ ok: true });
 });
 
 /* One series, with its seasons and the episodes actually on disk. Duplicate
