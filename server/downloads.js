@@ -57,7 +57,11 @@ function trimHistory() {
   const terminal = [...jobs.values()]
     .filter((job) => job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled')
     .sort((a, b) => (b.completedAt || b.createdAt) - (a.completedAt || a.createdAt));
-  for (const job of terminal.slice(HISTORY_LIMIT)) jobs.delete(job.id);
+  const dropped = terminal.slice(HISTORY_LIMIT);
+  for (const job of dropped) jobs.delete(job.id);
+  /* Finished rows disappearing from the drawer with no explanation is how a
+   * "the app lost my downloads" report starts; say it out loud. */
+  if (dropped.length) console.log(`[download] trimmed ${dropped.length} finished row(s) from the history (${HISTORY_LIMIT} kept)`);
 }
 
 function snapshot() {
@@ -463,7 +467,9 @@ export async function startRestoredDownloads({ online = true } = {}) {
   scheduleSave(0);
 
   if (restored.length) {
-    console.log(`[download] restored ${restored.length} job(s), ${restoredQueued} queued, ${restoredPaused} paused`);
+    const byStatus = {};
+    for (const job of restored) byStatus[job.status] = (byStatus[job.status] || 0) + 1;
+    console.log(`[download] restored ${restored.length} job(s), ${restoredQueued} queued, ${restoredPaused} paused - ${JSON.stringify(byStatus)}`);
   }
   return listDownloads();
 }
@@ -811,6 +817,30 @@ export async function addTorrentDownload(body = {}) {
       skipped: [{ fileName, id: known.id, title: known.displayTitle || known.title }],
       source: 'torrentio',
       quality: top.quality,
+      seeders: top.seeders,
+      release: top.name,
+    };
+  }
+
+  /* The same episode must not be queued twice. A season row that was clicked
+   * again, or a batch that was re-sent, used to add a second job for an episode
+   * that was already waiting; both then downloaded the same release into two
+   * folders and the drawer listed the episode twice. */
+  const twin = [...jobs.values()].find((other) => (
+    other.status !== 'cancelled'
+    && other.status !== 'failed'
+    && other.kind === 'torrent'
+    && String(other.identifier || '') === String(imdbId || '')
+    && Number(other.season) === season
+    && Number(other.episode) === episode
+  ));
+  if (twin) {
+    return {
+      count: 0,
+      jobs: [],
+      skipped: [{ fileName: twin.fileName || fileName, id: twin.id, title: twin.title }],
+      source: 'torrentio',
+      quality: twin.quality || top.quality,
       seeders: top.seeders,
       release: top.name,
     };
@@ -1415,6 +1445,23 @@ async function attemptRelease(job, release, dir, controller) {
   scheduleSave(0);
   await fsp.rm(part, { force: true }).catch(() => {});
   const remuxStartedAt = Date.now();
+
+  /* Embedded tracks have to be read from the downloaded file while it still
+   * exists. The job deletes its torrent folder in `finally` as soon as the
+   * episode is installed, so the old fire-and-forget pass ran against a folder
+   * that was already gone: every remuxed episode reported "wrote 0 of 30" and
+   * fell back to a single online English track. The demux runs beside the
+   * remux (both only read the file) and the .vtt files are moved next to the
+   * episode after it lands. A `direct` job keeps the source as the episode, so
+   * its tracks are read from the installed file instead. */
+  const subtitleWork = !direct && picked.subtitles?.length
+    ? extractSubtitles({
+      input: downloaded.path,
+      outStem: path.join(dir, 'subs'),
+      subtitles: picked.subtitles,
+    }).catch(() => [])
+    : null;
+
   try {
     if (!direct) {
       await remuxToMp4({
@@ -1468,31 +1515,48 @@ async function attemptRelease(job, release, dir, controller) {
   await onComplete(job).catch(() => {});
 
   /* Embedded tracks live in the downloaded file, not in the MP4 that was just
-   * written: a remux keeps video and audio only, so reading `dest` asked ffmpeg
-   * for subtitle streams that no longer exist (a 30-track release reported
-   * "wrote 0 of 30" and the browser then fell back to an online English file).
-   * The source is still in the torrent folder, which is only swept at boot. */
-  void finishSubtitles(job, dest, picked.subtitles, direct ? '' : downloaded.path);
+   * written: a remux keeps video and audio only. The demux started before the
+   * remux, so its files only need moving into the library here. */
+  let tracks = [];
+  if (subtitleWork) {
+    const prepared = await subtitleWork;
+    const stem = dest.slice(0, dest.length - path.extname(dest).length);
+    for (const track of prepared) {
+      const next = `${stem}.${track.lang}.vtt`;
+      await fsp.rm(next, { force: true }).catch(() => {});
+      const moved = await fsp.rename(track.path, next).then(() => true).catch(() => false);
+      if (moved) tracks.push({ ...track, path: next });
+    }
+    job.subtitles = tracks.map((track) => track.lang);
+    scheduleSave(0);
+    if (tracks.length) {
+      console.log(`[download] ${job.title}: ${tracks.length} subtitle track${tracks.length === 1 ? '' : 's'} written next to the episode`);
+    } else if (picked.subtitles.length) {
+      console.warn(`[download] ${job.title}: could not read the ${picked.subtitles.length} embedded subtitle track(s)`);
+    }
+  }
+  void finishSubtitles(job, dest, picked.subtitles, subtitleWork ? tracks : null);
   return 'done';
 }
 
 /**
- * Subtitle tracks for an installed episode, written after the row turns green.
- * `source` is the downloaded file the tracks come from; it is only passed for a
- * remux, where `dest` is a fresh MP4 that carries video and audio but no
- * subtitle stream. Best effort: two passes over the file, the batch one for
- * every language and a solo retry only for English, so one broken stream cannot
- * burn a minute per language. Failures leave the video and the job as they were.
+ * Subtitle tracks for an installed episode. `prepared` carries the tracks that
+ * were already extracted from the source (remux jobs); without it the file is
+ * read directly, which works because a `direct` job keeps the source as the
+ * episode. Best effort: failures leave the video and the job as they were.
  */
-async function finishSubtitles(job, dest, subtitles, source = '') {
-  const stem = dest.slice(0, dest.length - path.extname(dest).length);
-  let tracks = [];
-  try {
-    tracks = await extractSubtitles({ input: source || dest, outStem: stem, subtitles });
-  } catch {
-    tracks = [];
+async function finishSubtitles(job, dest, subtitles, prepared = null) {
+  let tracks = Array.isArray(prepared) ? prepared : [];
+  if (!Array.isArray(prepared)) {
+    const stem = dest.slice(0, dest.length - path.extname(dest).length);
+    try {
+      tracks = await extractSubtitles({ input: dest, outStem: stem, subtitles });
+    } catch {
+      tracks = [];
+    }
+    job.subtitles = tracks.map((track) => track.lang);
+    scheduleSave(0);
   }
-  job.subtitles = tracks.map((track) => track.lang);
   if (!tracks.some((track) => track.lang === 'en')) {
     await ensureEnglishSubtitle(dest, {
       seriesTitle: job.seriesTitle || job.title,
