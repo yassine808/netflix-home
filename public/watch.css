@@ -24,6 +24,32 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   outline-offset: 3px;
 }
 
+/* Scrollbars: the subtitle/audio lists, the panels and the page itself share
+ * one thin translucent pill, so the native Windows arrow bar never appears
+ * over the dark player. Same design as the home page. */
+:root {
+  --sb-thumb: rgba(255, 255, 255, 0.24);
+  --sb-thumb-hover: rgba(255, 255, 255, 0.44);
+}
+/* Firefox (no ::-webkit-scrollbar): the same thin translucent pill. Chrome
+ * keeps the pseudo-element styling below; setting the standard properties
+ * there would hand the scrollbar back to the native theme. */
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: var(--sb-thumb) transparent; }
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-button { display: none; }
+::-webkit-scrollbar-thumb {
+  min-height: 36px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--sb-thumb);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--sb-thumb-hover); background-clip: padding-box; }
+
 /* ---------- startup: pure black, CSS only, never blocks input ---------- */
 
 #boot {
@@ -480,11 +506,8 @@ body.leaving .player {
   gap: 2px;
   overflow-y: auto;
   padding-right: 6px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
 }
 .ep-list::-webkit-scrollbar { width: 6px; }
-.ep-list::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.25); border-radius: 3px; }
 .ep-item {
   display: flex;
   align-items: center;
