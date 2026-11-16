@@ -263,6 +263,23 @@ export async function setAutoplaySound(autoplaySound) {
   return res.json();
 }
 
+/* Download limits: parallel transfers and the combined speed cap in MB/s
+ * (0 = unlimited). The server applies both to the queue immediately. */
+export async function setDownloadLimits({ maxActive, limitMBps } = {}) {
+  const body = {};
+  if (maxActive !== undefined) body.maxActive = Number(maxActive);
+  if (limitMBps !== undefined) body.limitMBps = Number(limitMBps);
+  const res = await fetch('/api/settings/download-limits', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let payload = null;
+  try { payload = await res.json(); } catch { /* non-JSON error */ }
+  if (!res.ok) throw new Error(payload?.error || `download limits ${res.status}`);
+  return payload;
+}
+
 /* Removes one episode/movie file from disk. Needs DELETE /api/item/:id on the server. */
 export async function deleteLibraryItem(id) {
   const res = await fetch(`/api/item/${encodeURIComponent(id)}`, { method: 'DELETE' });

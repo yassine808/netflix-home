@@ -9,7 +9,7 @@ import {
   getSavedCastle,
   deleteLibraryItem, deleteLibraryItems, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   pauseDownload, resumeDownload,
-  getSettings, setOfflineMode, setCastleFallback, setAutoplaySound,
+  getSettings, setOfflineMode, setCastleFallback, setAutoplaySound, setDownloadLimits,
   setLibraryRoot, restartApp,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
   setImg, skel, skelLines, skelMeta, skelCards, skelPoster, skelEpisodes, skelDownload,
@@ -41,6 +41,10 @@ const state = {
   castleFallback: true,
   // Mirrors the server's sound setting: false = preview and player start muted.
   autoplaySound: true,
+  // Mirrors the server's download queue: parallel transfers and the combined
+  // speed cap in MB/s (0 = no limit).
+  downloadMaxActive: 3,
+  downloadLimitMBps: 0,
   // Library folder this tab is scanning, and the one config.json holds. They
   // differ until the app restarts.
   libraryRoot: '',
@@ -55,6 +59,9 @@ const state = {
   syncing: false,
   onlineBrowse: [],
   onlineBrowseLoading: false,
+  /* Saved Catalogue poster per title, read once at boot. The downloads drawer
+   * uses it when a finished file's own artwork is gone. */
+  savedTitles: [],
   onlineBrowseToken: 0,
   onlineBrowseAbort: null,
   onlineMode: 'random',
@@ -206,6 +213,11 @@ const els = {
   castleFallbackLabel: $('castleFallbackLabel'),
   autoplaySoundBtn: $('autoplaySoundBtn'),
   autoplaySoundLabel: $('autoplaySoundLabel'),
+  dlMaxActiveInput: $('dlMaxActiveInput'),
+  dlMaxActiveSave: $('dlMaxActiveSave'),
+  dlSpeedInput: $('dlSpeedInput'),
+  dlSpeedSave: $('dlSpeedSave'),
+  dlLimitError: $('dlLimitError'),
   libraryRootInput: $('libraryRootInput'),
   libraryRootSave: $('libraryRootSave'),
   libraryRootHint: $('libraryRootHint'),
@@ -244,6 +256,7 @@ const els = {
   downloadsRoot: $('downloadsRoot'),
   dlGroups: $('dlGroups'),
   dlClear: $('dlClear'),
+  dlSettings: $('dlSettings'),
   notif: $('notif'),
   bellBtn: $('bellBtn'),
   notifMenu: $('notifMenu'),
@@ -350,6 +363,14 @@ async function boot() {
     })
     .catch(() => { /* older server: leave the switch online */ });
   await loadLibrary({ first: true });
+
+  // One call for the artwork and the show names of everything opened once, so
+  // the downloads drawer can still paint a poster after its files are gone.
+  getSavedCastle()
+    .then((data) => {
+      state.savedTitles = Array.isArray(data.results) ? data.results : [];
+    })
+    .catch(() => { /* drawer falls back to the job poster */ });
 
   // The player links here when the next episode is not on disk:
   //   /?open=<episode id>&season=2&episode=3
@@ -1366,6 +1387,7 @@ async function showSavedCatalogue() {
     if (token !== savedCatalogueToken) return;
     const results = Array.isArray(data.results) ? data.results : [];
     state.onlineBrowse = results;
+    state.savedTitles = results;
     renderOnlineGrid();
     els.onlineEmpty.hidden = results.length > 0;
     if (!results.length) {
@@ -1465,6 +1487,7 @@ const STAGE_LABELS = {
   searching: 'Picking release…',
   metadata: 'Fetching torrent…',
   verifying: 'Checking tracks…',
+  installing: 'Installing…',
   remuxing: 'Remuxing to MP4…',
   subtitles: 'Extracting subtitles…',
 };
@@ -1603,45 +1626,74 @@ function downloadEpisodeLabel(job) {
  * cached on disk and load instantly; an in-flight job only has the remote
  * poster it was started with. A show already in the library lends its wordmark
  * to the episodes still downloading. */
-function downloadArt(job) {
-  const items = state.library?.items || [];
-  const file = String(job.fileName || '');
-  const normalize = (value) => String(value || '')
+function normalizeShowName(value) {
+  return String(value || '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
-  const show = normalize(downloadShow(job));
+}
+
+/* The saved catalogue keeps a poster for every title opened once, which is the
+ * only artwork left when a download's files were deleted and the library row
+ * is gone. That is what a finished show with no picture falls back to. */
+function savedShowPoster(show) {
+  const saved = Array.isArray(state.savedTitles) ? state.savedTitles : [];
+  const wanted = normalizeShowName(show);
+  if (!wanted) return '';
+  const hit = saved.find((row) => row?.poster && normalizeShowName(row.title) === wanted);
+  return hit ? String(hit.poster) : '';
+}
+
+function downloadArt(job) {
+  const items = state.library?.items || [];
+  const file = String(job.fileName || '');
+  const show = normalizeShowName(downloadShow(job));
   const exact = file ? items.find((row) => row.fileName === file) : null;
   const sameShow = show
-    ? items.find((row) => normalize(row.title) === show)
+    ? items.find((row) => normalizeShowName(row.title) === show)
     : null;
   const item = exact || sameShow;
-  if (item) {
-    return {
-      poster: `/api/art/${encodeURIComponent(item.id)}/poster?w=240`,
-      logo: logoUrl(item),
-    };
-  }
-  return { poster: String(job.poster || ''), logo: '' };
+
+  /* Candidates in the order they are most likely to exist: the library row that
+   * was just scanned, the saved catalogue, then whatever the job was started
+   * with. A 404 on the first one moves to the next instead of leaving the group
+   * with no picture at all. */
+  const sources = [];
+  if (item) sources.push(`/api/art/${encodeURIComponent(item.id)}/poster?w=240`);
+  const saved = savedShowPoster(downloadShow(job));
+  if (saved && !sources.includes(saved)) sources.push(saved);
+  const fromJob = String(job.poster || '');
+  if (fromJob && !sources.includes(fromJob)) sources.push(fromJob);
+
+  return { sources, logo: item ? logoUrl(item) : '' };
 }
 
 function buildDownloadHead(job, artwork = downloadArt(job)) {
   const head = createEl('div', 'dl-group');
   const show = downloadShow(job);
-  const { poster, logo } = artwork;
-  head._art = `${poster}|${logo}`;
+  const { sources, logo } = artwork;
+  head._art = `${sources.join('|')}|${logo}`;
 
   const art = createEl('div', 'dl-group-art');
   art.append(createEl('span', 'dl-group-initial', show.slice(0, 2).toUpperCase()));
-  if (poster) {
+  if (sources.length) {
     const img = document.createElement('img');
     img.className = 'dl-group-poster';
     img.alt = '';
     img.loading = 'lazy';
     img.decoding = 'async';
     img.addEventListener('load', () => img.classList.add('loaded'));
-    img.addEventListener('error', () => img.remove());
-    img.src = poster;
+    // Next candidate on error; the last one removes the picture and the
+    // group keeps its initials.
+    img.addEventListener('error', () => {
+      sources.shift();
+      if (!sources.length) {
+        img.remove();
+        return;
+      }
+      img.src = sources[0];
+    });
+    img.src = sources[0];
     art.append(img);
   }
 
@@ -1806,7 +1858,7 @@ function updateDlCard(card, g, qpos) {
   card.el.dataset.state = g.state;
   card.el.toggleAttribute('data-single', n === 1);
   const art = downloadArt(list[0]);
-  if (!card.head || card.head._art !== `${art.poster}|${art.logo}`) {
+  if (!card.head || card.head._art !== `${art.sources.join('|')}|${art.logo}`) {
     const head = buildDownloadHead(list[0], art);
     if (card.head) card.head.replaceWith(head); else card.top.prepend(head);
     card.head = head;
@@ -2321,8 +2373,10 @@ function openSettings() {
   closeProfile();
   applyCastleFallbackUi();
   applyAutoplaySoundUi();
+  applyDownloadLimitUi();
   applyLibraryRootUi();
   showLibraryError('');
+  showDlLimitError('');
   els.settingsModal.hidden = false;
   syncBodyLock();
   setTimeout(() => els.settingsModal.querySelector('.modal-close')?.focus(), 40);
@@ -2331,11 +2385,14 @@ function openSettings() {
     .then((settings) => {
       state.castleFallback = settings.castleFallback !== false;
       state.autoplaySound = settings.autoplaySound !== false;
+      state.downloadMaxActive = Number(settings.downloadMaxActive) || state.downloadMaxActive;
+      state.downloadLimitMBps = Number(settings.downloadLimitMBps) || 0;
       state.libraryRoot = settings.libraryRoot || state.libraryRoot;
       state.libraryRootSetting = settings.libraryRootSetting || state.libraryRoot;
       state.libraryRestartPending = Boolean(settings.libraryRootPending);
       applyCastleFallbackUi();
       applyAutoplaySoundUi();
+      applyDownloadLimitUi();
       applyLibraryRootUi();
     })
     .catch(() => { /* keep what boot found */ });
@@ -2393,6 +2450,62 @@ async function toggleAutoplaySound() {
     toast(`Could not change the sound setting: ${err.message}`, { type: 'warn' });
   } finally {
     els.autoplaySoundBtn.disabled = false;
+  }
+}
+
+function applyDownloadLimitUi() {
+  const max = Number(state.downloadMaxActive) || 3;
+  const limit = Number(state.downloadLimitMBps) || 0;
+  if (document.activeElement !== els.dlMaxActiveInput) els.dlMaxActiveInput.value = String(max);
+  if (document.activeElement !== els.dlSpeedInput) els.dlSpeedInput.value = String(limit);
+  els.dlMaxActiveInput.placeholder = '3';
+  els.dlSpeedInput.placeholder = '0';
+}
+
+function showDlLimitError(message) {
+  els.dlLimitError.textContent = message || '';
+  els.dlLimitError.hidden = !message;
+}
+
+async function saveDownloadMaxActive() {
+  const wanted = Math.round(Number(els.dlMaxActiveInput.value));
+  if (!Number.isFinite(wanted) || wanted < 1 || wanted > 20) {
+    showDlLimitError('Parallel downloads must be a whole number from 1 to 20.');
+    return;
+  }
+  showDlLimitError('');
+  els.dlMaxActiveSave.disabled = true;
+  try {
+    const settings = await setDownloadLimits({ maxActive: wanted });
+    state.downloadMaxActive = Number(settings.downloadMaxActive) || 3;
+    applyDownloadLimitUi();
+    toast(`${state.downloadMaxActive} video${state.downloadMaxActive === 1 ? '' : 's'} download at a time`);
+  } catch (err) {
+    showDlLimitError(err.message);
+  } finally {
+    els.dlMaxActiveSave.disabled = false;
+  }
+}
+
+async function saveDownloadSpeedLimit() {
+  const wanted = Number(els.dlSpeedInput.value);
+  if (!Number.isFinite(wanted) || wanted < 0 || wanted > 1000) {
+    showDlLimitError('Speed limit must be 0 (no limit) or a number up to 1000 MB/s.');
+    return;
+  }
+  showDlLimitError('');
+  els.dlSpeedSave.disabled = true;
+  try {
+    const settings = await setDownloadLimits({ limitMBps: wanted });
+    state.downloadLimitMBps = Number(settings.downloadLimitMBps) || 0;
+    applyDownloadLimitUi();
+    toast(state.downloadLimitMBps > 0
+      ? `Download speed limited to ${state.downloadLimitMBps} MB/s`
+      : 'Download speed is unlimited');
+  } catch (err) {
+    showDlLimitError(err.message);
+  } finally {
+    els.dlSpeedSave.disabled = false;
   }
 }
 
@@ -5352,6 +5465,21 @@ function bindStaticEvents() {
   els.settingsModal.querySelectorAll('[data-close-settings]').forEach((el) => el.addEventListener('click', closeSettings));
   els.castleFallbackBtn.addEventListener('click', toggleCastleFallback);
   els.autoplaySoundBtn.addEventListener('click', toggleAutoplaySound);
+  els.dlMaxActiveSave.addEventListener('click', saveDownloadMaxActive);
+  els.dlSpeedSave.addEventListener('click', saveDownloadSpeedLimit);
+  els.dlMaxActiveInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveDownloadMaxActive(); }
+  });
+  els.dlSpeedInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveDownloadSpeedLimit(); }
+  });
+  /* The cap belongs where the queue is: one click from the Downloads drawer
+   * opens the same sheet with the two fields in view. */
+  els.dlSettings.addEventListener('click', () => {
+    closeDownloads();
+    openSettings();
+    setTimeout(() => els.dlMaxActiveInput.focus(), 120);
+  });
   els.libraryRootSave.addEventListener('click', saveLibraryRoot);
   els.libraryRootInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {

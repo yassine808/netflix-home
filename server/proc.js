@@ -69,11 +69,14 @@ function createLane(limit) {
 /* One ffmpeg at a time; ffprobe reads are tiny and can overlap a little. */
 const mediaLane = createLane(1);
 const probeLane = createLane(3);
+/* Subtitle demux is a text copy with no decode: two runs keep three finishing
+ * downloads from queueing behind each other's extraction. */
+const subsLane = createLane(2);
 /* Artwork thumbnails are short single-frame jobs; two at a time keeps a cold
  * card grid from queueing behind a hero build. */
 const artLane = createLane(2);
 
-const LANES = { probe: probeLane, art: artLane, media: mediaLane };
+const LANES = { probe: probeLane, art: artLane, media: mediaLane, subs: subsLane };
 const laneFor = (name) => LANES[name] || mediaLane;
 
 /* Promise wrapper around execFile. `lane` is 'media' (default), 'probe' or

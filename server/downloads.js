@@ -6,10 +6,11 @@ import { spawn, spawnSync } from 'node:child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { spawnNice } from './proc.js';
 import { ensureEnglishSubtitle, vttFromSubtitle } from './subs.js';
+import { getDownloadMaxActive, getDownloadLimitMBps } from './settings.js';
 import { findReleases, rankReleases, magnetFor, releaseLabel } from './torrentio.js';
 import {
   fetchTorrentFiles, matchEpisodeFile, downloadTorrentFile,
-  probeMedia, pickTracks, remuxToMp4, extractSubtitles,
+  probeMedia, pickTracks, remuxToMp4, extractSubtitles, toIso2,
 } from './torrent.js';
 const USER_AGENT = 'netflix-home/1.0 (local library downloader)';
 
@@ -21,9 +22,10 @@ const VIDEO_EXTS = new Set([
 const jobs = new Map();
 const queue = [];
 let activeCount = 0;
-/* No concurrency cap: every queued episode starts at once, each with its own
- * aria2c swarm. The user asked for the queue to be unlimited. */
-const MAX_ACTIVE = Number.POSITIVE_INFINITY;
+/* How many transfers run at once comes from Settings (`downloadMaxActive`).
+ * Every running job is its own aria2c swarm, and 41 of them at once made this
+ * process answer /api/downloads in 46-82 s, so the queue is capped and the
+ * extra jobs wait in "queued" until a slot frees up. */
 let libraryRoot = '';
 let onComplete = async () => {};
 /* Returns the library item that already has this file name, or null. Downloads
@@ -710,11 +712,21 @@ export async function planTorrentRelease({ imdbId, season = 0, episode = 0, orig
   const ranked = rankReleases(streams, { originalLanguage: text(originalLanguage), copyVideo: copyVideo === true });
   if (!ranked.length) return null;
 
-  /* Prefer releases that ship English; untagged ones stay as fallbacks, in the
-   * ranked order. When every tagged release is a different language (Thai-only,
-   * Polish lektor), hand the episode to Castle instead of downloading a guess. */
-  if (!ranked.some(hasEnglish) && ranked.some(declaresLanguages)) return null;
-  const pool = ranked.filter((release) => hasEnglish(release) || !declaresLanguages(release));
+  /* The rule is "never a dub, English when it exists". A release is only
+   * dropped when the indexer tags it with languages that are neither English
+   * nor the title's original (an Italian-only rip of a Thai show). Releases
+   * tagged with the original language are kept and queued after the English
+   * ones; untagged releases stay as fallbacks and ffprobe decides after the
+   * download. English subtitles are added afterwards, so a Thai-only release is
+   * still watchable. */
+  const originalIso = toIso2(originalLanguage) || '';
+  const keepsOriginal = (release) => originalIso
+    && Array.isArray(release.languages)
+    && release.languages.includes(originalIso);
+  const english = ranked.filter(hasEnglish);
+  const originalOnly = ranked.filter((release) => !hasEnglish(release) && keepsOriginal(release));
+  const untagged = ranked.filter((release) => !declaresLanguages(release));
+  const pool = [...english, ...originalOnly, ...untagged];
   if (!pool.length) return null;
 
   /* 1080p is the floor (rankReleases already dropped everything lower), and a
@@ -1034,7 +1046,8 @@ export function retryDownload(id) {
 }
 
 function pump() {
-  while (activeCount < MAX_ACTIVE && queue.length) {
+  const cap = Math.max(1, getDownloadMaxActive());
+  while (activeCount < cap && queue.length) {
     const job = queue.shift();
     activeCount++;
     const task = job.kind === 'torrent' ? runTorrentJob(job) : runHlsJob(job);
@@ -1045,6 +1058,31 @@ function pump() {
         pump();
       });
   }
+}
+
+/* Re-run the queue after the cap or the speed limit changed in Settings: a
+ * higher cap starts the waiting jobs immediately, a lower one lets the running
+ * transfers finish and starts nothing new until the count drops. */
+export function applyDownloadLimits() {
+  pump();
+  return listDownloads();
+}
+
+/* Speed share for one torrent, in KiB/s: the configured cap (0 = unlimited)
+ * divided by the torrents that are really transferring right now. Called from
+ * each transfer's progress poll, so a job that finishes hands its share to the
+ * survivors without a restart. */
+function torrentLimitKbps() {
+  const totalMBps = getDownloadLimitMBps();
+  if (!(totalMBps > 0)) return 0;
+  let transfers = 0;
+  for (const job of jobs.values()) {
+    if (job.status === 'downloading' && job.kind === 'torrent') transfers += 1;
+  }
+  const bytesPerSec = (totalMBps * 1024 * 1024) / Math.max(1, transfers);
+  /* 32 KiB/s floor: a share smaller than that would stall the swarm long
+   * enough for the slow-torrent check to give up on it. */
+  return Math.max(32, Math.round(bytesPerSec / 1024));
 }
 
 function killTree(child) {
@@ -1215,9 +1253,11 @@ async function runHlsJob(job) {
     job.speed = 0;
     job.status = 'completed';
     job.completedAt = Date.now();
-    await saveSubtitle(job).catch(() => {});
-    await onComplete(job).catch(() => {});
     scheduleSave(0);
+    await onComplete(job).catch(() => {});
+    /* Subtitles (and the English lookup behind them) are network work: the
+     * episode is finished without them, so they never hold the row. */
+    void saveSubtitle(job).catch(() => {});
   } catch (err) {
     /* Killing ffmpeg makes it exit non-zero; that is a pause, not a failure. */
     if (job.status === 'paused') {
@@ -1294,6 +1334,7 @@ async function attemptRelease(job, release, dir, controller) {
       dir,
       total: Number(file.size) || 0,
       signal: controller.signal,
+      limitKbps: torrentLimitKbps,
       onProgress: ({ bytes, total, speed }) => {
         const size = Number(total) || job.total || 0;
         if (size > 0) job.total = size;
@@ -1337,10 +1378,9 @@ async function attemptRelease(job, release, dir, controller) {
   job.fileName = sanitizeFileName(torrentFileName(job, quality, extension));
   const dest = await uniquePath(job.targetDir, job.fileName);
   const part = `${dest}.part`;
-  const stem = dest.slice(0, dest.length - path.extname(dest).length);
   const durationSec = Number(probe.durationSec) || 0;
 
-  job.stage = direct ? 'subtitles' : 'remuxing';
+  job.stage = direct ? 'installing' : 'remuxing';
   job.progressValue = direct ? 0.97 : 0.84;
   job.part = part;
   scheduleSave(0);
@@ -1376,25 +1416,12 @@ async function attemptRelease(job, release, dir, controller) {
       : `[download] ${job.title}: remuxed ${(durationSec / 60).toFixed(0)} min to H.264 in ${seconds.toFixed(1)} s (${speed})`);
   }
 
-  job.stage = 'subtitles';
-  job.progressValue = 0.97;
-  scheduleSave(0);
-  const tracks = await extractSubtitles({
-    input: downloaded.path,
-    outStem: stem,
-    subtitles: picked.subtitles,
-  }).catch(() => []);
-  job.subtitles = tracks.map((track) => track.lang);
-
-  if (controller.signal.aborted) {
-    job.part = '';
-    await fsp.rm(part, { force: true }).catch(() => {});
-    for (const track of tracks) await fsp.rm(track.path, { force: true }).catch(() => {});
-    return 'aborted';
-  }
-
-  /* The direct path keeps the downloaded file where the downloader left it and
-   * moves it into the library at the very end; the remux path swaps the .part. */
+  /* Install the episode before touching subtitles. A season pack carries 30+
+   * subtitle tracks; one unreadable stream made the old extraction loop spend
+   * up to a minute per track while the drawer sat at 97 % "Extracting
+   * subtitles" on a video that was already whole. The episode is playable
+   * without them, so it is completed here and the tracks follow in the
+   * background (see finishSubtitles). */
   if (direct) await fsp.rename(downloaded.path, dest);
   else await fsp.rename(part, dest);
   job.part = '';
@@ -1409,7 +1436,27 @@ async function attemptRelease(job, release, dir, controller) {
   job.status = 'completed';
   job.completedAt = Date.now();
   scheduleSave(0);
+  await onComplete(job).catch(() => {});
 
+  void finishSubtitles(job, dest, picked.subtitles);
+  return 'done';
+}
+
+/**
+ * Subtitle tracks for an installed episode, written after the row turns green.
+ * Best effort: two passes over the file, the batch one for every language and
+ * a solo retry only for English, so one broken stream cannot burn a minute per
+ * language. Failures leave the video and the job exactly as they were.
+ */
+async function finishSubtitles(job, dest, subtitles) {
+  const stem = dest.slice(0, dest.length - path.extname(dest).length);
+  let tracks = [];
+  try {
+    tracks = await extractSubtitles({ input: dest, outStem: stem, subtitles });
+  } catch {
+    tracks = [];
+  }
+  job.subtitles = tracks.map((track) => track.lang);
   if (!tracks.some((track) => track.lang === 'en')) {
     await ensureEnglishSubtitle(dest, {
       seriesTitle: job.seriesTitle || job.title,
@@ -1419,8 +1466,6 @@ async function attemptRelease(job, release, dir, controller) {
       isSeries: job.season > 0,
     }).catch(() => {});
   }
-  await onComplete(job).catch(() => {});
-  return 'done';
 }
 
 async function runTorrentJob(job) {

@@ -391,6 +391,7 @@
           <p id="downloadsCount">No active downloads</p>
         </div>
         <div class="downloads-tools">
+          <button class="dl-clear" id="dlSettings" type="button">Limits</button>
           <button class="dl-clear" id="dlClear" type="button" hidden>Clear finished</button>
           <button class="downloads-close" data-close-downloads aria-label="Close downloads"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
         </div>
@@ -443,6 +444,23 @@
       </section>
       <section class="settings-section">
         <h3 class="settings-heading">Downloads</h3>
+        <div class="settings-field">
+          <label for="dlMaxActiveInput">Download at once</label>
+          <div class="settings-input-row">
+            <input id="dlMaxActiveInput" type="number" min="1" max="20" step="1" inputmode="numeric" aria-describedby="dlMaxActiveHint">
+            <button class="settings-save" id="dlMaxActiveSave" type="button">Save</button>
+          </div>
+          <p class="settings-hint" id="dlMaxActiveHint">How many videos download at the same time. 3–6 keeps the catalogue and Castle responsive; the rest wait their turn in the queue.</p>
+        </div>
+        <div class="settings-field">
+          <label for="dlSpeedInput">Speed limit (MB/s)</label>
+          <div class="settings-input-row">
+            <input id="dlSpeedInput" type="number" min="0" max="1000" step="0.1" inputmode="decimal" aria-describedby="dlSpeedHint">
+            <button class="settings-save" id="dlSpeedSave" type="button">Save</button>
+          </div>
+          <p class="settings-hint" id="dlSpeedHint">0 means no limit. Applies to torrent downloads and is split evenly between the ones running.</p>
+          <p class="settings-error" id="dlLimitError" hidden></p>
+        </div>
         <div class="settings-row">
           <div class="settings-copy">
             <strong>Castle fallback</strong>

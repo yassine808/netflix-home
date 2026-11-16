@@ -38,13 +38,17 @@ const SHOW_FILES_TIMEOUT_MS = 30000;
 /* aria2c reports per-piece completion, so a slow swarm that keeps delivering
  * pieces never looks stalled; this only catches a download that has gone
  * quiet altogether. */
-const STALL_TIMEOUT_MS = 300000;
+const STALL_TIMEOUT_MS = 180000;
 /* A swarm that averages less than this, measured over a moving window after a
  * warm-up, is not going to finish tonight: the episode is handed to the next
- * release instead of crawling for hours behind a bar that barely moves. */
+ * release instead of crawling for hours behind a bar that barely moves. The
+ * numbers are short on purpose - a dead release wasted 6 minutes before it was
+ * abandoned, and with a long queue that is the difference between a night of
+ * downloads and a week of them. Pieces already fetched are kept, so a release
+ * that looked slow and is tried again does not start from zero. */
 const SLOW_SPEED_BYTES_PER_SEC = 120 * 1024;
-const SLOW_WINDOW_MS = 180000;
-const SLOW_WARMUP_MS = 180000;
+const SLOW_WINDOW_MS = 120000;
+const SLOW_WARMUP_MS = 90000;
 const SLOW_REMAINING_BYTES = 300 * 1024 * 1024;
 const RPC_TIMEOUT_MS = 4000;
 
@@ -576,7 +580,9 @@ async function torrentProgress(port, token, target, gid = '') {
  * Phase 2: download one file from the torrent. Resolves with its on-disk path
  * and size; aborting kills the aria2c tree and rejects with `.aborted = true`.
  */
-export async function downloadTorrentFile({ magnet, file, dir, total = 0, onProgress, signal } = {}) {
+export async function downloadTorrentFile({
+  magnet, file, dir, total = 0, onProgress, signal, limitKbps = 0,
+} = {}) {
   const link = String(magnet || '').trim();
   if (!link) throw new Error('a magnet link is required');
   if (!file || !Number.isInteger(Number(file.index)) || Number(file.index) < 1) {
@@ -603,6 +609,21 @@ export async function downloadTorrentFile({ magnet, file, dir, total = 0, onProg
   const port = await freePort();
   const token = crypto.randomUUID();
 
+  /* `limitKbps` is a number or a function, so the queue can hand over a share
+   * of the speed cap that shrinks as soon as another transfer starts. aria2
+   * reads the value in KiB/s; 0 means "no cap at all". */
+  const readLimit = () => {
+    let value = limitKbps;
+    try {
+      if (typeof value === 'function') value = value();
+    } catch {
+      value = 0;
+    }
+    const kbps = Math.round(Number(value) || 0);
+    return kbps > 0 ? kbps : 0;
+  };
+  let appliedLimit = readLimit();
+
   const args = [
     `--dir=${dir}`,
     `--select-file=${index}`,
@@ -622,6 +643,7 @@ export async function downloadTorrentFile({ magnet, file, dir, total = 0, onProg
     '--rpc-listen-all=false',
     `--rpc-secret=${token}`,
     `--bt-tracker=${TRACKERS.join(',')}`,
+    ...(appliedLimit ? [`--max-download-limit=${appliedLimit}K`] : []),
     link,
   ];
 
@@ -671,6 +693,16 @@ export async function downloadTorrentFile({ magnet, file, dir, total = 0, onProg
           else signal.addEventListener('abort', onAbort, { once: true });
         }
         const tick = async () => {
+          /* The cap can change mid-transfer: another download started, or the
+           * number was edited in Settings. aria2 applies it live, so no
+           * restart of the swarm is needed. */
+          const wantedLimit = readLimit();
+          if (wantedLimit !== appliedLimit) {
+            const changed = await aria2Rpc(port, token, 'aria2.changeGlobalOption', [{
+              'max-download-limit': wantedLimit > 0 ? `${wantedLimit}K` : '0',
+            }]).catch(() => null);
+            if (changed) appliedLimit = wantedLimit;
+          }
           const status = await torrentProgress(port, token, target, gid).catch(() => null);
           if (status) {
             rpcSeen = true;
@@ -878,6 +910,16 @@ export function pickTracks(probe, { originalLanguage = '', copyVideo = false, mk
   const wanted = toIso2(originalLanguage);
   let original = wanted ? audio.find((track) => langOf(track) === wanted) : null;
   if (wanted && !original) {
+    /* A release whose tracks are tagged but none of them is the original
+     * language is a dub-only file: never install it, however good the rest of
+     * the release looks. Untagged files still fall back to the first track,
+     * because there is nothing to match against. */
+    if (audio.some((track) => langOf(track))) {
+      return {
+        error: 'no-original-audio',
+        reason: `the file has no ${originalLanguage} audio track`,
+      };
+    }
     warnings.push(`no ${originalLanguage} audio track found; using the first track`);
   }
 
@@ -915,9 +957,10 @@ export function pickTracks(probe, { originalLanguage = '', copyVideo = false, mk
     if (!current || rank < current.rank) byLang.set(iso, { track, rank });
   }
   const subtitles = [...byLang.values()].map((entry) => entry.track);
-  if (!subtitles.length) {
-    return { error: 'no-subtitles', reason: 'the file has no text subtitle tracks' };
-  }
+  /* A release without embedded text subtitles is no longer a reason to throw it
+   * away: English subtitles are fetched separately (subs.js) once the episode
+   * is installed, so rejecting the file only burned an attempt and, when every
+   * release for the episode was like this, lost the episode entirely. */
 
   /* `direct` is the answer to "does this file need converting at all". The
    * release's own .mkv plays in Chromium when the browser opens Matroska
@@ -935,7 +978,12 @@ export function pickTracks(probe, { originalLanguage = '', copyVideo = false, mk
     warnings,
     direct: mkv
       && !video.transcode
-      && (!selected.length || String(selected[0].codec || '').toLowerCase() === 'aac'),
+      && (!selected.length || String(selected[0].codec || '').toLowerCase() === 'aac')
+      /* The first audio stream is the one every player starts with. A release
+       * that lists a dub first (Italian track 1, English track 2) must be
+       * remuxed so the original language becomes track 1 - and the dub is
+       * dropped on the way - instead of being kept as-is and playing the dub. */
+      && selected[0]?.index === probe.audio[0]?.index,
   };
 }
 
@@ -1323,10 +1371,12 @@ export async function extractSubtitles({ input, outStem, subtitles } = {}) {
 
   /* One ffmpeg pass writes every track. A European season pack carries 30+
    * languages, and starting a process per track made the subtitle stage the
-   * slowest part of a finished download; one pass demuxes the file once. */
+   * slowest part of a finished download; one pass demuxes the file once.
+   * `subs` is its own lane: demuxing text is I/O, not decode, so it never has
+   * to wait behind a remux and three downloads can finish at once. */
   const batch = ['-y', '-v', 'error', '-i', source];
   for (const entry of wanted) batch.push('-map', `0:${entry.index}`, '-c:s', 'webvtt', entry.file);
-  const batchOk = await run(ffmpegPath, batch, { lane: 'media', timeout: 300000 })
+  const batchOk = await run(ffmpegPath, batch, { lane: 'subs', timeout: 90000 })
     .then(() => true)
     .catch(() => false);
 
@@ -1339,17 +1389,19 @@ export async function extractSubtitles({ input, outStem, subtitles } = {}) {
       body = '';
     }
 
-    /* The batch cannot tell which track broke, and ffmpeg aborts the whole run
-     * on a bad stream, so every missing file gets one individual retry. */
+    /* The batch cannot say which track broke and ffmpeg aborts the run on a bad
+     * stream, so a missing file gets one solo retry - English only. Retrying
+     * all 30 languages is what held finished episodes at 97 % for minutes. */
     if (body.length < 20 || !body.includes('-->')) {
       await fsp.rm(entry.file, { force: true }).catch(() => {});
+      if (entry.iso !== 'en') continue;
       const solo = await run(ffmpegPath, [
         '-y', '-v', 'error',
         '-i', source,
         '-map', `0:${entry.index}`,
         '-c:s', 'webvtt',
         entry.file,
-      ], { lane: 'media', timeout: 60000 }).then(() => true).catch(() => false);
+      ], { lane: 'subs', timeout: 20000 }).then(() => true).catch(() => false);
       if (!solo) continue;
       try {
         body = await fsp.readFile(entry.file, 'utf8');

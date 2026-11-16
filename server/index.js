@@ -19,7 +19,7 @@ import {
   addTorrentDownload,
   planTorrentRelease,
   listDownloads, cancelDownload, retryDownload,
-  pauseDownload, resumeDownload,
+  pauseDownload, resumeDownload, applyDownloadLimits,
   pauseDownloads, resumeDownloads, startRestoredDownloads,
 } from './downloads.js';
 import { findReleases, rankReleases, releaseLabel } from './torrentio.js';
@@ -32,7 +32,7 @@ import {
 } from './castle.js';
 import { castleSyncStatus, startCastleSync } from './castle-sync.js';
 import { initSettings, getSettings, isOffline, setOffline, isCastleFallback, setCastleFallback,
-  setAutoplaySound } from './settings.js';
+  setAutoplaySound, setDownloadLimits } from './settings.js';
 import { initConfig, getLibraryRootSetting, setLibraryRootSetting } from './config.js';
 import { initFrames, frameMeta, ensureSprite } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
@@ -359,6 +359,29 @@ app.post('/api/settings/autoplay-sound', (req, res) => {
     return res.status(400).json({ error: 'pass {"autoplaySound": true|false}' });
   }
   res.json(setAutoplaySound(req.body.autoplaySound));
+});
+
+/* Download limits: how many transfers may run at once, and the combined speed
+ * cap in MB/s (0 = unlimited). The queue enforces the first one, each aria2c
+ * gets an equal share of the second. Both were asked for because 41 parallel
+ * swarms made this whole process answer in more than a minute. */
+app.post('/api/settings/download-limits', (req, res) => {
+  const body = req.body || {};
+  const { maxActive, limitMBps } = body;
+  if (maxActive === undefined && limitMBps === undefined) {
+    return res.status(400).json({ error: 'pass {"maxActive": 1-20} and/or {"limitMBps": 0-1000}' });
+  }
+  if (maxActive !== undefined && !Number.isFinite(Number(maxActive))) {
+    return res.status(400).json({ error: 'maxActive must be a number between 1 and 20' });
+  }
+  if (limitMBps !== undefined && !Number.isFinite(Number(limitMBps))) {
+    return res.status(400).json({ error: 'limitMBps must be a number, 0 for unlimited' });
+  }
+  const settings = setDownloadLimits({ maxActive, limitMBps });
+  /* A higher cap should start the waiting jobs now, not after the next
+   * finished transfer. */
+  applyDownloadLimits();
+  res.json(settings);
 });
 
 /* Library folder, chosen in Settings. It is saved beside the app and read at
