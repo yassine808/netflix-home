@@ -10,6 +10,7 @@ import {
   deleteLibraryItem, deleteLibraryItems, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   pauseDownload, resumeDownload, getColorFix,
   getSettings, setOfflineMode, setCastleFallback, setAutoplaySound, setDownloadLimits, setTorrentQuality,
+  setDownloadStagingDir,
   setLibraryRoot, restartApp,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
   setImg, skel, skelLines, skelMeta, skelCards, skelPoster, skelEpisodes, skelDownload,
@@ -48,6 +49,8 @@ const state = {
   // speed cap in MB/s (0 = no limit).
   downloadMaxActive: 3,
   downloadLimitMBps: 0,
+  // Scratch folder for transfers; empty keeps them beside the library.
+  downloadStagingDir: '',
   // Library folder this tab is scanning, and the one config.json holds. They
   // differ until the app restarts.
   libraryRoot: '',
@@ -228,6 +231,9 @@ const els = {
   dlSpeedInput: $('dlSpeedInput'),
   dlSpeedSave: $('dlSpeedSave'),
   dlLimitError: $('dlLimitError'),
+  dlStagingInput: $('dlStagingInput'),
+  dlStagingSave: $('dlStagingSave'),
+  dlStagingError: $('dlStagingError'),
   libraryRootInput: $('libraryRootInput'),
   libraryRootSave: $('libraryRootSave'),
   libraryRootHint: $('libraryRootHint'),
@@ -1527,6 +1533,9 @@ const STAGE_LABELS = {
    * here made every AC3 release look like a full transcode. */
   converting: 'Converting audio…',
   subtitles: 'Extracting subtitles…',
+  /* The swarm is done; the file is being copied out of the scratch folder (or
+   * renamed into the library) at a capped rate. */
+  moving: 'Copying to the library…',
 };
 
 /* ---------- download manager ---------- */
@@ -2556,6 +2565,7 @@ function openSettings() {
       state.torrentQuality = settings.torrentQuality === '2160p' ? '2160p' : '1080p';
       state.downloadMaxActive = Number(settings.downloadMaxActive) || state.downloadMaxActive;
       state.downloadLimitMBps = Number(settings.downloadLimitMBps) || 0;
+      state.downloadStagingDir = String(settings.downloadStagingDir || '');
       state.libraryRoot = settings.libraryRoot || state.libraryRoot;
       state.libraryRootSetting = settings.libraryRootSetting || state.libraryRoot;
       state.libraryRestartPending = Boolean(settings.libraryRootPending);
@@ -2653,6 +2663,7 @@ function applyDownloadLimitUi() {
   const limit = Number(state.downloadLimitMBps) || 0;
   if (document.activeElement !== els.dlMaxActiveInput) els.dlMaxActiveInput.value = String(max);
   if (document.activeElement !== els.dlSpeedInput) els.dlSpeedInput.value = String(limit);
+  if (document.activeElement !== els.dlStagingInput) els.dlStagingInput.value = state.downloadStagingDir || '';
   els.dlMaxActiveInput.placeholder = '3';
   els.dlSpeedInput.placeholder = '0';
   /* The drawer header shows both limits, so it has to follow a change at once. */
@@ -2703,6 +2714,27 @@ async function saveDownloadSpeedLimit() {
     showDlLimitError(err.message);
   } finally {
     els.dlSpeedSave.disabled = false;
+  }
+}
+
+/* Scratch folder: the swarm writes there, the finished file is copied to the
+ * library once, paced. Empty puts transfers beside the library again. */
+async function saveDownloadStaging() {
+  const wanted = els.dlStagingInput.value.trim();
+  els.dlStagingError.hidden = true;
+  els.dlStagingSave.disabled = true;
+  try {
+    const settings = await setDownloadStagingDir(wanted);
+    state.downloadStagingDir = String(settings.downloadStagingDir || '');
+    applyDownloadLimitUi();
+    toast(state.downloadStagingDir
+      ? `New downloads are written to ${state.downloadStagingDir} first`
+      : 'Downloads go straight to the library again');
+  } catch (err) {
+    els.dlStagingError.textContent = err.message;
+    els.dlStagingError.hidden = false;
+  } finally {
+    els.dlStagingSave.disabled = false;
   }
 }
 
@@ -5818,6 +5850,10 @@ function bindStaticEvents() {
   els.autoplaySoundBtn.addEventListener('click', toggleAutoplaySound);
   els.dlMaxActiveSave.addEventListener('click', saveDownloadMaxActive);
   els.dlSpeedSave.addEventListener('click', saveDownloadSpeedLimit);
+  els.dlStagingSave.addEventListener('click', saveDownloadStaging);
+  els.dlStagingInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveDownloadStaging(); }
+  });
   els.dlMaxActiveInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); saveDownloadMaxActive(); }
   });

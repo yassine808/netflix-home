@@ -470,6 +470,15 @@
           <p class="settings-hint" id="dlSpeedHint">0 means no limit. Applies to torrent downloads and is split evenly between the ones running.</p>
           <p class="settings-error" id="dlLimitError" hidden></p>
         </div>
+        <div class="settings-field">
+          <label for="dlStagingInput">Scratch folder</label>
+          <div class="settings-input-row">
+            <input id="dlStagingInput" type="text" spellcheck="false" placeholder="C:\temp" aria-describedby="dlStagingHint">
+            <button class="settings-save" id="dlStagingSave" type="button">Save</button>
+          </div>
+          <p class="settings-hint" id="dlStagingHint">Transfers are written here first, then copied to the library at about 32 MB/s, so a 4K release cannot keep the library drive busy. Empty keeps them beside the library; clear the field and save to switch back.</p>
+          <p class="settings-error" id="dlStagingError" hidden></p>
+        </div>
         <div class="settings-row">
           <div class="settings-copy">
             <strong>Torrent quality</strong>

@@ -6,7 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { spawnNice } from './proc.js';
 import { ensureEnglishSubtitle, retimeEnglishSidecar, vttFromSubtitle } from './subs.js';
-import { getDownloadMaxActive, getDownloadLimitMBps, getTorrentQuality } from './settings.js';
+import { getDownloadMaxActive, getDownloadLimitMBps, getTorrentQuality, getDownloadStagingDir } from './settings.js';
 import { findReleases, rankReleases, magnetFor, releaseLabel } from './torrentio.js';
 import {
   fetchTorrentFiles, matchEpisodeFile, downloadTorrentFile,
@@ -356,13 +356,10 @@ async function killOrphans() {
  */
 async function sweepTorrentTempDirs() {
   if (!libraryRoot) return 0;
-  const base = path.join(libraryRoot, '.cache', 'torrent');
-  let entries;
-  try {
-    entries = await fsp.readdir(base, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
+  /* Two homes now: the old one beside the library and, when a scratch folder is
+   * configured, that one. Leftovers in either are still leftovers. */
+  const bases = new Set([path.join(libraryRoot, '.cache', 'torrent')]);
+  if (getDownloadStagingDir()) bases.add(stagingBase());
   const keep = new Set();
   for (const job of jobs.values()) {
     if (job.kind !== 'torrent') continue;
@@ -371,31 +368,38 @@ async function sweepTorrentTempDirs() {
     }
   }
   /* Another live instance (the deployed EXE and its dev server can share the
-   * library) may own a temp folder. Its child processes name the folder in
-   * their command line; those are never touched. */
-  for (const row of await listChildProcesses()) {
-    if (!isPidAlive(Number(row?.ParentProcessId) || 0)) continue;
-    const command = String(row?.CommandLine || '');
-    const dir = /[\\/]\.cache[\\/]torrent[\\/]([^\\/"\s]+)/i.exec(command);
-    if (dir) keep.add(dir[1].toLowerCase());
-  }
+   * library) may own a temp folder. Its child processes name the folder - and
+   * the folder is the job id - so any command line carrying that id keeps it. */
+  const commands = (await listChildProcesses())
+    .filter((row) => isPidAlive(Number(row?.ParentProcessId) || 0))
+    .map((row) => String(row?.CommandLine || '').toLowerCase());
 
   let removed = 0;
-  for (const entry of entries) {
-    if (!entry.isDirectory() || keep.has(entry.name.toLowerCase())) continue;
-    const dir = path.join(base, entry.name);
-    let done = false;
-    for (let attempt = 0; attempt < 3 && !done; attempt++) {
-      try {
-        await fsp.rm(dir, { recursive: true, force: true });
-        done = true;
-        removed++;
-      } catch {
-        /* an open handle from a live process: try again, then leave it */
-        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 400));
-      }
+  for (const base of bases) {
+    let entries;
+    try {
+      entries = await fsp.readdir(base, { withFileTypes: true });
+    } catch {
+      continue;
     }
-    if (!done) console.warn(`[download] could not remove the leftover temp folder ${entry.name}`);
+    for (const entry of entries) {
+      const id = entry.name.toLowerCase();
+      if (!entry.isDirectory() || keep.has(id)) continue;
+      if (commands.some((command) => command.includes(id))) continue;
+      const dir = path.join(base, entry.name);
+      let done = false;
+      for (let attempt = 0; attempt < 3 && !done; attempt++) {
+        try {
+          await fsp.rm(dir, { recursive: true, force: true });
+          done = true;
+          removed++;
+        } catch {
+          /* an open handle from a live process: try again, then leave it */
+          if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 400));
+        }
+      }
+      if (!done) console.warn(`[download] could not remove the leftover temp folder ${entry.name}`);
+    }
   }
   return removed;
 }
@@ -1059,8 +1063,114 @@ export async function addTorrentDownload(body = {}) {
   };
 }
 
+/* ---------- transfer scratch folder ----------
+ *
+ * Everything a transfer writes (aria2 pieces, the remuxed copy, the HLS
+ * capture) goes here first. Without a scratch folder that is `.cache\torrent`
+ * beside the library: the finished file is then a rename onto itself and the
+ * copy costs nothing. With one configured the swarm writes on that disk, and
+ * the finished file is copied to the library once, paced, so a 4K release
+ * cannot make the library drive unusable while someone is watching.
+ */
+function stagingBase() {
+  const scratch = getDownloadStagingDir();
+  if (!scratch) return path.join(libraryRoot, '.cache', 'torrent');
+  return path.join(scratch, 'netflix-home');
+}
+
 function torrentTempDir(job) {
-  return path.join(libraryRoot, '.cache', 'torrent', job.id);
+  if (job?.localStaging) return path.join(libraryRoot, '.cache', 'torrent', job.id);
+  return path.join(stagingBase(), job.id);
+}
+
+/* Where an HLS capture is written before it is installed. */
+function stagingPartFile(job) {
+  if (job.localStaging || !getDownloadStagingDir()) return `${job.dest}.part`;
+  return path.join(stagingBase(), `${job.id}.install.mp4`);
+}
+
+/* 32 MB/s is faster than any 4K playback reads and slow enough that the drive
+ * still answers seeks, thumbnails and the library scan while the copy runs. */
+const COPY_RATE_BYTES = 32 * 1024 * 1024;
+const COPY_CHUNK_BYTES = 4 * 1024 * 1024;
+
+/* Does the scratch drive hold this release (plus room for the remux)? A disk
+ * that cannot take it falls back to the library temp folder instead of filling
+ * up and failing the job halfway. */
+async function stagingFits(neededBytes) {
+  if (!(Number(neededBytes) > 0)) return true;
+  try {
+    const stat = await fsp.statfs(path.parse(stagingBase()).root || stagingBase());
+    const free = Number(stat.bavail) * Number(stat.bsize);
+    if (!free) return true;
+    return free > Number(neededBytes) * 1.1 + 512 * 1024 * 1024;
+  } catch {
+    return true;
+  }
+}
+
+/* Install a finished file. Same volume: a rename, exactly as before. Across
+ * volumes (scratch folder on another disk) a paced copy, reported as a stage so
+ * the drawer says why the row is at 97% with no swarm left. */
+async function slowMove(from, to, { onStart, onProgress } = {}) {
+  try {
+    await fsp.rename(from, to);
+    return;
+  } catch (err) {
+    /* EXDEV is the honest cross-volume answer; Windows also refuses some
+     * renames with EPERM when a share or the scanner holds the target. */
+    if (err?.code !== 'EXDEV' && err?.code !== 'EPERM') throw err;
+  }
+  const total = (await fsp.stat(from)).size;
+  await fsp.mkdir(path.dirname(to), { recursive: true });
+  onStart?.();
+  const reader = fs.createReadStream(from, { highWaterMark: COPY_CHUNK_BYTES });
+  const writer = fs.createWriteStream(to, { highWaterMark: COPY_CHUNK_BYTES });
+  const startedAt = Date.now();
+  let moved = 0;
+  try {
+    for await (const chunk of reader) {
+      if (!writer.write(chunk)) {
+        await new Promise((resolve, reject) => {
+          writer.once('drain', resolve);
+          writer.once('error', reject);
+        });
+      }
+      moved += chunk.length;
+      onProgress?.(moved, total);
+      /* Pace the copy: sleep whatever this chunk was faster than the cap. */
+      const targetMs = (moved / COPY_RATE_BYTES) * 1000;
+      const spentMs = Date.now() - startedAt;
+      if (targetMs > spentMs) {
+        await new Promise((resolve) => setTimeout(resolve, targetMs - spentMs));
+      }
+    }
+    await new Promise((resolve, reject) => {
+      writer.end((err) => (err ? reject(err) : resolve()));
+    });
+  } catch (err) {
+    reader.destroy();
+    writer.destroy();
+    await fsp.rm(to, { force: true }).catch(() => {});
+    throw err;
+  }
+  await fsp.rm(from, { force: true }).catch(() => {});
+}
+
+/* Marks the copy phase, so the drawer can label the pause between "swarm
+ * finished" and "file is in the library". */
+function copyStage(job) {
+  return {
+    onStart: () => {
+      job.stage = 'moving';
+      job.progressValue = 0.97;
+      scheduleSave(0);
+    },
+    onProgress: (moved, total) => {
+      if (total > 0) job.progressValue = 0.97 + Math.min(0.02, (moved / total) * 0.02);
+      scheduleSave();
+    },
+  };
 }
 
 export function listDownloads() {
@@ -1388,8 +1498,14 @@ async function runHlsJob(job) {
   scheduleSave(0);
   const controller = new AbortController();
   job.controller = controller;
-  const part = `${job.dest}.part`;
+  if (getDownloadStagingDir() && !job.localStaging && !(await stagingFits(Number(job.total) || 0))) {
+    job.localStaging = true;
+    console.warn(`[download] ${job.title}: ${getDownloadStagingDir()} does not have room for this release; downloading beside the library instead`);
+  }
+  const part = stagingPartFile(job);
+  job.part = part;
 
+  await fsp.mkdir(path.dirname(part), { recursive: true }).catch(() => {});
   await fsp.rm(part, { force: true }).catch(() => {});
 
   const args = ['-y', '-loglevel', 'error'];
@@ -1477,7 +1593,9 @@ async function runHlsJob(job) {
     const stat = await fsp.stat(part);
     if (!stat.size) throw new Error('ffmpeg produced an empty file');
 
-    await fsp.rename(part, job.dest);
+    await slowMove(part, job.dest, copyStage(job));
+    job.part = '';
+    job.stage = 'done';
     job.bytes = stat.size;
     job.total = stat.size;
     job.speed = 0;
@@ -1615,7 +1733,11 @@ async function attemptRelease(job, release, dir, controller) {
   const extension = direct ? (path.extname(downloaded.path).toLowerCase() || '.mkv') : '.mp4';
   job.fileName = sanitizeFileName(torrentFileName(job, quality, extension));
   const dest = await uniquePath(job.targetDir, job.fileName);
-  const part = `${dest}.part`;
+  /* With a scratch folder the remux lands beside the downloaded pieces and the
+   * finished file is copied to the library once; without one, next to its
+   * destination like before. */
+  const scratch = getDownloadStagingDir() && !job.localStaging;
+  const part = scratch ? path.join(dir, `install${extension}`) : `${dest}.part`;
   const durationSec = Number(probe.durationSec) || 0;
 
   /* With the video copied the job only re-encodes the audio track: calling that
@@ -1680,8 +1802,8 @@ async function attemptRelease(job, release, dir, controller) {
    * subtitles" on a video that was already whole. The episode is playable
    * without them, so it is completed here and the tracks follow in the
    * background (see finishSubtitles). */
-  if (direct) await fsp.rename(downloaded.path, dest);
-  else await fsp.rename(part, dest);
+  if (direct) await slowMove(downloaded.path, dest, copyStage(job));
+  else await slowMove(part, dest, copyStage(job));
   job.part = '';
   const stat = await fsp.stat(dest);
   job.dest = dest;
@@ -1780,6 +1902,12 @@ async function runTorrentJob(job) {
   const controller = new AbortController();
   job.controller = controller;
   scheduleSave(0);
+  /* A scratch disk that cannot hold this release would fail the job halfway
+   * through. Take the library drive instead, out loud. */
+  if (getDownloadStagingDir() && !job.localStaging && !(await stagingFits(Number(job.total) || 0))) {
+    job.localStaging = true;
+    console.warn(`[download] ${job.title}: ${getDownloadStagingDir()} does not have room for this release; downloading beside the library instead`);
+  }
   const dir = torrentTempDir(job);
   await fsp.mkdir(dir, { recursive: true }).catch(() => {});
 

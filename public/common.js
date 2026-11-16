@@ -299,6 +299,20 @@ export async function setDownloadLimits({ maxActive, limitMBps } = {}) {
   return payload;
 }
 
+/* Scratch folder for transfers: '' keeps pieces beside the library, a path
+ * writes them there and copies the finished file over, paced. */
+export async function setDownloadStagingDir(stagingDir) {
+  const res = await fetch('/api/settings/download-staging', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stagingDir: String(stagingDir ?? '') }),
+  });
+  let payload = null;
+  try { payload = await res.json(); } catch { /* non-JSON error */ }
+  if (!res.ok) throw new Error(payload?.error || `scratch folder ${res.status}`);
+  return payload;
+}
+
 /* Removes one episode/movie file from disk. Needs DELETE /api/item/:id on the server. */
 export async function deleteLibraryItem(id) {
   const res = await fetch(`/api/item/${encodeURIComponent(id)}`, { method: 'DELETE' });

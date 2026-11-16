@@ -26,6 +26,12 @@ import path from 'node:path';
  * (the default, small files) or '2160p' (4K releases only, usually 4-8x the
  * size). It is a hard filter, not a preference: the other quality is never
  * downloaded, and releases below 1080p stay excluded either way.
+ *
+ * `downloadStagingDir` is a scratch folder for transfers. Empty keeps every
+ * piece next to the library (one rename into place). Set, the swarm writes on
+ * that disk and the finished file is copied to the library once, at a capped
+ * rate: a 4K release writes megabytes of random pieces for a long time, and on
+ * the library drive that is exactly what makes playback stutter.
  */
 const DEFAULTS = {
   offline: false,
@@ -34,6 +40,7 @@ const DEFAULTS = {
   downloadMaxActive: 3,
   downloadLimitMBps: 0,
   torrentQuality: '1080p',
+  downloadStagingDir: '',
 };
 
 const MAX_ACTIVE_LIMIT = 20;
@@ -58,6 +65,9 @@ export function initSettings(cacheDir) {
     }
     if (raw && TORRENT_QUALITIES.has(raw.torrentQuality)) {
       state.torrentQuality = raw.torrentQuality;
+    }
+    if (raw && typeof raw.downloadStagingDir === 'string') {
+      state.downloadStagingDir = cleanStagingDir(raw.downloadStagingDir);
     }
   } catch {
     /* first run or unreadable file: keep defaults */
@@ -122,6 +132,30 @@ export function setTorrentQuality(value) {
   const wanted = String(value || '').toLowerCase();
   if (!TORRENT_QUALITIES.has(wanted)) return getSettings();
   return save({ ...state, torrentQuality: wanted });
+}
+
+/* Scratch folder for transfers; '' means "beside the library". */
+export function getDownloadStagingDir() {
+  return state.downloadStagingDir || '';
+}
+
+export function setDownloadStagingDir(value) {
+  return save({ ...state, downloadStagingDir: cleanStagingDir(value) });
+}
+
+/* An empty value means "beside the library". Anything else has to be an
+ * absolute path: a relative one would land inside the app folder, where the
+ * next deploy wipes it. Surrounding quotes are stripped so a pasted Explorer
+ * path ("C:\temp") is accepted as-is. */
+function cleanStagingDir(value) {
+  const raw = String(value ?? '').trim().replace(/^"(.*)"$/, '$1').trim();
+  if (!raw) return '';
+  try {
+    const resolved = path.resolve(raw);
+    return path.isAbsolute(resolved) ? resolved : '';
+  } catch {
+    return '';
+  }
 }
 
 function clampMaxActive(value) {

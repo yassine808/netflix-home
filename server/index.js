@@ -32,7 +32,8 @@ import {
 } from './castle.js';
 import { castleSyncStatus, startCastleSync, startCastleSyncIfDue, scheduleCastleSync } from './castle-sync.js';
 import { initSettings, getSettings, isOffline, setOffline, isCastleFallback, setCastleFallback,
-  setAutoplaySound, setDownloadLimits, getTorrentQuality, setTorrentQuality } from './settings.js';
+  setAutoplaySound, setDownloadLimits, getTorrentQuality, setTorrentQuality,
+  setDownloadStagingDir } from './settings.js';
 import { initConfig, getLibraryRootSetting, setLibraryRootSetting } from './config.js';
 import { initFrames, frameMeta, ensureSprite } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
@@ -397,6 +398,31 @@ app.post('/api/settings/download-limits', (req, res) => {
    * finished transfer. */
   applyDownloadLimits();
   res.json(settings);
+});
+
+/* Scratch folder for transfers. Empty means "beside the library". Set, the
+ * swarm writes there and the finished file is copied to the library once, paced
+ * (see slowMove in server/downloads.js). A path inside the library is refused:
+ * half-written files would show up in the scan. */
+app.post('/api/settings/download-staging', (req, res) => {
+  const raw = req.body?.stagingDir;
+  if (typeof raw !== 'string') {
+    return res.status(400).json({ error: 'pass {"stagingDir": "C:\\\\temp"} (empty clears it)' });
+  }
+  const wanted = raw.trim().replace(/^"(.*)"$/, '$1').trim();
+  if (wanted) {
+    const resolved = path.resolve(wanted);
+    if (!path.isAbsolute(wanted)) {
+      return res.status(400).json({ error: 'the scratch folder must be an absolute path, for example C:\\temp' });
+    }
+    const root = path.resolve(libraryRoot);
+    if (resolved.toLowerCase() === root.toLowerCase()
+      || resolved.toLowerCase().startsWith(`${root.toLowerCase()}${path.sep}`)) {
+      return res.status(400).json({ error: 'the scratch folder cannot be inside the library' });
+    }
+  }
+  setDownloadStagingDir(wanted);
+  res.json(settingsPayload());
 });
 
 /* Library folder, chosen in Settings. It is saved beside the app and read at
