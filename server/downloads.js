@@ -1457,21 +1457,28 @@ async function attemptRelease(job, release, dir, controller) {
   scheduleSave(0);
   await onComplete(job).catch(() => {});
 
-  void finishSubtitles(job, dest, picked.subtitles);
+  /* Embedded tracks live in the downloaded file, not in the MP4 that was just
+   * written: a remux keeps video and audio only, so reading `dest` asked ffmpeg
+   * for subtitle streams that no longer exist (a 30-track release reported
+   * "wrote 0 of 30" and the browser then fell back to an online English file).
+   * The source is still in the torrent folder, which is only swept at boot. */
+  void finishSubtitles(job, dest, picked.subtitles, direct ? '' : downloaded.path);
   return 'done';
 }
 
 /**
  * Subtitle tracks for an installed episode, written after the row turns green.
- * Best effort: two passes over the file, the batch one for every language and
- * a solo retry only for English, so one broken stream cannot burn a minute per
- * language. Failures leave the video and the job exactly as they were.
+ * `source` is the downloaded file the tracks come from; it is only passed for a
+ * remux, where `dest` is a fresh MP4 that carries video and audio but no
+ * subtitle stream. Best effort: two passes over the file, the batch one for
+ * every language and a solo retry only for English, so one broken stream cannot
+ * burn a minute per language. Failures leave the video and the job as they were.
  */
-async function finishSubtitles(job, dest, subtitles) {
+async function finishSubtitles(job, dest, subtitles, source = '') {
   const stem = dest.slice(0, dest.length - path.extname(dest).length);
   let tracks = [];
   try {
-    tracks = await extractSubtitles({ input: dest, outStem: stem, subtitles });
+    tracks = await extractSubtitles({ input: source || dest, outStem: stem, subtitles });
   } catch {
     tracks = [];
   }
