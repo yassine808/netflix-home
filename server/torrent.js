@@ -1169,6 +1169,22 @@ export async function remuxToMp4({ input, output, video, audio, onProgress } = {
     /* progress and the parallel split are both optional */
   }
 
+  /* How much data one extra pass has to demux. Matroska interleaves audio and
+   * video, so every ffmpeg reading a slice still walks the whole file; six
+   * slices of a 2.8 GB release are six scans of it. On the download queue the
+   * disk is also busy writing three torrents, and the split then loses its
+   * edge: the 59 min x265 season-pack episode took 381 s for its six audio
+   * slices against 144 s for one sequential pass over the same file. Small
+   * sources still split, because there the reads are cheap and one AAC
+   * encoder is the real limit. */
+  let sourceBytes = 0;
+  try {
+    sourceBytes = (await fsp.stat(source)).size;
+  } catch {
+    sourceBytes = 0;
+  }
+  const SPLIT_SOURCE_LIMIT = 500 * 1024 * 1024;
+
   const emit = (sec) => {
     if (typeof onProgress !== 'function') return;
     try {
@@ -1229,7 +1245,7 @@ export async function remuxToMp4({ input, output, video, audio, onProgress } = {
   const parallelAudio = async (seconds) => {
     const work = plan.filter((entry) => !entry.copyable);
     const cpus = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
-    const perTrack = Math.max(2, Math.min(6, Math.floor(cpus / Math.max(1, work.length))));
+    const perTrack = Math.max(2, Math.min(4, Math.floor(cpus / Math.max(1, work.length))));
     const slice = seconds / perTrack;
     const dir = path.join(path.dirname(target), `.remux-${process.pid}`);
     await fsp.mkdir(dir, { recursive: true });
@@ -1309,7 +1325,8 @@ export async function remuxToMp4({ input, output, video, audio, onProgress } = {
     /* A video transcode already keeps every core busy and the GPU is the
      * ceiling, so splitting only helps the copy case. Anything unexpected
      * falls back to the single pass instead of losing the download. */
-    if (!video.transcode && durationSec > 0 && plan.some((entry) => !entry.copyable)) {
+    if (!video.transcode && durationSec > 0 && plan.some((entry) => !entry.copyable)
+      && (!sourceBytes || sourceBytes <= SPLIT_SOURCE_LIMIT)) {
       try {
         await parallelAudio(durationSec);
         const stat = await fsp.stat(target).catch(() => null);
