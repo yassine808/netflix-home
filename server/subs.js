@@ -5,6 +5,7 @@ import { gunzipSync } from 'node:zlib';
 import { resolveImdbId, isImdbId } from './imdb.js';
 import { isOffline } from './settings.js';
 import { getDb, transaction, hash32 } from './db.js';
+import { probeMedia } from './torrent.js';
 
 /**
  * Subtitle fallback. Castle ships its own .vtt tracks; when English is missing
@@ -75,6 +76,27 @@ function summarize(tracks) {
   return tracks.map((track) => ({ lang: track.lang, label: track.label, size: track.size }));
 }
 
+/* The .vtt file for one language, if it is still there. */
+function sidecarFile(full, lang) {
+  const wanted = String(lang || '').toLowerCase();
+  if (!wanted) return null;
+  let names;
+  try {
+    names = fs.readdirSync(path.dirname(full));
+  } catch {
+    return null;
+  }
+  const stem = path.basename(full).replace(/\.[^.]+$/, '').toLowerCase();
+  for (const name of names) {
+    if (!/\.vtt$/i.test(name)) continue;
+    const base = name.replace(/\.vtt$/i, '');
+    if (!base.toLowerCase().startsWith(stem)) continue;
+    if (!base.toLowerCase().endsWith(`.${wanted}`)) continue;
+    return path.join(path.dirname(full), name);
+  }
+  return null;
+}
+
 /* Tracks for one item, from catalog.db when the directory has not changed. */
 export function syncSubtitleTracks(item, full) {
   const db = getDb();
@@ -90,10 +112,24 @@ export function syncSubtitleTracks(item, full) {
     try {
       const scan = db.prepare('SELECT dir_mtime FROM subtitle_scans WHERE item_id = ?').get(item.id);
       if (scan && Number(scan.dir_mtime) === dirMtime) {
-        const rows = db.prepare('SELECT lang, label, size FROM subtitles WHERE item_id = ?').all(item.id);
-        return rows
-          .map((row) => ({ lang: row.lang, label: row.label, size: Number(row.size) }))
-          .sort((a, b) => rankOf(a.lang) - rankOf(b.lang) || a.lang.localeCompare(b.lang));
+        const rows = db.prepare('SELECT lang, label, size, mtime FROM subtitles WHERE item_id = ?').all(item.id);
+        /* The directory mtime does not move when an existing sidecar is
+         * rewritten in place (which is how a truncated subtitle is replaced),
+         * so the cached body has to be checked against the file itself. */
+        const fresh = rows.length > 0 && rows.every((row) => {
+          const file = sidecarFile(full, row.lang);
+          if (!file) return false;
+          try {
+            return Math.round(fs.statSync(file).mtimeMs) === Number(row.mtime);
+          } catch {
+            return false;
+          }
+        });
+        if (fresh) {
+          return rows
+            .map((row) => ({ lang: row.lang, label: row.label, size: Number(row.size) }))
+            .sort((a, b) => rankOf(a.lang) - rankOf(b.lang) || a.lang.localeCompare(b.lang));
+        }
       }
     } catch {
       /* fall through to a fresh scan */
@@ -130,16 +166,24 @@ export function syncSubtitleTracks(item, full) {
 /* Body for one track, straight from the database when possible. */
 export function subtitleBody(item, full, lang) {
   const db = getDb();
+  const wanted = String(lang).toLowerCase();
   if (db && item) {
     try {
       const row = db.prepare('SELECT body, etag, mtime FROM subtitles WHERE item_id = ? AND lang = ?')
-        .get(item.id, String(lang).toLowerCase());
-      if (row) return { body: row.body, etag: row.etag || `"${hash32(row.body)}"`, mtime: Number(row.mtime) || 0 };
+        .get(item.id, wanted);
+      /* Only while the file it came from is unchanged. A rewritten sidecar -
+       * the fix for a subtitle that stopped halfway - must not be served from
+       * the old cached body. */
+      const file = sidecarFile(full, wanted);
+      const stat = file ? fs.statSync(file) : null;
+      if (row && stat && Math.round(stat.mtimeMs) === Number(row.mtime)) {
+        return { body: row.body, etag: row.etag || `"${hash32(row.body)}"`, mtime: Number(row.mtime) || 0 };
+      }
     } catch {
       /* fall back to the sidecar file */
     }
   }
-  const track = scanSidecars(full).find((entry) => entry.lang === String(lang).toLowerCase());
+  const track = scanSidecars(full).find((entry) => entry.lang === wanted);
   if (!track) return null;
   return { body: track.body, etag: `"${hash32(track.body)}"`, mtime: track.mtime };
 }
@@ -152,7 +196,34 @@ export function vttFromSubtitle(text) {
   return `WEBVTT\n\n${body}\n`;
 }
 
-export async function fetchEnglishSubtitle({ imdbId, season = 0, episode = 0, lang = 'en' } = {}) {
+/* Where the last cue ends, in seconds. An OpenSubtitles entry is often the
+ * first half of an old two-CD rip: it reads perfectly for an hour and then
+ * leaves the rest of the film bare, which looks exactly like "subtitles are
+ * broken" to the person watching. Every fetched track is measured against the
+ * video's own length now. */
+function lastCueSec(text) {
+  let end = 0;
+  const re = /(\d{1,2}):(\d{2}):(\d{2})[,.]\d{1,3}\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})/g;
+  let match;
+  while ((match = re.exec(String(text || '')))) {
+    const seconds = Number(match[4]) * 3600 + Number(match[5]) * 60 + Number(match[6]);
+    if (seconds > end) end = seconds;
+  }
+  return end;
+}
+
+async function videoDurationSec(full, item) {
+  const known = Number(item?.durationSec);
+  if (known > 0) return known;
+  try {
+    const probe = await probeMedia(full);
+    return Number(probe.durationSec) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function fetchEnglishSubtitle({ imdbId, season = 0, episode = 0, lang = 'en', durationSec = 0 } = {}) {
   if (isOffline()) return null;
   const id = isImdbId(imdbId) ? String(imdbId).replace(/^tt/, '') : '';
   if (!id) return null;
@@ -169,13 +240,23 @@ export async function fetchEnglishSubtitle({ imdbId, season = 0, episode = 0, la
   const list = await res.json();
   if (!Array.isArray(list) || !list.length) return null;
 
-  // Prefer plain (not hearing-impaired) English, most downloaded first.
+  // Prefer plain (not hearing-impaired) English, then one that is not the first
+  // half of a two-CD rip, most downloaded first.
   const ranked = [...list].sort((a, b) => {
     const sdh = (Number(a.SubHearingImpaired) || 0) - (Number(b.SubHearingImpaired) || 0);
     if (sdh) return sdh;
+    const part = Number(/cd\s*1|disc\s*1|part\s*1/i.test(String(a.SubFileName || '')))
+      - Number(/cd\s*1|disc\s*1|part\s*1/i.test(String(b.SubFileName || '')));
+    if (part) return part;
     return (Number(b.SubDownloadsCnt) || 0) - (Number(a.SubDownloadsCnt) || 0);
   });
-  for (const hit of ranked.slice(0, 4)) {
+
+  /* A full copy is required when the length is known; a short one is only
+   * kept as a last resort so an episode never ends up with no text at all. */
+  let best = null;
+  let bestCoverage = 0;
+  const enough = durationSec > 0 ? durationSec * 0.9 : 0;
+  for (const hit of ranked.slice(0, 6)) {
     try {
       const link = hit.SubDownloadLink || '';
       if (!/^https:\/\//i.test(link)) continue;
@@ -189,22 +270,42 @@ export async function fetchEnglishSubtitle({ imdbId, season = 0, episode = 0, la
         buffer = gunzipSync(buffer);
       }
       const text = vttFromSubtitle(buffer.toString('utf8'));
-      if (text.length > 40) return text;
+      if (text.length <= 40) continue;
+      const coverage = lastCueSec(text);
+      if (coverage > bestCoverage) {
+        bestCoverage = coverage;
+        best = text;
+      }
+      if (enough && coverage >= enough) return text;
     } catch {
       /* try the next candidate */
     }
   }
-  return null;
+  if (best && durationSec > 0) {
+    console.warn(`[subs] the best English subtitle covers ${(bestCoverage / 60).toFixed(0)} of ${(durationSec / 60).toFixed(0)} min`);
+  }
+  return best;
 }
 
 export async function ensureEnglishSubtitle(full, item = {}) {
   if (!full || !item || isOffline()) return false;
   const stem = full.slice(0, full.length - path.extname(full).length);
   const target = `${stem}.en.vtt`;
+  const durationSec = await videoDurationSec(full, item);
+  const enough = durationSec > 0 ? durationSec * 0.9 : 0;
+
+  /* An existing sidecar is only good while it covers the video. The old check
+   * was "any file bigger than 40 bytes is fine", which kept a first-half-only
+   * subtitle forever. */
+  let have = null;
   try {
-    if (fs.statSync(target).size > 40) return true;
+    have = fs.readFileSync(target, 'utf8');
   } catch {
-    /* no English sidecar yet */
+    have = null;
+  }
+  if (have && have.length > 40) {
+    if (!enough || lastCueSec(have) >= enough) return true;
+    console.log(`[subs] ${path.basename(target)} stops at ${(lastCueSec(have) / 60).toFixed(0)} of ${(durationSec / 60).toFixed(0)} min - fetching a full copy`);
   }
 
   const imdbId = await resolveImdbId({
@@ -216,8 +317,10 @@ export async function ensureEnglishSubtitle(full, item = {}) {
     imdbId,
     season: item.season,
     episode: item.episode,
+    durationSec,
   });
   if (!text) return false;
+  if (have && lastCueSec(text) <= lastCueSec(have)) return have.length > 40;
   await fsp.writeFile(target, text, 'utf8');
   return true;
 }

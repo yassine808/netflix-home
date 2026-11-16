@@ -707,7 +707,42 @@ app.get('/api/next/:id', async (req, res) => {
 });
 
 /* Byte-range file serving, shared by the original file and dub variants. */
-function sendMedia(req, res, full, type) {
+/* Windows refuses to unlink (or rename) a file while any handle to it is open.
+ * A read stream piped into a response was not destroyed when the player closed
+ * or navigated away - `pipe` unpipes but leaves the source open - so an episode
+ * watched once could not be deleted for the rest of the process' life, and the
+ * drawer answered "the file is open in the player" long after it was closed.
+ * Every stream is registered against its item, and the delete path closes its
+ * own handles before unlinking. */
+const mediaHandles = new Map();
+
+function trackMediaStream(itemId, stream) {
+  if (!itemId) return stream;
+  let set = mediaHandles.get(itemId);
+  if (!set) mediaHandles.set(itemId, (set = new Set()));
+  set.add(stream);
+  const drop = () => {
+    set.delete(stream);
+    if (!set.size) mediaHandles.delete(itemId);
+  };
+  stream.once('close', drop);
+  stream.once('error', () => { drop(); stream.destroy(); });
+  return stream;
+}
+
+function closeMediaHandles(itemId) {
+  const set = mediaHandles.get(itemId);
+  if (!set) return 0;
+  let closed = 0;
+  for (const stream of [...set]) {
+    try { stream.destroy(); closed += 1; } catch { /* already gone */ }
+  }
+  set.clear();
+  mediaHandles.delete(itemId);
+  return closed;
+}
+
+function sendMedia(req, res, full, type, itemId = '') {
   let stat;
   try {
     stat = fs.statSync(full);
@@ -722,10 +757,18 @@ function sendMedia(req, res, full, type) {
   res.setHeader('Content-Type', type);
   res.setHeader('Cache-Control', 'no-store');
 
+  const serve = (options) => {
+    const stream = trackMediaStream(itemId, fs.createReadStream(full, options));
+    /* The player closing, skipping to another episode or reloading ends the
+     * response; the handle has to go with it. */
+    res.on('close', () => stream.destroy());
+    stream.pipe(res);
+  };
+
   if (!range) {
     res.setHeader('Content-Length', total);
     if (req.method === 'HEAD') return res.end();
-    return fs.createReadStream(full).pipe(res);
+    return serve(undefined);
   }
 
   const match = /bytes=(\d*)-(\d*)/.exec(range);
@@ -742,7 +785,7 @@ function sendMedia(req, res, full, type) {
   res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
   res.setHeader('Content-Length', end - start + 1);
   if (req.method === 'HEAD') return res.end();
-  fs.createReadStream(full, { start, end }).pipe(res);
+  return serve({ start, end });
 }
 
 app.get('/api/stream/:id', async (req, res) => {
@@ -763,7 +806,7 @@ app.get('/api/stream/:id', async (req, res) => {
         const variant = await ensureAudioVariant(found.item, full, track);
         if (variant !== full) {
           const variantType = MIME[path.extname(variant).toLowerCase()] || 'video/mp4';
-          return sendMedia(req, res, variant, variantType);
+          return sendMedia(req, res, variant, variantType, found.item.id);
         }
       }
     } catch {
@@ -771,7 +814,7 @@ app.get('/api/stream/:id', async (req, res) => {
     }
   }
 
-  return sendMedia(req, res, full, type);
+  return sendMedia(req, res, full, type, found.item.id);
 });
 
 /* Audio tracks of one file, for the player's dub menu. */
@@ -975,16 +1018,32 @@ async function deleteLibraryFiles(found) {
   if (full !== base && !full.toLowerCase().startsWith(base.toLowerCase() + path.sep)) {
     throw Object.assign(new Error('file is outside the library'), { status: 400 });
   }
-  try {
-    await fs.promises.unlink(full);
-  } catch (err) {
-    if (err.code !== 'ENOENT') {
-      const open = err.code === 'EBUSY' || err.code === 'EPERM';
-      throw Object.assign(
-        new Error(open ? 'the file is open in the player — close it and try again' : err.message),
-        { status: open ? 409 : 500 },
-      );
+  /* Close the streams this server still holds for the item. A player that was
+   * closed a while ago can leave one behind (see trackMediaStream), and the
+   * user cannot close a handle they do not own. */
+  closeMediaHandles(found.item.id);
+  let lastError = null;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      await fs.promises.unlink(full);
+      lastError = null;
+      break;
+    } catch (err) {
+      lastError = err;
+      if (err.code === 'ENOENT') { lastError = null; break; }
+      if (err.code !== 'EBUSY' && err.code !== 'EPERM') break;
+      /* Windows drops the handle a moment after the socket is destroyed. */
+      await new Promise((resolve) => setTimeout(resolve, 150));
     }
+  }
+  if (lastError) {
+    const open = lastError.code === 'EBUSY' || lastError.code === 'EPERM';
+    throw Object.assign(
+      new Error(open
+        ? 'the file is still open in another program — close it and try again'
+        : lastError.message),
+      { status: open ? 409 : 500 },
+    );
   }
   // `<video>.<lang>.vtt` and friends belong to the file that just went away.
   const dir = path.dirname(full);
