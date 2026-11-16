@@ -1572,7 +1572,9 @@ function updateDownloadsBadge() {
   ), 0);
 
   const parts = [];
-  if (running) parts.push(`${running} of ${cap} downloading`);
+  /* A lower cap lets running transfers finish, so the count can sit above it
+   * for a while; "4 of 3" reads like a bug, "4 downloading · max 3" does not. */
+  if (running) parts.push(running > cap ? `${running} downloading · max ${cap}` : `${running} of ${cap} downloading`);
   else if (queued || paused) parts.push(`0 of ${cap} downloading`);
   if (queued) parts.push(`${queued} queued`);
   if (paused) parts.push(`${paused} paused`);

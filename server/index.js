@@ -1760,6 +1760,29 @@ app.use(express.static(publicDir, {
 }));
 app.use((req, res) => sendHtml(res, '404.html', 404));
 
+/**
+ * True when the listener on `port` is this app serving this very library.
+ *
+ * A second copy must not start a queue: it would share downloads.json with the
+ * first (two writers, and the loser's snapshot silently drops rows), spawn a
+ * second aria2 swarm for the same episodes, and rewrite the port file with a
+ * random port that the launcher never looks at again. This is what made the
+ * app look like it "closed by itself" and why finished rows vanished from the
+ * drawer.
+ */
+async function isOurInstance(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/library`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return Array.isArray(body.items) && path.resolve(String(body.root || '')) === path.resolve(libraryRoot);
+  } catch {
+    return false;
+  }
+}
+
 function listen(port, attempt = 0) {
   const server = app.listen(port, async () => {
     const actual = server.address()?.port || port;
@@ -1779,12 +1802,18 @@ function listen(port, attempt = 0) {
     watchLibrary();
   });
 
-  server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE' && attempt < 8) {
-      const next = 20000 + Math.floor(Math.random() * 40000);
-      console.warn(`port ${port} is in use, trying ${next}`);
-      listen(next, attempt + 1);
-      return;
+  server.on('error', async (err) => {
+    if (err.code === 'EADDRINUSE') {
+      if (attempt === 0 && await isOurInstance(port)) {
+        console.log(`[app] this library is already served on port ${port}; step aside`);
+        process.exit(0);
+      }
+      if (attempt < 8) {
+        const next = 20000 + Math.floor(Math.random() * 40000);
+        console.warn(`port ${port} is in use, trying ${next}`);
+        listen(next, attempt + 1);
+        return;
+      }
     }
     console.error('server could not start:', err.message);
     process.exit(1);
