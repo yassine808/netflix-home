@@ -70,6 +70,8 @@ function snapshot() {
       if (key === 'controller' || key === 'ffmpeg') continue;
       copy[key] = value;
     }
+    /* Position in the waiting line, so a promoted job comes back in front. */
+    copy.queuePos = queue.indexOf(job);
     list.push(copy);
   }
   return { version: 1, savedAt: Date.now(), jobs: list };
@@ -442,8 +444,16 @@ export async function startRestoredDownloads({ online = true } = {}) {
 
   await sweepTorrentTempDirs();
 
-  for (const job of restored) {
-    if (job.status !== 'queued') continue;
+  /* The saved state lists jobs in the order they were created, which is not the
+   * order they were waiting in: a promoted job (POST /api/downloads/:id/first)
+   * sat at the front of the queue but came back behind ninety older ones after
+   * a restart. `queuePos` is written with each snapshot, so the waiting order
+   * survives; a job without one keeps its saved position at the end. */
+  const waiting = restored.filter((job) => job.status === 'queued');
+  const pos = (job) => (Number.isInteger(job.queuePos) && job.queuePos >= 0 ? job.queuePos : Number.MAX_SAFE_INTEGER);
+  waiting.sort((a, b) => pos(a) - pos(b));
+  for (const job of waiting) {
+    delete job.queuePos;
     queue.push(job);
   }
   trimHistory();
