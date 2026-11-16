@@ -1182,22 +1182,21 @@ function buildCard(item, { progress, width = 480, episode = '' } = {}) {
   img.addEventListener('error', () => img.remove());
 
   const overlay = createEl('div', 'card-overlay');
-  // The title's official wordmark, when the catalog has one. The text title
-  // stays in the DOM and takes over again if the image 404s or fails to load.
-  if (!remote) {
-    const logo = document.createElement('img');
-    logo.className = 'card-logo';
-    logo.loading = 'lazy';
-    logo.decoding = 'async';
-    logo.alt = '';
-    logo.addEventListener('load', () => {
-      overlay.classList.add('has-logo');
-      logo.classList.add('loaded');
-    });
-    logo.addEventListener('error', () => logo.remove());
-    logo.src = logoUrl(item);
-    overlay.append(logo);
-  }
+  // The title's official wordmark, when the title has one: the catalog route
+  // for a saved Castle title, the library route for a file on the drive. The
+  // text title stays in the DOM and takes over again if the image 404s.
+  const logo = document.createElement('img');
+  logo.className = 'card-logo';
+  logo.loading = 'lazy';
+  logo.decoding = 'async';
+  logo.alt = '';
+  logo.addEventListener('load', () => {
+    overlay.classList.add('has-logo');
+    logo.classList.add('loaded');
+  });
+  logo.addEventListener('error', () => logo.remove());
+  logo.src = remote ? castleLogoUrl(item) : logoUrl(item);
+  overlay.append(logo);
   overlay.append(createEl('div', 'card-title', item.title));
   const meta = createEl('div', 'card-meta');
   const runtime = remote
