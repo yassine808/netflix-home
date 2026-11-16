@@ -39,9 +39,16 @@ let findExisting = () => null;
  * aria2c resumes from its own .aria2 control file; ffmpeg cannot, so HLS and
  * remux partial files are rebuilt from the start. */
 const STATE_NAME = 'downloads.json';
+/* Finished rows get a second, append-only record. downloads.json is rewritten
+ * from memory on every save, so one process that came up with a half-empty job
+ * map (or a stray "Cancel all" on a finished card) erased the history while the
+ * files sat in the library untouched. The journal is never rewritten, so the
+ * rows can be put back. */
+const FINISHED_NAME = 'completed.jsonl';
 const SAVE_DELAY_MS = 3000;
 const HISTORY_LIMIT = 40;
 let stateFile = '';
+let finishedFile = '';
 let saveTimer = null;
 
 export function initDownloads({ root, onDownloadComplete, findDownload = null }) {
@@ -49,6 +56,7 @@ export function initDownloads({ root, onDownloadComplete, findDownload = null })
   onComplete = onDownloadComplete || (async () => {});
   findExisting = typeof findDownload === 'function' ? findDownload : () => null;
   stateFile = path.join(root, '.cache', STATE_NAME);
+  finishedFile = path.join(root, '.cache', FINISHED_NAME);
 }
 
 /* Terminal jobs are history, not work: keep the last few so the download
@@ -59,9 +67,82 @@ function trimHistory() {
     .sort((a, b) => (b.completedAt || b.createdAt) - (a.completedAt || a.createdAt));
   const dropped = terminal.slice(HISTORY_LIMIT);
   for (const job of dropped) jobs.delete(job.id);
+  for (const job of dropped) journalFinished({ id: job.id, removed: true });
   /* Finished rows disappearing from the drawer with no explanation is how a
    * "the app lost my downloads" report starts; say it out loud. */
   if (dropped.length) console.log(`[download] trimmed ${dropped.length} finished row(s) from the history (${HISTORY_LIMIT} kept)`);
+}
+
+/* ---------- finished-download journal ---------- */
+
+function journalFinished(entry) {
+  if (!finishedFile || !entry?.id) return;
+  try {
+    fs.mkdirSync(path.dirname(finishedFile), { recursive: true });
+    fs.appendFileSync(finishedFile, `${JSON.stringify(entry)}\n`, 'utf8');
+  } catch {
+    /* History is a convenience; it must never be a reason a download fails. */
+  }
+}
+
+function rememberFinished(job) {
+  journalFinished({
+    id: job.id,
+    title: job.title,
+    dest: job.dest,
+    fileName: job.fileName,
+    collection: job.collection,
+    identifier: job.identifier,
+    poster: job.poster,
+    source: job.source,
+    sourceLabel: job.sourceLabel,
+    quality: job.quality,
+    season: job.season,
+    episode: job.episode,
+    bytes: job.bytes,
+    completedAt: job.completedAt,
+    createdAt: job.createdAt,
+  });
+}
+
+/* Replay: a later line for the same id wins, `removed` erases it. */
+async function readFinished() {
+  if (!finishedFile) return [];
+  let raw = '';
+  try {
+    raw = await fsp.readFile(finishedFile, 'utf8');
+  } catch {
+    return [];
+  }
+  const alive = new Map();
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!entry?.id) continue;
+    if (entry.removed) alive.delete(String(entry.id));
+    else alive.set(String(entry.id), entry);
+  }
+  return [...alive.values()];
+}
+
+/* The journal only grows while it is replayed; compact it once it is big. */
+async function compactFinished(entries) {
+  if (!finishedFile) return;
+  const stat = await fsp.stat(finishedFile).catch(() => null);
+  if (!stat || stat.size < 512 * 1024) return;
+  const body = entries.map((entry) => `${JSON.stringify(entry)}\n`).join('');
+  const tmp = `${finishedFile}.tmp`;
+  try {
+    await fsp.writeFile(tmp, body, 'utf8');
+    await fsp.rename(tmp, finishedFile);
+  } catch {
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+  }
 }
 
 function snapshot() {
@@ -351,6 +432,7 @@ async function adoptRenamedFile(job) {
   job.total = stat.size;
   const quality = /(2160p|1080p|720p|480p|sd)/i.exec(matches[0]);
   if (quality) job.quality = quality[1].toLowerCase();
+  rememberFinished(job);
   scheduleSave(0);
   console.log(`[download] ${job.title}: adopted renamed file ${matches[0]}`);
   return true;
@@ -413,6 +495,45 @@ export async function startRestoredDownloads({ online = true } = {}) {
     restored.push(job);
   }
 
+  /* Put back finished rows the queue file lost. The file is rewritten from
+   * memory, so a process that came up without them (or a stray group "Cancel
+   * all" on a finished card) erased the drawer history while the episodes
+   * stayed on disk. The journal is append-only; a tombstone is written when a
+   * row is removed on purpose, so this never resurrects a dismissed row. */
+  finishedFile ||= path.join(libraryRoot, '.cache', FINISHED_NAME);
+  const journal = await readFinished();
+  for (const entry of journal) {
+    const id = String(entry.id);
+    if (jobs.has(id)) continue;
+    const dest = String(entry.dest || '');
+    const stat = dest ? await fsp.stat(dest).catch(() => null) : null;
+    if (!stat?.isFile() || !stat.size) continue;
+    const job = {
+      ...entry,
+      id,
+      kind: 'torrent',
+      status: 'completed',
+      stage: 'done',
+      dest,
+      bytes: stat.size,
+      total: stat.size,
+      progressValue: 1,
+      speed: 0,
+      error: null,
+      controller: null,
+      ffmpeg: null,
+      failures: [],
+      completedAt: Number(entry.completedAt) || stat.mtimeMs,
+      createdAt: Number(entry.createdAt) || stat.mtimeMs,
+      restoredFromJournal: true,
+    };
+    jobs.set(id, job);
+    restored.push(job);
+  }
+  const recovered = restored.filter((job) => job.restoredFromJournal).length;
+  if (recovered) console.log(`[download] recovered ${recovered} finished row(s) from the journal`);
+  await compactFinished(journal);
+
   /* Renamed files are adopted before anything is resumed or swept. */
   for (const job of restored) {
     if (job.status !== 'completed') continue;
@@ -437,6 +558,7 @@ export async function startRestoredDownloads({ online = true } = {}) {
         job.total = installed.size;
         job.speed = 0;
         job.completedAt = job.completedAt || Date.now();
+        rememberFinished(job);
         continue;
       }
     }
@@ -966,6 +1088,8 @@ export function cancelDownload(id) {
     const index = queue.indexOf(job);
     if (index >= 0) queue.splice(index, 1);
     jobs.delete(job.id);
+    journalFinished({ id: job.id, removed: true });
+    console.log(`[download] removed the finished row for "${job.title || job.fileName || job.id}" (file kept)`);
     scheduleSave(0);
     return { id: job.id, status: job.status, removed: true, kept: true };
   }
@@ -1312,6 +1436,7 @@ async function runHlsJob(job) {
     job.speed = 0;
     job.status = 'completed';
     job.completedAt = Date.now();
+    rememberFinished(job);
     scheduleSave(0);
     await onComplete(job).catch(() => {});
     /* Subtitles (and the English lookup behind them) are network work: the
@@ -1511,6 +1636,7 @@ async function attemptRelease(job, release, dir, controller) {
   job.stage = 'done';
   job.status = 'completed';
   job.completedAt = Date.now();
+  rememberFinished(job);
   scheduleSave(0);
   await onComplete(job).catch(() => {});
 

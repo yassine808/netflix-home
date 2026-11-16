@@ -1851,7 +1851,11 @@ function applyDlOpen(card) {
 
 async function removeDlGroup(card) {
   const unfinished = card.jobs.filter((j) => j.status !== 'completed' && j.status !== 'cancelled');
-  if (unfinished.length && !card.armed) {
+  /* One X on a card holding several finished episodes used to erase every one
+   * of their rows at once, with no label and no confirm - the file names were
+   * gone from the drawer before anyone could tell what the X meant. Arm first
+   * whenever the click would remove more than a single row. */
+  if ((unfinished.length || card.jobs.length > 1) && !card.armed) {
     card.el.classList.add('is-armed');
     card.armed = setTimeout(() => { card.armed = 0; card.el.classList.remove('is-armed'); }, 3200);
     return;
