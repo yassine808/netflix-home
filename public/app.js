@@ -1173,6 +1173,28 @@ function castleArtUrl(url) {
   return `${value}${value.includes('?') ? '&' : '?'}v=${CASTLE_ART_VERSION}`;
 }
 
+/* A saved catalogue card's picture is this app's own route: it reads
+ * catalog.db and answers with the switch on. Only an address that still points
+ * at the CDN has no offline copy, and an older snapshot that stored one is
+ * resolved through the title's own saved picture instead. */
+function cardArtUrl(item, width = 480) {
+  if (!item.remote) return thumbUrl(item, width);
+  const stored = String(item.background || item.poster || '');
+  const art = castleArtUrl(stored);
+  if (art.startsWith('/api/') || !state.offline) return art;
+  const id = item.castleId || String(item.id || '').replace(/^castle:/, '');
+  if (!id) return '';
+  return castleArtUrl(`/api/castle/art/${encodeURIComponent(id)}/${item.background ? 'backdrop' : 'poster'}`);
+}
+
+/* A picture this app serves itself (`/api/...`) is a database read and answers
+ * with the offline switch on; only a CDN address has no offline copy. */
+function offlineArtUrl(url) {
+  const value = String(url || '');
+  if (!value) return '';
+  return state.offline && !value.startsWith('/') ? '' : value;
+}
+
 function buildCard(item, { progress, width = 480, episode = '' } = {}) {
   const card = createEl('div', 'card');
   card.tabIndex = 0;
@@ -1190,9 +1212,11 @@ function buildCard(item, { progress, width = 480, episode = '' } = {}) {
   img.decoding = 'async';
   img.fetchPriority = 'low';
   img.alt = '';
-  // Catalog snapshots carry absolute CDN URLs. Offline mode must not touch the
-  // network, not even for a picture, so the title fallback stays instead.
-  if (!remote || !state.offline) img.src = remote ? castleArtUrl(item.background || item.poster || '') : thumbUrl(item, width);
+  // A saved catalogue title's picture is served by this app, so offline mode
+  // keeps it; an unsaved CDN address has no offline copy and leaves the text
+  // fallback in place.
+  const art = cardArtUrl(item, width);
+  if (art) img.src = art;
   img.addEventListener('load', () => img.classList.add('loaded'));
   img.addEventListener('error', () => img.remove());
 
@@ -1362,11 +1386,18 @@ function showLocal() {
 }
 
 function remoteListCards() {
-  return getRemoteList().map((entry) => ({
-    ...entry,
-    id: entry.castleId || String(entry.key).replace(/^castle:/, ''),
-    remote: true,
-  }));
+  return getRemoteList().map((entry) => {
+    const id = entry.castleId || String(entry.key).replace(/^castle:/, '');
+    // A snapshot saved before its art was cached carries no picture address;
+    // the title's saved picture still lives in catalog.db under this id.
+    return {
+      ...entry,
+      id,
+      poster: entry.poster || `/api/castle/art/${encodeURIComponent(id)}/poster`,
+      background: entry.background || `/api/castle/art/${encodeURIComponent(id)}/backdrop`,
+      remote: true,
+    };
+  });
 }
 
 function showFavourite() {
@@ -3224,13 +3255,15 @@ function renderOnlineSeasons(item) {
     for (const episode of entry.episodes) {
       const row = createEl('article', 'episode-row');
 
-      // Catalog thumbnails are remote CDN pictures; offline mode skips them.
-      if (episode.thumbnail && !state.offline) {
+      // A saved episode picture comes from catalog.db through this app, so it
+      // works offline; only an unsaved CDN address waits for the switch.
+      const thumbSrc = offlineArtUrl(episode.thumbnail);
+      if (thumbSrc) {
         const thumb = document.createElement('img');
         thumb.className = 'episode-thumb';
         thumb.loading = 'lazy';
         thumb.alt = '';
-        thumb.src = episode.thumbnail;
+        thumb.src = thumbSrc;
         thumb.addEventListener('error', () => thumb.remove());
         row.append(thumb);
       }
@@ -5343,8 +5376,9 @@ function catalogEpisodeRow(entry, group) {
   img.loading = 'lazy';
   img.decoding = 'async';
   img.alt = '';
-  if (entry.thumbnail && !state.offline) {
-    img.src = entry.thumbnail;
+  const thumbSrc = offlineArtUrl(entry.thumbnail);
+  if (thumbSrc) {
+    img.src = thumbSrc;
     img.addEventListener('error', () => img.remove());
   } else {
     img.remove();
