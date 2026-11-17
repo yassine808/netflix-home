@@ -48,6 +48,9 @@
 - [x] Clicking the hero preview skips it
 - [x] Next-episode card opens by itself in the last 10 s, only for an episode already on disk
 - [x] Skip Intro follows the playhead (reappears after seeking back) with a progress fill
+- [x] A fully downloaded catalogue title shows Play everywhere (series, partial seasons and films), resolved from `catalog.db` on every sheet open
+- [x] Download source switch: Torrentio only or Castle API only, no automatic fallback; simpler Settings layout
+- [x] Subtitles: convert fetched ASS/SSA tracks to WebVTT so anime titles (Vinland Saga) get English sidecars
 
 ## Log
 
@@ -635,3 +638,14 @@
 - Verified (small file): a 305 MB mkv with 35 text streams extracted 29 tracks in 9.1 s with no `.part` file left behind.
 - Verified (live): build `202f3828fb6d06c6` deployed (259.2 MB), EXE started as PID 47532, 109 restored jobs. The Backrooms resync took 127.7 s and returned `extracted: [en, ar, es]`, `retimed: null`; the English sidecar is now 60 804 B, first cue `01:22.209 --> 01:24.628` ("Okay, okay, okay, okay..."), last cue `01:42:12.962`, and no ad line. The player fetches both `/api/subtitles/:id` and `/api/subtitle/:id/:lang` with `cache: 'no-store'`, so a reload shows the replacement immediately.
 - Next: none; a sidecar from another cut can now be repaired with the resync route instead of deleting files by hand.
+
+### 2026-11-17 (early morning, twenty-third pass) - downloaded catalogue titles play, one exclusive download source, and anime subtitles land
+- Goal: Yassine asked three things: a fully downloaded title opened from the Online/Castle catalogue must show Play on every episode, Settings must offer a simple Castle API vs Torrentio download-source switch, and Vinland Saga must get subtitles.
+- Done (catalogue Play): `openCastleModal()` now attaches the matching library card (`localGroupForTitle`) instead of redirecting to the local sheet, so a partially downloaded show keeps its Castle download rows and a complete one still shows Play. `localFor` / `renderCastleSizes` share `localFileFor()`, which also maps a film (no season/episode numbers) to its single local file, so Backrooms shows Play and "In library". The sheet reads the library from `catalog.db` on every open (`castleSignature` includes `state.libraryPrint`, `loadLibrary` re-syncs an open sheet), and `renderCastleDownloads` reports "Everything downloaded" and skips planning when the season is complete.
+- Done (source switch): `server/settings.js` stores `downloadSource` (`torrentio` | `castle`, default `torrentio`) and drops the old `castleFallback` on the next save; `POST /api/settings/download-source`; `/api/castle/plan` early-returns a Castle plan in Castle mode and answers `source: 'torrentio', fallback: false` otherwise; `/api/castle/download` only tries Torrentio in Torrentio mode and returns 409 with the reason instead of a quiet 720p fallback.
+- Done (Settings): the sheet is one column with Library / Downloads / Playback, hairline row separators, a segmented Torrentio|Castle control, and a Torrent quality row that dims and disables in Castle mode. Hints were shortened; the panel is 600 px.
+- Done (subtitles): OpenSubtitles returns `.ass`/`.ssa` for Vinland Saga E01, E02, E04, E15 and E24. `vttFromSubtitle()` wrapped the raw ASS as WEBVTT, so `cueStats()` saw zero cues and discarded the track. `assToVtt()` now reads the `[Events]` `Dialogue` lines, writes real `HH:MM:SS.mmm` cues, strips override blocks and `\N` escapes, and `saveSubtitle()` accepts the payload.
+- Verified (server): `/api/settings` reports `downloadSource: 'torrentio'`; switching to `castle` makes `/api/castle/plan` return an empty Castle plan, switching back returns `source: 'torrentio', fallback: false`; all five Vinland episodes answer `{"tracks":[{"lang":"en"}]}` and `/api/subtitle/:id/en` serves `text/vtt` (272, 325, 245, 341 and 298 cues).
+- Verified (CDP): Chernobyl opens from the Castle search with hero Play, "In library", "5 episodes · In library · ≈ 4.0 GB", 5 Play rows and "Everything downloaded"; Backrooms opens with hero Play, "In library · ≈ 4.9 GB" and a Play row; Narcos S1 keeps Play/active/retry rows, S2 is all Play + "In library", S3 is all Download; Wednesday is all Download in both modes, `Castle · 720p` in Castle mode; Settings switches the server state and dims the quality row.
+- Deployed: build after `npm run deploy`; EXE relaunched and the same checks repeated on the deployed build.
+- Next: none.

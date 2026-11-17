@@ -9,7 +9,7 @@ import {
   getSavedCastle,
   deleteLibraryItem, deleteLibraryItems, getDownloads, cancelDownload, retryDownload, reorderDownloads,
   pauseDownload, resumeDownload, getColorFix,
-  getSettings, setOfflineMode, setCastleFallback, setAutoplaySound, setDownloadLimits, setTorrentQuality,
+  getSettings, setOfflineMode, setDownloadSource, setAutoplaySound, setDownloadLimits, setTorrentQuality,
   setDownloadStagingDir,
   setLibraryRoot, restartApp,
   readJson, writeJson, heroImageUrl, heroPreviewUrl,
@@ -38,8 +38,8 @@ const state = {
   previewMode: 'clip',
   previewMuted: readJson(PREVIEW_MUTED_KEY, false) === true,
   offline: false,
-  // Mirrors the server's Castle fallback setting: false = Torrentio only.
-  castleFallback: true,
+  // Mirrors the server's download source: 'torrentio' or 'castle', never both.
+  downloadSource: 'torrentio',
   // Mirrors the server's sound setting: false = preview and player start muted.
   autoplaySound: true,
   // Mirrors the server's Torrentio quality switch: '1080p' keeps files small,
@@ -221,8 +221,8 @@ const els = {
   castleSize: $('castleSize'),
   castleSource: $('castleSource'),
   settingsModal: $('settingsModal'),
-  castleFallbackBtn: $('castleFallbackBtn'),
-  castleFallbackLabel: $('castleFallbackLabel'),
+  downloadSourceSwitch: $('downloadSourceSwitch'),
+  torrentQualityRow: $('torrentQualityRow'),
   torrentQualitySwitch: $('torrentQualitySwitch'),
   autoplaySoundBtn: $('autoplaySoundBtn'),
   autoplaySoundLabel: $('autoplaySoundLabel'),
@@ -375,8 +375,8 @@ async function boot() {
     .then((settings) => {
       state.offline = Boolean(settings.offline);
       applyOfflineUi();
-      state.castleFallback = settings.castleFallback !== false;
-      applyCastleFallbackUi();
+      state.downloadSource = settings.downloadSource === 'castle' ? 'castle' : 'torrentio';
+      applyDownloadSourceUi();
       state.autoplaySound = settings.autoplaySound !== false;
       applyAutoplaySoundUi();
       state.torrentQuality = settings.torrentQuality === '2160p' ? '2160p' : '1080p';
@@ -436,7 +436,12 @@ async function loadLibrary({ first = false } = {}) {
 
     // A 304 (or a rescan that produced the same rows) leaves the DOM alone.
     const changed = previousUpdated !== data.updatedAt || previousPrint !== state.libraryPrint;
-    if (changed || first) renderAll();
+    if (changed || first) {
+      renderAll();
+      // An open catalogue sheet also reads the library: refresh its Play rows
+      // as soon as the files it asked about are indexed.
+      syncCastleSheet();
+    }
     updateLoadingState();
   } catch (err) {
     console.error(err);
@@ -2528,14 +2533,18 @@ async function toggleOffline() {
 
 /* ---------- settings sheet ---------- */
 
-function applyCastleFallbackUi() {
-  const on = state.castleFallback !== false;
-  els.castleFallbackBtn.setAttribute('aria-checked', String(on));
-  els.castleFallbackBtn.classList.toggle('is-off', !on);
-  els.castleFallbackLabel.textContent = on ? 'On' : 'Off';
-  els.castleFallbackBtn.title = on
-    ? 'Torrentio first, Castle 720p when it has no release'
-    : 'Torrentio only — no Castle fallback';
+function applyDownloadSourceUi() {
+  const source = state.downloadSource === 'castle' ? 'castle' : 'torrentio';
+  els.downloadSourceSwitch.querySelectorAll('[data-download-source]').forEach((btn) => {
+    btn.setAttribute('aria-checked', String(btn.dataset.downloadSource === source));
+  });
+  /* The quality filter is a Torrentio rule; Castle has one 720p file per
+   * episode, so the choice has nothing to do there. */
+  const torrentio = source === 'torrentio';
+  els.torrentQualityRow.classList.toggle('is-muted', !torrentio);
+  els.torrentQualitySwitch.querySelectorAll('button').forEach((btn) => {
+    btn.disabled = !torrentio;
+  });
 }
 
 function applyTorrentQualityUi() {
@@ -2547,7 +2556,7 @@ function applyTorrentQualityUi() {
 
 function openSettings() {
   closeProfile();
-  applyCastleFallbackUi();
+  applyDownloadSourceUi();
   applyTorrentQualityUi();
   applyAutoplaySoundUi();
   applyDownloadLimitUi();
@@ -2560,7 +2569,7 @@ function openSettings() {
   /* The app itself (after a restart) or another tab may have changed these. */
   getSettings()
     .then((settings) => {
-      state.castleFallback = settings.castleFallback !== false;
+      state.downloadSource = settings.downloadSource === 'castle' ? 'castle' : 'torrentio';
       state.autoplaySound = settings.autoplaySound !== false;
       state.torrentQuality = settings.torrentQuality === '2160p' ? '2160p' : '1080p';
       state.downloadMaxActive = Number(settings.downloadMaxActive) || state.downloadMaxActive;
@@ -2569,7 +2578,7 @@ function openSettings() {
       state.libraryRoot = settings.libraryRoot || state.libraryRoot;
       state.libraryRootSetting = settings.libraryRootSetting || state.libraryRoot;
       state.libraryRestartPending = Boolean(settings.libraryRootPending);
-      applyCastleFallbackUi();
+      applyDownloadSourceUi();
       applyTorrentQualityUi();
       applyAutoplaySoundUi();
       applyDownloadLimitUi();
@@ -2583,22 +2592,26 @@ function closeSettings() {
   syncBodyLock();
 }
 
-async function toggleCastleFallback() {
-  els.castleFallbackBtn.disabled = true;
+async function chooseDownloadSource(source) {
+  const next = source === 'castle' ? 'castle' : 'torrentio';
+  if (next === state.downloadSource) return;
+  const buttons = [...els.downloadSourceSwitch.querySelectorAll('button')];
+  buttons.forEach((btn) => { btn.disabled = true; });
   try {
-    const settings = await setCastleFallback(!(state.castleFallback !== false));
-    state.castleFallback = settings.castleFallback !== false;
-    applyCastleFallbackUi();
-    // The open sheet's source line and totals depend on this, so re-plan it.
+    const settings = await setDownloadSource(next);
+    state.downloadSource = settings.downloadSource === 'castle' ? 'castle' : 'torrentio';
+    applyDownloadSourceUi();
+    applyTorrentQualityUi();
+    // The open sheet's plan, source line and totals all come from this.
     state.castlePlanCache.clear();
     if (!els.castleModal.hidden && state.castleTitle) renderCastleDownloads(state.castleTitle);
-    toast(state.castleFallback
-      ? 'Castle fallback on — 720p when Torrentio has no release'
-      : 'Torrentio only — no Castle fallback');
+    toast(state.downloadSource === 'castle'
+      ? 'Downloads now come from Castle (720p)'
+      : 'Downloads now come from Torrentio');
   } catch (err) {
     toast(`Could not change the download source: ${err.message}`);
   } finally {
-    els.castleFallbackBtn.disabled = false;
+    buttons.forEach((btn) => { btn.disabled = false; });
   }
 }
 
@@ -3384,10 +3397,12 @@ function clearCastleSkeleton() {
 /* Keep the open sheet in step with the download queue: queued turns into a
  * percentage, finished episodes turn into Play after the library rescans. */
 function castleSignature() {
-  return state.downloads
+  // The library revision is part of the signature: a finished download or a
+  // file dropped on the drive changes what the open sheet should say.
+  return `${state.libraryPrint || ''}|${state.downloads
     .map((job) => `${job.id}:${job.status}:${Math.round((job.progress || 0) * 20)}`)
     .sort()
-    .join('|');
+    .join('|')}`;
 }
 
 function syncCastleSheet() {
@@ -3399,9 +3414,17 @@ function syncCastleSheet() {
   if (sig === state.castleSig) return;
   state.castleSig = sig;
   const group = state.castleLocal?.group;
-  if (group) {
-    const fresh = groupLibrary().find((entry) => entry.id === group.id) || group;
-    state.castleLocal = { ...state.castleLocal, group: fresh, local: localEpisodesFor(fresh) };
+  // Same lookup as the first paint: a catalogue sheet with no local card yet
+  // attaches one now, and a card whose first episode was deleted drops it.
+  const fresh = group
+    ? groupLibrary().find((entry) => (group.seriesKey
+      ? entry.seriesKey === group.seriesKey
+      : entry.id === group.id))
+    : localGroupForTitle(state.castleTitle);
+  if (fresh) {
+    state.castleLocal = { ...(state.castleLocal || {}), group: fresh, local: localEpisodesFor(fresh) };
+  } else {
+    state.castleLocal = null;
   }
   renderCastleDownloads(state.castleTitle);
 }
@@ -3414,9 +3437,10 @@ function populateCastleModal(item, { loading = false } = {}) {
   setImg(els.castleBackdrop, remoteArt);
   els.castleBackdrop.hidden = !remoteArt;
   setCastleLogo(item);
-  // A title already saved in the catalogue says so next to its facts; an
-  // unsaved one keeps the download label above the wordmark.
-  const inLibrary = Boolean(savedShowRow(item.title)) || Boolean(item.saved);
+  // A title already saved in the catalogue, or one whose files sit on the
+  // drive, says so next to its facts; an unknown one keeps the download label
+  // above the wordmark.
+  const inLibrary = Boolean(state.castleLocal?.group) || Boolean(savedShowRow(item.title)) || Boolean(item.saved);
   els.castleKicker.hidden = inLibrary;
   els.castleKicker.textContent = inLibrary ? '' : 'DOWNLOAD';
   if (!item.description && loading) els.castlePlot.replaceChildren(skelLines(3));
@@ -3449,7 +3473,12 @@ async function openCastleModal(item) {
   stopCastleTrailer();
   castleFocusEl = document.activeElement;
   state.castleTitle = item;
-  state.castleLocal = null;
+  // A catalogue card is still a title in the library when its files are on the
+  // drive: attach the local card so the sheet opens on Play, not Download.
+  const localGroup = localGroupForTitle(item);
+  state.castleLocal = localGroup
+    ? { group: localGroup, local: localEpisodesFor(localGroup) }
+    : null;
   state.castleSeason = 0;
   state.castleBusy = false;
   state.castleListReady = false;
@@ -3482,7 +3511,10 @@ async function openCastleModal(item) {
         if (!full || !Array.isArray(full.seasons)) return;
         state.castleCatalog = { seasons: full.seasons };
         if (!els.castleModal.hidden && state.castleTitle === merged) {
-          els.castleSeasonDownload.disabled = state.castleBusy || state.offline || castleAllLocal(merged);
+          const allDone = castleAllLocal(merged);
+          els.castleSeasonDownload.disabled = state.castleBusy || state.offline || allDone;
+          els.castleSeasonDownload.classList.toggle('is-done', allDone);
+          els.castleSeasonDownload.textContent = allDone ? 'Everything downloaded' : 'Download all';
         }
       }).catch(() => { /* the button falls back to the open season */ });
     }
@@ -3520,7 +3552,23 @@ function castlePlanFor(detail, episode) {
 function renderCastleSizes(detail, episodes) {
   const season = detail.activeSeason ?? state.castleSeason ?? 0;
   const entry = state.castlePlanCache.get(castlePlanKey(detail, season));
-  const plans = episodes.map((episode) => castlePlanFor(detail, episode.episode));
+  /* A season whose every episode is on disk has nothing to plan: the header
+   * reports the files themselves, not a download that would be skipped. */
+  const localMap = state.castleLocal?.local || null;
+  const seriesLocal = seriesLocalEpisodes(detail);
+  const local = (episode) => localFileFor(detail, localMap, seriesLocal, season, episode.episode);
+  if (episodes.length && episodes.every((episode) => local(episode))) {
+    const total = episodes.reduce((sum, episode) => sum + (Number(local(episode)?.size) || 0), 0);
+    const label = detail.type === 'series'
+      ? `${episodes.length} episode${episodes.length === 1 ? '' : 's'}`
+      : '';
+    els.castleSize.textContent = [label, 'In library', total ? `≈ ${formatSize(total)}` : '']
+      .filter(Boolean).join(' · ');
+    return CASTLE_RESOLUTION;
+  }
+  const plans = state.downloadSource === 'torrentio'
+    ? episodes.map((episode) => castlePlanFor(detail, episode.episode))
+    : [];
   const planned = plannedSummary(plans);
 
   if (planned) {
@@ -3531,9 +3579,9 @@ function renderCastleSizes(detail, episodes) {
     return CASTLE_RESOLUTION;
   }
 
-  /* Torrentio-only mode never shows Castle's 720p numbers: they are not what a
+  /* Torrentio mode never shows Castle's 720p numbers: they are not what a
    * click would fetch. Report Torrentio's coverage of the open season instead. */
-  if (state.castleFallback === false) {
+  if (state.downloadSource === 'torrentio') {
     const count = episodes.length;
     const head = detail.type === 'series' && count
       ? `${count} episode${count === 1 ? '' : 's'}`
@@ -3580,18 +3628,19 @@ function plannedSummary(plans) {
 /* Paint a plan the server already answered: header total, per-episode quality
  * and size, and one line naming the source (with subtitles). */
 function applyCastlePlan(detail, episodes) {
+  if (state.downloadSource !== 'torrentio') return;
   const season = detail.activeSeason ?? state.castleSeason ?? 0;
   const entry = state.castlePlanCache.get(castlePlanKey(detail, season));
   if (!entry) return;
   renderCastleSizes(detail, episodes);
-  const fallback = entry.fallback !== false;
-  els.castleSource.textContent = entry.source === 'torrentio'
-    ? 'Video + subtitles from Torrentio'
-    : entry.partial
-      ? 'Torrentio did not answer - tap an episode to retry'
-      : fallback
-        ? `Castle fallback · ${qualityName(CASTLE_RESOLUTION)}`
-        : 'Torrentio only · no release found';
+  /* Torrentio mode has no fallback, so a plan either names the release or says
+   * there is none. A failed call keeps the retry hint. */
+  const found = [...entry.episodes.values()].some((plan) => plan?.quality);
+  els.castleSource.textContent = entry.partial
+    ? 'Torrentio did not answer - tap an episode to retry'
+    : found
+      ? 'Video + subtitles from Torrentio'
+      : 'Torrentio only · no release found';
 
   const localMap = state.castleLocal?.local || null;
   els.castleEpisodes.querySelectorAll('.castle-episode').forEach((row) => {
@@ -3620,9 +3669,8 @@ function applyCastlePlan(detail, episodes) {
     }
 
     if (!plan?.quality) {
-      /* Torrentio has nothing here and the fallback is off: say so on the row
-       * and take the Download button away instead of offering a 409. */
-      if (fallback) return;
+      /* Torrentio has nothing here: say so on the row and take the Download
+       * button away instead of offering a 409. */
       meta.textContent = [formatDuration(episode?.duration), 'No Torrentio release'].filter(Boolean).join(' · ');
       const btn = row.querySelector('.castle-dl-btn');
       const idle = btn && !btn.classList.contains('is-play') && !btn.classList.contains('queued')
@@ -3632,7 +3680,7 @@ function applyCastlePlan(detail, episodes) {
         btn.disabled = true;
         btn.title = state.offline
           ? 'Offline mode — go online to download'
-          : 'Torrentio has no release with English audio and Castle fallback is off';
+          : 'Torrentio has no release with English audio for this episode';
         btn.querySelector('span').textContent = state.offline ? 'Download' : 'Unavailable';
       }
       return;
@@ -3660,6 +3708,7 @@ function applyCastlePlan(detail, episodes) {
 }
 
 function loadCastlePlan(detail, episodes) {
+  if (state.downloadSource !== 'torrentio') return;
   if (!/^\d{6,20}$/.test(String(detail?.id || ''))) return;
   const numbers = episodes.map((episode) => Number(episode.episode)).filter((value) => Number.isFinite(value));
   if (!numbers.length) return;
@@ -3745,19 +3794,32 @@ function castleCatalogEpisodes() {
 /* Every episode of this series that already sits anywhere in the library,
  * across collections, keyed "SxE". Download all skips those. */
 function seriesLocalEpisodes(detail) {
-  const norm = (value) => String(value || '')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim();
-  const wanted = norm(detail?.title || detail?.seriesTitle);
+  const wanted = normalizeSearchText(detail?.title || detail?.seriesTitle);
   const map = new Map();
   if (!wanted) return map;
   for (const item of state.items) {
     if (!item.isSeries) continue;
-    if (norm(item.seriesTitle || item.title) !== wanted) continue;
+    if (normalizeSearchText(item.seriesTitle || item.title) !== wanted) continue;
     map.set(`${item.season}x${item.episode}`, item);
   }
   return map;
+}
+
+/* The library card a catalogue title stands for, when its files are on disk.
+ * One card per title: the normalised name decides, and a film never borrows a
+ * series' episodes (or the other way around). A remake with another year is
+ * another title. */
+function localGroupForTitle(detail) {
+  const wanted = normalizeSearchText(detail?.title);
+  if (!wanted) return null;
+  const isSeries = detail?.type === 'series';
+  const wantedYear = Number(detail?.year) || 0;
+  return groupLibrary().find((group) => {
+    if (Boolean(group.isSeries) !== isSeries) return false;
+    if (normalizeSearchText(group.seriesTitle || group.title) !== wanted) return false;
+    const year = Number(group.year) || 0;
+    return !(year && wantedYear && Math.abs(year - wantedYear) > 1);
+  }) || null;
 }
 
 function castleAllLocal(detail) {
@@ -3776,7 +3838,7 @@ function buildDeleteButton(local) {
   del.type = 'button';
   del.className = 'castle-del-btn';
   del.title = 'Delete this episode from disk';
-  del.setAttribute('aria-label', `Delete episode ${local.episode}`);
+  del.setAttribute('aria-label', local.isSeries ? `Delete episode ${local.episode}` : `Delete ${local.title}`);
   const paint = (text) => {
     del.innerHTML = EP_TRASH_ICON;
     del.append(createEl('span', '', text));
@@ -3898,7 +3960,7 @@ function appendCastleAction(row, detail, episode, local, quality, plan) {
 
   if (local) {
     btn.classList.add('is-play');
-    btn.setAttribute('aria-label', `Play episode ${local.episode}`);
+    btn.setAttribute('aria-label', detail.type === 'series' ? `Play episode ${local.episode}` : `Play ${detail.title}`);
     paint(EP_PLAY_ICON, 'Play');
     btn.addEventListener('click', () => goWatch(local.id));
     action.append(buildDeleteButton(local));
@@ -3932,7 +3994,11 @@ function appendCastleAction(row, detail, episode, local, quality, plan) {
     btn.disabled = state.offline || !available;
     btn.title = state.offline
       ? 'Offline mode — go online to download'
-      : available && plan?.quality ? `${plan.quality} · Torrentio` : '';
+      : plan?.quality
+        ? `${plan.quality} · Torrentio`
+        : quality
+          ? `${qualityName(quality.resolution)} · Castle`
+          : '';
     btn.addEventListener('click', () => queueCastleEpisode(episode, btn));
   }
 
@@ -4007,26 +4073,34 @@ function renderCastleDownloads(detail) {
   els.castleStatus.hidden = false;
   els.castleSource.textContent = state.offline
     ? 'Offline mode — showing the saved catalogue'
-    : 'Checking Torrentio releases…';
+    : state.downloadSource === 'castle'
+      ? `Castle · ${qualityName(CASTLE_RESOLUTION)}`
+      : 'Checking Torrentio releases…';
   updateCastleListButton(detail);
 
+  const seriesLocal = seriesLocalEpisodes(detail);
   const localMap = state.castleLocal?.local || null;
-  const localFor = (season, episode) => (localMap ? localMap.get(`${season}x${episode}`) || null : null);
+  // A downloaded episode counts wherever it sits: the attached card, or any
+  // other card of the same show elsewhere in the library.
+  const localFor = (season, episode) => localFileFor(detail, localMap, seriesLocal, season, episode);
 
-  const playTarget = castlePlayTarget();
+  const playTarget = castlePlayTarget(detail);
   const isSeries = detail.type === 'series';
   const openSeason = detail.activeSeason ?? state.castleSeason ?? 0;
-  const seriesLocal = seriesLocalEpisodes(detail);
   // The hero button fetches one episode: the first of the open season that is
   // not on disk yet and has no live job. "Download all"/"Download season" in
   // the control bar are the bulk actions.
   const heroEpisode = episodes.find((episode) => {
     if (localFor(openSeason, episode.episode)) return false;
-    if (seriesLocal.has(`${openSeason}x${episode.episode}`)) return false;
     const job = castleJobFor(detail, openSeason, episode.episode);
     return !job || job.status === 'failed';
-  }) || episodes[0] || null;
-  els.castleResume.hidden = false;
+  }) || null;
+  // A season whose every episode is on disk has nothing left to fetch: play
+  // what is local instead of offering a download that would be skipped.
+  const canDownload = !playTarget && (isSeries ? Boolean(heroEpisode) : episodes.length > 0);
+  /* Play when there is a local file; Download when there is something left to
+   * fetch; nothing when the season is complete and already attached. */
+  els.castleResume.hidden = !playTarget && !canDownload;
   els.castleResume.dataset.mode = playTarget ? 'play' : 'download';
   els.castleResume.innerHTML = playTarget
     ? `${EP_PLAY_ICON}<span>${playTarget.label}</span>`
@@ -4107,7 +4181,7 @@ function renderCastleDownloads(detail) {
         thumb.title = 'Play episode';
         thumb.tabIndex = 0;
         thumb.setAttribute('role', 'button');
-        thumb.setAttribute('aria-label', `Play episode ${local.episode}`);
+        thumb.setAttribute('aria-label', detail.type === 'series' ? `Play episode ${local.episode}` : `Play ${detail.title}`);
         thumb.addEventListener('click', () => goWatch(local.id));
         thumb.addEventListener('keydown', (event) => {
           if (event.key === 'Enter' || event.key === ' ') {
@@ -4135,7 +4209,9 @@ function renderCastleDownloads(detail) {
     const plan = local ? null : castlePlanFor(detail, episode.episode);
     const sub = local
       ? [
-        local.episodeLabel || `S${String(local.season).padStart(2, '0')}E${String(local.episode).padStart(2, '0')}`,
+        local.episodeLabel || (detail.type === 'series'
+          ? `S${String(local.season).padStart(2, '0')}E${String(local.episode).padStart(2, '0')}`
+          : ''),
         formatDuration(local.durationSec),
         formatSize(local.size),
       ].filter(Boolean).join(' · ')
@@ -4171,6 +4247,14 @@ function renderCastleDownloads(detail) {
 
   const planSeason = detail.activeSeason ?? state.castleSeason ?? 0;
   if (state.offline) return;
+  /* Every episode of this season is on disk: there is no download to label. */
+  if (episodes.length && episodes.every((episode) => localFor(planSeason, episode.episode))) {
+    els.castleSource.textContent = 'In library';
+    return;
+  }
+  /* Castle mode has nothing to plan: the rows already carry Castle's own 720p
+   * quality and size, and the click downloads that file. */
+  if (state.downloadSource !== 'torrentio') return;
   const planCached = state.castlePlanCache.get(castlePlanKey(detail, planSeason));
   if (planCached && Date.now() - planCached.at < CASTLE_PLAN_TTL) applyCastlePlan(detail, episodes);
   else loadCastlePlan(detail, episodes);
@@ -4503,6 +4587,20 @@ function localEpisodesFor(group) {
   return map;
 }
 
+/* The local file behind one catalogue episode. A film carries no season or
+ * episode numbers, so its single file is the title itself; a series matches by
+ * the "SxE" key across every card of the same show. */
+function localFileFor(detail, localMap, seriesLocal, season, episode) {
+  const key = `${season}x${episode}`;
+  const hit = (localMap ? localMap.get(key) : null) || seriesLocal.get(key) || null;
+  if (hit) return hit;
+  if (detail?.type !== 'series') {
+    const group = state.castleLocal?.group;
+    if (group) return state.byId.get(group.id) || group;
+  }
+  return null;
+}
+
 /* After a delete the group's primary id can move to another episode, so look
  * the group up by its stable series key, not by id. The last local episode
  * leaves the sheet open but with an empty map, so every row becomes a
@@ -4566,27 +4664,37 @@ function resumeTarget(group) {
 
 /* Main button of the sheet: resume the episode in progress, otherwise play the
  * first episode on disk. Catalog-only titles have no local file, so no button. */
-function castlePlayTarget() {
+function castlePlayTarget(detail = state.castleTitle) {
   const group = state.castleLocal?.group;
-  if (!group) return null;
-  const resume = resumeTarget(group);
-  if (resume) {
-    const ep = resume.episode;
-    return {
-      id: resume.id,
-      label: `Resume S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')}`,
-    };
+  if (group) {
+    const resume = resumeTarget(group);
+    if (resume) {
+      const ep = resume.episode;
+      return {
+        id: resume.id,
+        label: `Resume S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')}`,
+      };
+    }
+    if (group.episodes?.length) {
+      const ep = primaryEpisode(group);
+      if (ep) return { id: ep.id, label: 'Play' };
+    }
+    if (state.byId.get(group.id)) {
+      const progress = progressFor(group.id);
+      return {
+        id: group.id,
+        label: progress && progress.t > 5 && !progress.finished ? 'Resume' : 'Play',
+      };
+    }
   }
-  if (group.episodes?.length) {
-    const ep = primaryEpisode(group);
-    return ep ? { id: ep.id, label: 'Play' } : null;
-  }
-  if (!state.byId.get(group.id)) return null;
-  const progress = progressFor(group.id);
-  return {
-    id: group.id,
-    label: progress && progress.t > 5 && !progress.finished ? 'Resume' : 'Play',
-  };
+  // The catalogue sheet can be open without a local card (an unusual title
+  // spelling, or the library still loading): a file on disk still earns Play.
+  const local = seriesLocalEpisodes(detail || state.castleTitle);
+  if (!local.size) return null;
+  const first = [...local.values()]
+    .sort((a, b) => (Number(a.season) || 0) - (Number(b.season) || 0)
+      || (Number(a.episode) || 0) - (Number(b.episode) || 0))[0];
+  return first ? { id: first.id, label: 'Play' } : null;
 }
 
 /* The sheet uses the same picture as the card (the title's backdrop), not the
@@ -5842,7 +5950,10 @@ function bindStaticEvents() {
   els.onlineModal.querySelectorAll('[data-close-online]').forEach((el) => el.addEventListener('click', closeOnlineModal));
   els.castleModal.querySelectorAll('[data-close-castle]').forEach((el) => el.addEventListener('click', closeCastleModal));
   els.settingsModal.querySelectorAll('[data-close-settings]').forEach((el) => el.addEventListener('click', closeSettings));
-  els.castleFallbackBtn.addEventListener('click', toggleCastleFallback);
+  els.downloadSourceSwitch.addEventListener('click', (event) => {
+    const btn = event.target.closest('[data-download-source]');
+    if (btn) chooseDownloadSource(btn.dataset.downloadSource);
+  });
   els.torrentQualitySwitch.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-torrent-quality]');
     if (btn) chooseTorrentQuality(btn.dataset.torrentQuality);

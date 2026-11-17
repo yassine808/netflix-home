@@ -32,7 +32,7 @@ import {
   savedCastleTitles, backfillSavedCastle,
 } from './castle.js';
 import { castleSyncStatus, startCastleSync, startCastleSyncIfDue, scheduleCastleSync } from './castle-sync.js';
-import { initSettings, getSettings, isOffline, setOffline, isCastleFallback, setCastleFallback,
+import { initSettings, getSettings, isOffline, setOffline, getDownloadSource, setDownloadSource,
   setAutoplaySound, setDownloadLimits, getTorrentQuality, setTorrentQuality,
   setDownloadStagingDir } from './settings.js';
 import { initConfig, getLibraryRootSetting, setLibraryRootSetting } from './config.js';
@@ -349,13 +349,13 @@ app.post('/api/settings/offline', (req, res) => {
   res.json(settings);
 });
 
-/* Torrentio-only switch: off means a missing Torrentio release fails the
- * download instead of silently dropping to Castle's 720p file. */
-app.post('/api/settings/castle-fallback', (req, res) => {
-  if (typeof req.body?.castleFallback !== 'boolean') {
-    return res.status(400).json({ error: 'pass {"castleFallback": true|false}' });
+/* The download source: 'torrentio' or 'castle', never both. */
+app.post('/api/settings/download-source', (req, res) => {
+  const source = String(req.body?.source || '').toLowerCase();
+  if (source !== 'torrentio' && source !== 'castle') {
+    return res.status(400).json({ error: 'pass {"source": "torrentio"|"castle"}' });
   }
-  res.json(setCastleFallback(req.body.castleFallback));
+  res.json(setDownloadSource(source));
 });
 
 /* Torrentio quality switch. '1080p' keeps downloads small; '2160p' accepts 4K
@@ -1581,6 +1581,13 @@ app.get('/api/castle/plan', async (req, res) => {
     return res.status(400).json({ error: 'title and episodes are required' });
   }
 
+  /* Castle mode never asks Torrentio: the sheet labels Castle's own 720p file,
+   * and that is what the click downloads. */
+  if (getDownloadSource() === 'castle') {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ source: 'castle', fallback: true, imdbId: '', original: '', episodes: [] });
+  }
+
   try {
     const imdbId = await resolveImdbId({
       title,
@@ -1665,11 +1672,11 @@ app.get('/api/castle/plan', async (req, res) => {
 
     res.setHeader('Cache-Control', 'no-store');
     res.json({
-      source: rows.some((row) => row?.quality) ? 'torrentio' : 'castle',
-      /* Castle's fallback is 720p, which is not a fallback for a 2160p-only
-       * setting; the sheet then says "Torrentio only" instead of promising a
-       * download that the route will refuse. */
-      fallback: isCastleFallback() && getTorrentQuality() !== '2160p',
+      /* This branch only runs in Torrentio mode, and there is no fallback: an
+       * episode without a qualifying release is refused, not swapped for
+       * Castle's 720p file. */
+      source: 'torrentio',
+      fallback: false,
       partial: rows.some((row) => row?.failed),
       failedEpisodes: rows.filter((row) => row?.failed).map((row) => row.episode),
       imdbId,
@@ -1707,10 +1714,10 @@ app.post('/api/castle/download', async (req, res) => {
     const audio = await getCastleEpisodeTracks({ movieId, episodeId }).catch(() => null);
     const originalAudio = audio?.original || '';
 
-    /* Torrentio first when it has a healthy H.264 release with the original
-     * audio and English; Castle stays the fallback (HLS 720p) and the source of
-     * every piece of metadata the UI shows. */
-    if (body.source !== 'castle') {
+    /* The source switch is exclusive: Torrentio mode asks Torrentio only, and
+     * Castle mode skips it entirely and takes Castle's HLS 720p file. Castle is
+     * still the source of every piece of metadata the UI shows. */
+    if (body.source !== 'castle' && getDownloadSource() === 'torrentio') {
       try {
         const imdbId = await resolveImdbId({
           title,
@@ -1767,17 +1774,17 @@ app.post('/api/castle/download', async (req, res) => {
       }
     }
 
-    /* Torrentio-only mode: nothing above produced a job, so say so instead of
+    /* Torrentio mode: nothing above produced a job, so say so instead of
      * quietly downloading Castle's 720p file. An explicit source: 'castle'
      * request (tests, deep links) still means Castle. The 2160p setting is the
      * same kind of rule: Castle has no 4K file, so falling back would download
      * a quarter of the detail that was asked for. */
     const wants4K = getTorrentQuality() === '2160p';
-    if ((!isCastleFallback() || wants4K) && body.source !== 'castle') {
+    if (getDownloadSource() === 'torrentio' && body.source !== 'castle') {
       return res.status(409).json({
         error: wants4K
           ? 'no 2160p Torrentio release for this title; Castle has no 4K file, so nothing was downloaded'
-          : 'no Torrentio release with English audio and Castle fallback is off',
+          : 'no Torrentio release with English audio for this title',
       });
     }
 

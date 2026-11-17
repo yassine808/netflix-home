@@ -7,9 +7,10 @@ import path from 'node:path';
  * `offline` is enforced by the server, not just the UI: when it is on, every
  * route that would reach the internet answers 503 and active downloads pause.
  *
- * `castleFallback` decides what happens when Torrentio has no release with
- * English audio: true downloads Castle's 720p HLS file instead, false keeps the
- * download Torrentio-only and refuses instead of quietly lowering the quality.
+ * `downloadSource` is the one place downloads come from: 'torrentio' takes the
+ * Torrentio release only and refuses when none qualifies, 'castle' takes
+ * Castle's own 720p HLS file. There is no automatic fallback between them: the
+ * source the switch names is the source every download uses.
  *
  * `autoplaySound` is the sound default for trailers the app starts by itself:
  * the hero preview on the home page and the trailer in the catalogue sheet.
@@ -35,7 +36,7 @@ import path from 'node:path';
  */
 const DEFAULTS = {
   offline: false,
-  castleFallback: true,
+  downloadSource: 'torrentio',
   autoplaySound: true,
   downloadMaxActive: 3,
   downloadLimitMBps: 0,
@@ -46,6 +47,7 @@ const DEFAULTS = {
 const MAX_ACTIVE_LIMIT = 20;
 const MAX_SPEED_LIMIT = 1000;
 const TORRENT_QUALITIES = new Set(['1080p', '2160p']);
+const DOWNLOAD_SOURCES = new Set(['torrentio', 'castle']);
 
 let settingsFile = '';
 let state = { ...DEFAULTS };
@@ -55,7 +57,9 @@ export function initSettings(cacheDir) {
   try {
     const raw = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
     if (raw && typeof raw.offline === 'boolean') state.offline = raw.offline;
-    if (raw && typeof raw.castleFallback === 'boolean') state.castleFallback = raw.castleFallback;
+    /* Old files carry `castleFallback`; there is no equivalent for the two
+     * exclusive sources, so they open on the Torrentio default. */
+    if (raw && DOWNLOAD_SOURCES.has(raw.downloadSource)) state.downloadSource = raw.downloadSource;
     if (raw && typeof raw.autoplaySound === 'boolean') state.autoplaySound = raw.autoplaySound;
     if (raw && Number.isFinite(Number(raw.downloadMaxActive))) {
       state.downloadMaxActive = clampMaxActive(raw.downloadMaxActive);
@@ -83,16 +87,20 @@ export function isOffline() {
   return state.offline === true;
 }
 
-export function isCastleFallback() {
-  return state.castleFallback !== false;
+/* Which source every download uses. Always one of the two, so a corrupt
+ * settings file cannot leave the downloader without a rule. */
+export function getDownloadSource() {
+  return DOWNLOAD_SOURCES.has(state.downloadSource) ? state.downloadSource : DEFAULTS.downloadSource;
 }
 
 export function setOffline(value) {
   return save({ ...state, offline: Boolean(value) });
 }
 
-export function setCastleFallback(value) {
-  return save({ ...state, castleFallback: Boolean(value) });
+export function setDownloadSource(value) {
+  const wanted = String(value || '').toLowerCase();
+  if (!DOWNLOAD_SOURCES.has(wanted)) return getSettings();
+  return save({ ...state, downloadSource: wanted });
 }
 
 export function isAutoplaySound() {

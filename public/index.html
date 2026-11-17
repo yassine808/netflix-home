@@ -439,27 +439,34 @@
         </div>
       </section>
       <section class="settings-section">
-        <h3 class="settings-heading">Playback</h3>
+        <h3 class="settings-heading">Downloads</h3>
         <div class="settings-row">
           <div class="settings-copy">
-            <strong>Auto-play sound</strong>
-            <span>Start trailers with sound: the home preview and the catalogue trailers. Off starts them muted; the speaker button still unmutes that trailer. The player always starts with sound.</span>
+            <strong>Download from</strong>
+            <span>Torrentio takes torrent releases. Castle takes the service's own 720p file.</span>
           </div>
-          <button class="net-switch" id="autoplaySoundBtn" type="button" role="switch" aria-checked="true" aria-label="Auto-play sound" title="Start trailers with sound">
-            <span class="net-switch-track" aria-hidden="true"><span class="net-switch-knob"></span></span>
-            <span class="net-switch-label" id="autoplaySoundLabel">On</span>
-          </button>
+          <div class="quality-switch" id="downloadSourceSwitch" role="radiogroup" aria-label="Download source">
+            <button class="quality-option" type="button" role="radio" aria-checked="true" data-download-source="torrentio" title="Torrentio releases">Torrentio</button>
+            <button class="quality-option" type="button" role="radio" aria-checked="false" data-download-source="castle" title="Castle API - 720p">Castle</button>
+          </div>
         </div>
-      </section>
-      <section class="settings-section">
-        <h3 class="settings-heading">Downloads</h3>
+        <div class="settings-row" id="torrentQualityRow">
+          <div class="settings-copy">
+            <strong>Torrent quality</strong>
+            <span>1080p keeps files small. 2160p takes 4K releases only.</span>
+          </div>
+          <div class="quality-switch" id="torrentQualitySwitch" role="radiogroup" aria-label="Torrent quality">
+            <button class="quality-option" type="button" role="radio" aria-checked="true" data-torrent-quality="1080p" title="1080p releases - the small, fast default">1080p</button>
+            <button class="quality-option" type="button" role="radio" aria-checked="false" data-torrent-quality="2160p" title="4K releases only - much larger files">2160p</button>
+          </div>
+        </div>
         <div class="settings-field">
           <label for="dlMaxActiveInput">Download at once</label>
           <div class="settings-input-row">
             <input id="dlMaxActiveInput" type="number" min="1" max="20" step="1" inputmode="numeric" aria-describedby="dlMaxActiveHint">
             <button class="settings-save" id="dlMaxActiveSave" type="button">Save</button>
           </div>
-          <p class="settings-hint" id="dlMaxActiveHint">How many videos download at the same time. 3–6 keeps the catalogue and Castle responsive; the rest wait their turn in the queue.</p>
+          <p class="settings-hint" id="dlMaxActiveHint">How many downloads run together. 3–6 keeps the app responsive.</p>
         </div>
         <div class="settings-field">
           <label for="dlSpeedInput">Speed limit (MB/s)</label>
@@ -467,7 +474,7 @@
             <input id="dlSpeedInput" type="number" min="0" max="1000" step="0.1" inputmode="decimal" aria-describedby="dlSpeedHint">
             <button class="settings-save" id="dlSpeedSave" type="button">Save</button>
           </div>
-          <p class="settings-hint" id="dlSpeedHint">0 means no limit. Applies to torrent downloads and is split evenly between the ones running.</p>
+          <p class="settings-hint" id="dlSpeedHint">0 means no limit.</p>
           <p class="settings-error" id="dlLimitError" hidden></p>
         </div>
         <div class="settings-field">
@@ -476,27 +483,20 @@
             <input id="dlStagingInput" type="text" spellcheck="false" placeholder="C:\temp" aria-describedby="dlStagingHint">
             <button class="settings-save" id="dlStagingSave" type="button">Save</button>
           </div>
-          <p class="settings-hint" id="dlStagingHint">Transfers are written here first, then copied to the library at about 32 MB/s, so a 4K release cannot keep the library drive busy. Empty keeps them beside the library; clear the field and save to switch back.</p>
+          <p class="settings-hint" id="dlStagingHint">Transfers are written here first, then copied to the library. Empty keeps them beside the library.</p>
           <p class="settings-error" id="dlStagingError" hidden></p>
         </div>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-heading">Playback</h3>
         <div class="settings-row">
           <div class="settings-copy">
-            <strong>Torrent quality</strong>
-            <span>1080p keeps files at 1-3 GB. 2160p accepts 4K releases only, usually 4-7x larger. The app never downloads the other quality; releases below 1080p are excluded either way.</span>
+            <strong>Auto-play sound</strong>
+            <span>Start trailers with sound. The player always starts with sound.</span>
           </div>
-          <div class="quality-switch" id="torrentQualitySwitch" role="radiogroup" aria-label="Torrent quality">
-            <button class="quality-option" type="button" role="radio" aria-checked="true" data-torrent-quality="1080p" title="1080p releases - the small, fast default">1080p</button>
-            <button class="quality-option" type="button" role="radio" aria-checked="false" data-torrent-quality="2160p" title="4K releases only - much larger files">2160p</button>
-          </div>
-        </div>
-        <div class="settings-row">
-          <div class="settings-copy">
-            <strong>Castle fallback</strong>
-            <span>Torrentio supplies the video. When it has no release with English audio, download Castle's 720p file instead. Off keeps downloads Torrentio-only: the episode is refused instead of lowering the quality.</span>
-          </div>
-          <button class="net-switch" id="castleFallbackBtn" type="button" role="switch" aria-checked="true" aria-label="Castle fallback" title="Use Castle's 720p file when Torrentio has no release">
+          <button class="net-switch" id="autoplaySoundBtn" type="button" role="switch" aria-checked="true" aria-label="Auto-play sound" title="Start trailers with sound">
             <span class="net-switch-track" aria-hidden="true"><span class="net-switch-knob"></span></span>
-            <span class="net-switch-label" id="castleFallbackLabel">On</span>
+            <span class="net-switch-label" id="autoplaySoundLabel">On</span>
           </button>
         </div>
       </section>

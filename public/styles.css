@@ -150,7 +150,7 @@ code { font-family: Consolas, "Courier New", monospace; }
 }
 .quality-option:hover { color: #fff; }
 .quality-option[aria-checked="true"] { background: var(--red); color: #fff; }
-.quality-option:disabled { opacity: 0.5; cursor: progress; }
+.quality-option:disabled { opacity: 0.5; cursor: default; }
 .quality-option:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .net-switch.is-offline { color: #9a9a9a; }
 .net-switch.is-offline .net-switch-track,
@@ -1236,15 +1236,28 @@ code { font-family: Consolas, "Courier New", monospace; }
 .modal-close:hover { background: #000; }
 
 /* ---------- settings sheet ---------- */
-.modal-panel.settings-panel { width: min(560px, 94vw); padding: 36px 32px 28px; }
-.settings-title { margin: 0 0 22px; font-family: var(--font-display); font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
+/* One column, one idea per row: a label and a short line on the left, the
+ * control on the right, a hairline between rows. */
+.modal-panel.settings-panel { width: min(600px, 94vw); padding: 34px 32px 28px; }
+.settings-title { margin: 0 0 20px; font-family: var(--font-display); font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
 .settings-section { border-top: 1px solid var(--line); padding-top: 18px; }
-.settings-heading { margin: 0 0 16px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted-2); }
-.settings-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 26px; }
-.settings-copy strong { display: block; margin-bottom: 6px; font-size: 15px; }
-.settings-copy span { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
-.settings-row .net-switch { flex: 0 0 auto; margin-top: -6px; }
-.settings-field { display: flex; flex-direction: column; gap: 10px; }
+.settings-section + .settings-section { margin-top: 24px; }
+.settings-heading { margin: 0 0 14px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted-2); }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.settings-row + .settings-row,
+.settings-row + .settings-field,
+.settings-field + .settings-field,
+.settings-field + .settings-row {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.settings-copy strong { display: block; margin-bottom: 4px; font-size: 14.5px; }
+.settings-copy span { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.settings-row .net-switch { flex: 0 0 auto; }
+.settings-row.is-muted .settings-copy,
+.settings-row.is-muted .quality-switch { opacity: 0.4; }
+.settings-field { display: flex; flex-direction: column; gap: 8px; }
 .settings-field label { font-size: 12.5px; font-weight: 600; letter-spacing: 0.02em; color: var(--muted-2); }
 .settings-input-row { display: flex; gap: 10px; }
 .settings-input-row input {
@@ -1277,7 +1290,7 @@ code { font-family: Consolas, "Courier New", monospace; }
 }
 .settings-save:hover { background: rgba(255, 255, 255, 0.82); }
 .settings-save:disabled { opacity: 0.5; cursor: default; }
-.settings-hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.settings-hint { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
 .settings-error { margin: 0; color: #ff8a8f; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .settings-restart {
   display: flex;
@@ -1309,7 +1322,9 @@ code { font-family: Consolas, "Courier New", monospace; }
 .settings-restart-btn:disabled { opacity: 0.5; cursor: default; }
 @media (max-width: 520px) {
   .modal-panel.settings-panel { padding: 30px 20px 22px; }
-  .settings-row { gap: 16px; }
+  .settings-row { flex-wrap: wrap; gap: 12px; }
+  .settings-row .quality-switch { width: 100%; }
+  .settings-row .quality-option { flex: 1 1 0; text-align: center; }
   .settings-input-row { flex-direction: column; }
   .settings-restart { flex-direction: column; align-items: stretch; }
 }

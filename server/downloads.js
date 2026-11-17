@@ -1471,7 +1471,11 @@ async function saveSubtitle(job) {
         });
         if (!res.ok) continue;
         const raw = await res.text();
-        if (!/^\uFEFF?WEBVTT/.test(raw.trimStart()) && !/-->/.test(raw)) continue;
+        /* Castle ships WebVTT; other providers also hand out SRT and the
+         * SubStation Alpha files anime releases use. Only a payload that is
+         * none of those is a bad link, not a subtitle. */
+        const head = raw.replace(/^\uFEFF/, '').trimStart();
+        if (!/^WEBVTT/.test(head) && !/-->/.test(head) && !/^\[Script Info\]/i.test(head) && !/^\s*Dialogue\s*:/im.test(head)) continue;
         body = vttFromSubtitle(raw);
       }
       if (!body || body.length < 20) continue;

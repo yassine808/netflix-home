@@ -223,15 +223,16 @@ export async function setOfflineMode(offline) {
   return res.json();
 }
 
-/* Torrentio-only switch: the server refuses to fall back to Castle's 720p file
- * when this is off, so the UI never promises a download it would not get. */
-export async function setCastleFallback(castleFallback) {
-  const res = await fetch('/api/settings/castle-fallback', {
+/* Download source: 'torrentio' or 'castle'. The server uses it for both the
+ * plan and the download, so the sheet never promises a source it would not
+ * use. */
+export async function setDownloadSource(source) {
+  const res = await fetch('/api/settings/download-source', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ castleFallback: Boolean(castleFallback) }),
+    body: JSON.stringify({ source: String(source || '') }),
   });
-  if (!res.ok) throw new Error(`castle fallback ${res.status}`);
+  if (!res.ok) throw new Error(`download source ${res.status}`);
   return res.json();
 }
 

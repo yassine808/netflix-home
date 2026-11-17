@@ -188,9 +188,94 @@ export function subtitleBody(item, full, lang) {
   return { body: track.body, etag: `"${hash32(track.body)}"`, mtime: track.mtime };
 }
 
+/* SubStation Alpha (.ass/.ssa) is what anime releases and most OpenSubtitles
+ * uploads carry. Its events are not WebVTT cues: copied through as-is the file
+ * parses to zero cues, so a fetched track looks like "no subtitles" even though
+ * the download worked. Read the Events section and write real cues: the
+ * timestamps move to HH:MM:SS.mmm, override blocks and line-break escapes turn
+ * into plain cue text. */
+function assStamp(value) {
+  const match = /^\s*(\d+):(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?\s*$/.exec(String(value || ''));
+  if (!match) return NaN;
+  const fraction = Number(String(match[4] || '0').padEnd(3, '0')) / 1000;
+  return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) + fraction;
+}
+
+function assToVtt(source) {
+  const lines = String(source || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n');
+  let inEvents = false;
+  let fields = null;
+  const cues = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^\[events\]$/i.test(trimmed)) {
+      inEvents = true;
+      fields = null;
+      continue;
+    }
+    if (/^\[/.test(trimmed)) {
+      inEvents = false;
+      continue;
+    }
+    if (!inEvents) continue;
+    if (/^format\s*:/i.test(trimmed)) {
+      fields = trimmed.slice(trimmed.indexOf(':') + 1).split(',').map((name) => name.trim().toLowerCase());
+      continue;
+    }
+    if (!fields || !/^dialogue\s*:/i.test(trimmed)) continue;
+    const startAt = fields.indexOf('start');
+    const endAt = fields.indexOf('end');
+    const textAt = fields.indexOf('text');
+    if (startAt < 0 || endAt < 0 || textAt < 0) continue;
+    // The text field is last and may itself contain commas.
+    const parts = trimmed.slice(trimmed.indexOf(':') + 1).split(',');
+    if (parts.length <= textAt) continue;
+    const start = assStamp(parts[startAt]);
+    const end = assStamp(parts[endAt]);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+    const text = parts.slice(textAt).join(',')
+      .replace(/\{[^}]*\}/g, '')
+      .replace(/\\[Nn]/g, '\n')
+      .replace(/\\h/g, ' ')
+      .replace(/<[^>]*>/g, '')
+      .split('\n')
+      .map((row) => row.trim())
+      .filter(Boolean)
+      .join('\n');
+    if (!text) continue;
+    cues.push({ start, end, text });
+  }
+  if (!cues.length) return '';
+  cues.sort((a, b) => a.start - b.start || a.end - b.end);
+  /* A sign and the line it translates can share one span. One cue with both
+   * lines reads better than two cues the player has to choose between. */
+  const merged = [];
+  for (const cue of cues) {
+    const last = merged[merged.length - 1];
+    if (last && last.start === cue.start && last.end === cue.end) {
+      if (!last.text.split('\n').includes(cue.text)) last.text += `\n${cue.text}`;
+      continue;
+    }
+    merged.push({ ...cue });
+  }
+  const stamp = (seconds) => {
+    const ms = Math.round(seconds * 1000);
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms % 1000).padStart(3, '0')}`;
+  };
+  return `WEBVTT\n\n${merged.map((cue) => `${stamp(cue.start)} --> ${stamp(cue.end)}\n${cue.text}`).join('\n\n')}\n`;
+}
+
 export function vttFromSubtitle(text) {
   const clean = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').trim();
   if (/^WEBVTT/.test(clean)) return clean.endsWith('\n') ? clean : `${clean}\n`;
+  // SubStation Alpha: [Script Info]/[Events] with Dialogue lines.
+  if (/^\s*\[script info\]/i.test(clean) || /^\s*\[events\]/im.test(clean) || /^\s*dialogue\s*:/im.test(clean)) {
+    const converted = assToVtt(clean);
+    if (converted) return converted;
+  }
   // SRT: "00:00:01,000 --> 00:00:03,000" becomes VTT's dot separator.
   const body = clean.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
   return `WEBVTT\n\n${body}\n`;
