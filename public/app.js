@@ -3431,11 +3431,12 @@ function castleSkeletonRows(count) {
     lines.append(createEl('div', 'skeleton castle-skel-title'));
     lines.append(createEl('div', 'skeleton castle-skel-sub'));
     row.append(lines);
-    // One placeholder per button the row can end up with, in the same slot:
-    // the quality chip left of Delete, then Play. The group is as wide as the
-    // real chip + Delete + Play trio, so nothing shifts when the rows land.
+    // One placeholder per button the row can end up with, in the same slots:
+    // the quality chip, Delete, then Play. The group is as wide as the real
+    // chip + Delete + Play trio, so nothing shifts when the rows land.
     const action = createEl('div', 'castle-skel-action');
     action.append(createEl('div', 'skeleton castle-skel-chip'));
+    action.append(createEl('div', 'skeleton castle-skel-del'));
     action.append(createEl('div', 'skeleton castle-skel-btn'));
     row.append(action);
     return row;
