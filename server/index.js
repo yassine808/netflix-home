@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { initDb, dbStats, analyzeDb, purgeOrphans, maybeVacuum,
   getCastleTitleSaved, castleTitleCount, castleMediaCount,
 } from './db.js';
-import { notePlayback, playbackActive } from './proc.js';
+import { notePlayback, playbackActive, stopRemoteChildren } from './proc.js';
+import { installNetworkGuard, offlineGateStats } from './net.js';
 import { initCache, scanLibrary, getLibrary, getItem, resolveItemFile,
   refreshItem, ensureThumb, artPath, isScanning,
 } from './library.js';
@@ -39,7 +40,7 @@ import { initConfig, getLibraryRootSetting, setLibraryRootSetting } from './conf
 import { initFrames, frameMeta, ensureSprite } from './frames.js';
 import { initIntro, getIntroMarkers, saveIntroMarkers } from './intro.js';
 import { initHero, heroStart, heroReady, ensureHero, warmHeroes } from './hero.js';
-import { initTrailers, trailerPathFor, trailerStatus, warmTrailer, warmTrailers } from './trailers.js';
+import { initTrailers, trailerPathFor, trailerStatus, warmTrailer, warmTrailers, resumeTrailerQueue } from './trailers.js';
 import { resolveImdbId } from './imdb.js';
 import { ensureEnglishSubtitle, fetchEnglishSubtitle, retimeEnglishSidecar, syncSubtitleTracks, subtitleBody } from './subs.js';
 import { initAudio, probeAudioTracks, ensureAudioVariant } from './audio.js';
@@ -108,6 +109,10 @@ const PORT_FILE = path.join(cacheDir, 'port');
 initDb(cacheDir);
 initCache(cacheDir);
 initSettings(cacheDir);
+/* Once the saved switch is loaded, close the doors under the app: from here on
+ * an offline process cannot open a socket, send a DNS query or start a child
+ * that names a remote source (net.js, proc.js). */
+installNetworkGuard();
 initArtwork(cacheDir);
 initFrames(cacheDir);
 initIntro(cacheDir);
@@ -340,13 +345,26 @@ app.post('/api/settings/offline', (req, res) => {
     return res.status(400).json({ error: 'pass {"offline": true|false}' });
   }
   const settings = setOffline(req.body.offline);
-  if (settings.offline) pauseDownloads();
-  else {
+  if (settings.offline) {
+    pauseDownloads();
+    /* A transfer can be mid-request when the switch flips: end the children that
+     * are reading from a remote source so nothing keeps talking to the internet. */
+    stopRemoteChildren();
+  } else {
     resumeDownloads();
+    resumeTrailerQueue();
     // Going back online is the moment to complete the saved catalogue.
     void backfillSavedCastle().catch(() => {});
   }
   res.json(settings);
+});
+
+/* How often the offline gate refused something. The routes answer 503 before a
+ * call is attempted, so this should stay at zero while offline: a non-zero
+ * count is a leaking background path, named in `recent`. */
+app.get('/api/offline/stats', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(offlineGateStats());
 });
 
 /* The download source: 'torrentio' or 'castle', never both. */

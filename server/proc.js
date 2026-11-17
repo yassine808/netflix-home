@@ -15,7 +15,10 @@
  */
 
 import os from 'node:os';
+import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
+import { isOffline } from './settings.js';
+import { gateError } from './net.js';
 
 const BELOW_NORMAL = os.constants.priority?.PRIORITY_BELOW_NORMAL ?? 10;
 const DEFAULT_MAX_BUFFER = 16 * 1024 * 1024;
@@ -31,6 +34,60 @@ export function notePlayback() {
 
 export function playbackActive(windowMs = PLAYBACK_WINDOW_MS) {
   return Date.now() - lastPlaybackAt < windowMs;
+}
+
+/* A child process reaches the internet on its own: aria2c joins a swarm through
+ * its trackers, yt-dlp talks to YouTube, ffmpeg pulls an HLS playlist. None of
+ * that passes through `fetch`, so net.js cannot see it. This is the same gate
+ * one level down, on the command line that would start it: while offline, a
+ * command that names a remote source is refused before the process exists.
+ * `ytsearch5:` is included because yt-dlp turns it into a YouTube query. */
+const REMOTE_ARG = /^(?:https?|wss?|ftps?|magnet|srv|rtmp|rtsp|ytsearch\d*):/i;
+
+function remoteSourceArg(args) {
+  const list = Array.isArray(args) ? args : [];
+  const hit = list.find((arg) => REMOTE_ARG.test(String(arg).trim()));
+  return hit ? String(hit).trim() : '';
+}
+
+export function offlineBlockedCommand(cmd, args) {
+  if (!isOffline()) return '';
+  const hit = remoteSourceArg(args);
+  if (!hit) return '';
+  return `${path.basename(String(cmd))} ${hit.slice(0, 120)}`;
+}
+
+/* Children that are talking to a remote source right now. The offline switch
+ * ends them: a download that started while online must not keep pulling packets
+ * after the switch is on. */
+const remoteChildren = new Set();
+
+function trackRemoteChild(child, args) {
+  if (!child || !remoteSourceArg(args)) return child;
+  remoteChildren.add(child);
+  child.once('close', () => remoteChildren.delete(child));
+  return child;
+}
+
+/** Kill every child that is currently reading from a remote source. */
+export function stopRemoteChildren() {
+  const killed = [...remoteChildren];
+  for (const child of killed) {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+    if (process.platform === 'win32' && child.pid) {
+      try {
+        spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+  remoteChildren.clear();
+  return killed.length;
 }
 
 /* Lower a running child without failing the caller if the OS refuses. */
@@ -84,6 +141,11 @@ const laneFor = (name) => LANES[name] || mediaLane;
  * 'buffer'` returns raw bytes for callers that read PCM instead of text. */
 export function run(cmd, args, { timeout = 30000, maxBuffer = DEFAULT_MAX_BUFFER, lane = 'media', encoding = 'utf8' } = {}) {
   return laneFor(lane)(() => new Promise((resolve, reject) => {
+    const blocked = offlineBlockedCommand(cmd, args);
+    if (blocked) {
+      reject(gateError(blocked));
+      return;
+    }
     const child = execFile(cmd, args, {
       timeout,
       windowsHide: true,
@@ -97,6 +159,7 @@ export function run(cmd, args, { timeout = 30000, maxBuffer = DEFAULT_MAX_BUFFER
         resolve(stdout);
       }
     });
+    trackRemoteChild(child, args);
     nice(child);
   }));
 }
@@ -104,13 +167,18 @@ export function run(cmd, args, { timeout = 30000, maxBuffer = DEFAULT_MAX_BUFFER
 /* spawn for jobs that stream output (HLS download, long remux). The caller owns
  * the child; this only sets its priority. */
 export function spawnNice(cmd, args, options = {}) {
-  return nice(spawn(cmd, args, { windowsHide: true, ...options }));
+  const blocked = offlineBlockedCommand(cmd, args);
+  if (blocked) throw gateError(blocked);
+  return trackRemoteChild(nice(spawn(cmd, args, { windowsHide: true, ...options })), args);
 }
 
 /* Long, user-initiated work (a remux) only steps aside while something is
  * actually playing. Below-normal priority cost a hardware encoder about 40 %
  * of its throughput for no benefit on an idle machine. */
 export function spawnMedia(cmd, args, options = {}) {
+  const blocked = offlineBlockedCommand(cmd, args);
+  if (blocked) throw gateError(blocked);
   const child = spawn(cmd, args, { windowsHide: true, ...options });
+  trackRemoteChild(child, args);
   return playbackActive() ? nice(child) : child;
 }

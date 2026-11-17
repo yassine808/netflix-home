@@ -212,10 +212,18 @@ let active = 0;
 
 function pump() {
   if (active >= 1) return;
+  /* Offline: the queue waits. A trailer is a nicety, every way to fetch one
+   * leaves the machine, and the switch turning back on is what restarts it. */
+  if (isOffline()) return;
   const next = queue.shift();
   if (!next) return;
   active += 1;
   next.work().finally(() => { active -= 1; pump(); });
+}
+
+/** Called when offline mode turns off, so queued trailers start again. */
+export function resumeTrailerQueue() {
+  pump();
 }
 
 export function warmTrailer(item) {

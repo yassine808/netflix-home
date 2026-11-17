@@ -111,6 +111,8 @@ The port starts at 3000 (or `$env:PORT`). If that port is busy, the server tries
 
 The **Online/Offline** switch in the header is enforced by the server, not the browser. Turning it on writes `offline: true` to `.cache/settings.json`, answers 503 on every route that would reach the internet (`/api/online/*`, Castle search/browse/download/refresh, `/api/catalog/search`, `/api/catalog/item/*`, and new download requests), and pauses active downloads. Castle data already saved in `catalog.db` stays readable: the title sheet, posters/backdrops, episode pictures, trailers and the Sync status route all keep answering offline. Paused jobs keep their `.part` file and resume when the switch goes back to Online. Fonts are served from `public/fonts`, so the page makes no external requests at all while offline.
 
+The switch is also enforced below the routes, because a route is only one way out of the process. `server/net.js` patches `fetch`, `net.Socket.prototype.connect` and the DNS resolver: while offline, a URL that is not loopback is rejected before a socket exists, a connection to any non-loopback address is destroyed with `EOFFLINE`, and a resolver call answers without sending a query. `server/proc.js` applies the same rule to child processes, so `ffmpeg` on an HLS playlist, `aria2c` on a magnet and `yt-dlp` on YouTube are refused before they start, and any such child already running is killed the moment the switch goes on. Loopback stays open — the browser and aria2c's local RPC need it — and nothing there leaves the machine. `GET /api/offline/stats` reports the gate's install state and how many times it refused something; while offline it should stay at `blocked: 0`, and a non-zero count names the leaking path in `recent`.
+
 Cancelling a download removes the job and deletes its `.part` file, so cancelled items never show up under Finished.
 
 ## Online catalog
@@ -171,6 +173,7 @@ Verified coverage in the live catalog: Breaking Bad, Cyberpunk: Edgerunners, Bet
 | `GET /api/subtitle/:id/:lang` | One WebVTT subtitle file |
 | `GET /api/settings` | App settings, including the offline flag |
 | `POST /api/settings/offline` | Turn offline mode on or off (`{"offline": true}`); pauses or resumes downloads |
+| `GET /api/offline/stats` | Offline gate diagnostics: `installed`, `blocked` count and the last refused targets |
 | `GET /api/stream/:id` | Video stream with HTTP range support |
 | `GET /api/thumb/:id` | Cached picture for one title (JPEG; `?w=` picks 480/640/1280) |
 | `POST /api/quit` | Stop the app (loopback callers only; used by **Quit app** in the profile menu) |
