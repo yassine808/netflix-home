@@ -1387,6 +1387,7 @@ code { font-family: Consolas, "Courier New", monospace; }
 .castle-skel-title { height: 13px; width: 42%; }
 .castle-skel-sub { height: 10px; width: 26%; }
 .castle-skel-btn { flex: 0 0 auto; width: 128px; height: 33px; border-radius: 4px; }
+.castle-skel-chip { flex: 0 0 auto; width: 46px; height: 37px; border-radius: 4px; }
 @media (max-width: 760px) {
   .castle-skel-thumb { flex-basis: 96px; width: 96px; }
   .castle-skel-btn { width: 96px; }
@@ -2381,6 +2382,31 @@ body.leaving .downloads { opacity: 0; transition: opacity 0.18s ease; }
 .castle-episode .castle-del-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.1); color: #cfcfcf; }
 .castle-episode .castle-del-btn.is-armed { background: rgba(229, 9, 20, 0.2); border-color: rgba(229, 9, 20, 0.7); color: #ff7d84; }
 .castle-episode .castle-del-btn:disabled { opacity: 0.5; cursor: default; }
+/* The file's own class, left of the quiet Delete: SD / HD / FHD / 4K. */
+.castle-episode .castle-q-chip {
+  order: -2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  padding: 12px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  line-height: 1;
+}
+/* No probe yet: same box, shimmer instead of a label. */
+.castle-episode .castle-q-chip.is-pending {
+  color: transparent;
+  pointer-events: none;
+  user-select: none;
+  background: rgba(255, 255, 255, 0.1) linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.14) 50%, transparent 70%) 0 0 / 250% 100%;
+  animation: sk-bg 1.3s linear infinite;
+}
 
 @media (max-width: 700px) {
   .castle-modal .online-hero { min-height: 230px; height: 30vh; }

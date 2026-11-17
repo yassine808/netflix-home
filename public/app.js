@@ -3325,6 +3325,52 @@ function qualityName(resolution) {
   return CASTLE_QUALITY[Number(resolution)] || `${resolution}K`;
 }
 
+/* The catalogue names four video qualities: SD, HD, FHD and 4K. A file's frame
+ * size and a release's own "1080p" label both map onto them, so one tier covers
+ * a probed file, a job that is still indexing and a name that carries its class. */
+function tierFromFrame(width, height) {
+  const h = Number(height) || 0;
+  const w = Number(width) || 0;
+  if (h >= 2000 || w >= 3400) return '4K';
+  if (h >= 1000 || w >= 1800) return 'FHD';
+  if (h >= 700 || w >= 1200) return 'HD';
+  if (h || w) return 'SD';
+  return '';
+}
+
+const TIER_PATTERNS = [
+  ['4K', /(?:^|[^a-z0-9])(?:2160p|4k|uhd)(?:$|[^a-z0-9])/],
+  ['FHD', /(?:^|[^a-z0-9])(?:1080p|fhd)(?:$|[^a-z0-9])/],
+  ['HD', /(?:^|[^a-z0-9])(?:720p|hd)(?:$|[^a-z0-9])/],
+  ['SD', /(?:^|[^a-z0-9])(?:480p|sd)(?:$|[^a-z0-9])/],
+];
+
+function tierFromRelease(value) {
+  const text = String(value || '').toLowerCase();
+  if (!text) return '';
+  const hit = TIER_PATTERNS.find(([, pattern]) => pattern.test(text));
+  return hit ? hit[0] : '';
+}
+
+/* The probe is the first witness; the job that fetched the file is the second
+ * one (a finished download is indexed before its probe lands), and its name is
+ * the last, so a failed probe never leaves the chip blank. */
+function localQualityTier(local, job) {
+  return tierFromFrame(local?.width, local?.height)
+    || tierFromRelease(job?.quality)
+    || tierFromRelease(local?.fileName);
+}
+
+/* Quality badge, left of Delete. An unknown tier draws the same box as a
+ * shimmer, so the row does not shift when the answer arrives. */
+function buildQualityChip(tier) {
+  const chip = createEl('span', tier ? 'castle-q-chip' : 'castle-q-chip is-pending', tier || 'HD');
+  chip.title = tier ? `${tier} quality` : 'Reading the file quality…';
+  if (tier) chip.setAttribute('aria-label', `${tier} quality`);
+  else chip.setAttribute('aria-hidden', 'true');
+  return chip;
+}
+
 function castleEpisodesOf(detail) {
   if (!detail) return [];
   if (detail.type !== 'series') return Array.isArray(detail.episodes) ? detail.episodes : [];
@@ -3394,6 +3440,7 @@ function castleSkeletonRows(count) {
     lines.append(createEl('div', 'skeleton castle-skel-title'));
     lines.append(createEl('div', 'skeleton castle-skel-sub'));
     row.append(lines);
+    row.append(createEl('div', 'skeleton castle-skel-chip'));
     row.append(createEl('div', 'skeleton castle-skel-btn'));
     return row;
   });
@@ -3996,7 +4043,10 @@ function appendCastleAction(row, detail, episode, local, quality, plan) {
     btn.setAttribute('aria-label', detail.type === 'series' ? `Play episode ${local.episode}` : `Play ${detail.title}`);
     paint(EP_PLAY_ICON, 'Play');
     btn.addEventListener('click', () => goWatch(local.id));
-    action.append(buildDeleteButton(local));
+    // The file's own class, not the catalogue's: the row already lists the
+    // duration and the size, so the badge says how good the copy is.
+    const tier = localQualityTier(local, castleJobFor(detail, season, episode.episode));
+    action.append(buildQualityChip(tier), buildDeleteButton(local));
   } else if (job && (job.status === 'downloading' || job.status === 'cancelling')) {
     btn.classList.add('is-active');
     btn.title = 'Open downloads';
