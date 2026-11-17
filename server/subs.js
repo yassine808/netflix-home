@@ -2,10 +2,12 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
+import ffmpegPath from 'ffmpeg-static';
 import { resolveImdbId, isImdbId } from './imdb.js';
 import { isOffline } from './settings.js';
 import { getDb, transaction, hash32 } from './db.js';
 import { probeMedia } from './torrent.js';
+import { run } from './proc.js';
 
 /**
  * Subtitle fallback. Castle ships its own .vtt tracks; when English is missing
@@ -303,10 +305,6 @@ function cueStats(text) {
   return { end, cues };
 }
 
-function lastCueSec(text) {
-  return cueStats(text).end;
-}
-
 /* Cue start/end pairs, in seconds. */
 function cueSpans(body) {
   const re = /(?:(\d{1,3}):)?(\d{1,2}):(\d{2})[.,](\d{1,3})\s*-->\s*(?:(\d{1,3}):)?(\d{1,2}):(\d{2})[.,](\d{1,3})/g;
@@ -485,7 +483,162 @@ async function videoDurationSec(full, item) {
   }
 }
 
-export async function fetchEnglishSubtitle({ imdbId, season = 0, episode = 0, lang = 'en', durationSec = 0 } = {}) {
+/* How many seconds of the video the cut check listens to. A recap lives in the
+ * first two minutes, and fifteen gives the score enough dialogue to separate
+ * two edits even when an episode opens quietly. */
+const CUT_WINDOW_SEC = 900;
+const CUT_HOP = 0.5;
+const CUT_MARGIN_SEC = 120;
+const AD_LINE = /osdb|opensubtitles|watch online|advertise|rate this subtitle|www\./i;
+
+/* Cue spans without the advert OpenSubtitles prepends to some uploads. The
+ * advert sits at the head of the file, exactly where the cut check looks. */
+function candidateSpans(text) {
+  const spans = [];
+  for (const block of String(text || '').replace(/\r/g, '').split(/\n{2,}/)) {
+    const rows = block.split('\n');
+    const at = rows.findIndex((row) => row.includes('-->'));
+    if (at < 0) continue;
+    const body = rows.slice(at + 1).join(' ').trim();
+    if (!body || AD_LINE.test(body)) continue;
+    const [from, to] = rows[at].split('-->');
+    const start = parseStamp(from);
+    const end = parseStamp(String(to).trim().split(/\s+/)[0]);
+    if (end > start) spans.push({ start, end });
+  }
+  return spans;
+}
+
+/* The advert itself is not dialogue: remove its cue from the track that is
+ * written, or it reads as a broken line in the first seconds of the episode. */
+function stripAdCues(text) {
+  const kept = String(text || '').replace(/\r/g, '').split(/\n{2,}/).filter((block) => {
+    const rows = block.split('\n');
+    const at = rows.findIndex((row) => row.includes('-->'));
+    if (at < 0) return true;
+    const body = rows.slice(at + 1).join(' ').trim();
+    return !body || !AD_LINE.test(body);
+  });
+  const body = kept.join('\n\n').trimEnd();
+  return `${body}\n`;
+}
+
+/*
+ * Speech activity of the file itself, one value per CUT_HOP seconds. A subtitle
+ * timed to a longer edit (a recap at the head, DVD extras at the tail) still
+ * matches the dialogue after a constant shift; a track cut for this video sits
+ * at zero. The profile costs one ffmpeg decode and is only built for a file on
+ * disk, never for a catalogue preview.
+ */
+async function speechProfile(full) {
+  let pcm;
+  try {
+    pcm = await run(ffmpegPath, [
+      '-hide_banner', '-loglevel', 'error',
+      '-t', String(CUT_WINDOW_SEC), '-i', full,
+      '-map', '0:a:0?', '-vn', '-ac', '1', '-ar', '8000',
+      '-af', 'highpass=f=300,lowpass=f=3000',
+      '-f', 's16le', 'pipe:1',
+    ], { lane: 'media', maxBuffer: 64 * 1024 * 1024, encoding: 'buffer', timeout: 120000 });
+  } catch {
+    return null;
+  }
+  if (!Buffer.isBuffer(pcm) || pcm.length < 16000) return null;
+  const per = Math.round(8000 * CUT_HOP);
+  const count = Math.floor(pcm.length / 2 / per);
+  if (count < 60) return null;
+  const rms = new Float32Array(count);
+  for (let i = 0; i < count; i += 1) {
+    let sum = 0;
+    const base = i * per * 2;
+    for (let j = 0; j < per; j += 1) {
+      const sample = pcm.readInt16LE(base + j * 2) / 32768;
+      sum += sample * sample;
+    }
+    rms[i] = Math.sqrt(sum / per);
+  }
+  /* The floor moves with the mix, so the gate is relative to the quietest fifth
+   * of the window and clamped to a range that still ignores room tone. */
+  const levels = Array.from(rms, (value) => 20 * Math.log10(Math.max(value, 1e-6))).sort((a, b) => a - b);
+  const floor = levels[Math.floor(levels.length * 0.2)];
+  const gate = Math.max(-48, Math.min(-25, floor + 10));
+  const active = new Uint8Array(count);
+  for (let i = 0; i < count; i += 1) {
+    active[i] = 20 * Math.log10(Math.max(rms[i], 1e-6)) > gate ? 1 : 0;
+  }
+  return active;
+}
+
+/* F1 of the cue coverage against the speech profile for one constant shift. */
+function cueFit(spans, active, offset) {
+  const total = active.length * CUT_HOP;
+  let cueHits = 0;
+  let cueTotal = 0;
+  const covered = new Uint8Array(active.length);
+  for (const span of spans) {
+    const from = Math.max(0, span.start + offset);
+    const to = Math.min(total, span.end + offset);
+    for (let t = from; t < to; t += CUT_HOP) {
+      const i = Math.round(t / CUT_HOP);
+      if (i < 0 || i >= active.length) continue;
+      cueTotal += 1;
+      cueHits += active[i];
+      covered[i] = 1;
+    }
+  }
+  const precision = cueTotal ? cueHits / cueTotal : 0;
+  let speech = 0;
+  let hit = 0;
+  for (let i = 0; i < active.length; i += 1) {
+    if (!active[i]) continue;
+    speech += 1;
+    hit += covered[i];
+  }
+  const recall = speech ? hit / speech : 0;
+  const f1 = precision + recall ? (2 * precision * recall) / (precision + recall) : 0;
+  return { offset, f1, precision, recall };
+}
+
+function bestCutFit(spans, active) {
+  let best = null;
+  for (let offset = -CUT_MARGIN_SEC; offset <= CUT_MARGIN_SEC; offset += 1) {
+    const fit = cueFit(spans, active, offset);
+    if (!best || fit.f1 > best.f1) best = fit;
+  }
+  return best;
+}
+
+/*
+ * Chooses the candidate cut. A track from a longer edit is not merely late: it
+ * carries dialogue the video does not have, so it only lines up after a shift.
+ * The score discounts that shift, and a track that runs past the video is out
+ * before scoring starts.
+ */
+function pickSubtitle(candidates, durationSec, active) {
+  const usable = candidates.filter((candidate) => {
+    if (durationSec > 0 && candidate.end > durationSec + 30) return false; // recap/extras edit
+    if (durationSec > 0 && candidate.end < durationSec * 0.5) return false; // first half of a two-CD rip
+    return candidate.cues >= 10;
+  });
+  if (!usable.length) return null;
+  if (!active) {
+    /* No audio to listen to: the longest track that still fits the video is the
+     * best guess. This is the only path a catalogue preview can take, because
+     * the file does not exist yet. */
+    return usable.reduce((best, candidate) => (candidate.end > best.end ? candidate : best));
+  }
+  let best = null;
+  for (const candidate of usable) {
+    const fit = bestCutFit(candidate.spans, active);
+    /* One point of F1 per 100 s of shift: enough to prefer the matching cut,
+     * not enough to hide a track that is clearly the wrong episode. */
+    const score = fit.f1 * (1 - Math.min(Math.abs(fit.offset), CUT_MARGIN_SEC) / (CUT_MARGIN_SEC * 5));
+    if (!best || score > best.score) best = { candidate, fit, score };
+  }
+  return best.candidate;
+}
+
+export async function fetchEnglishSubtitle({ imdbId, season = 0, episode = 0, lang = 'en', durationSec = 0, full = '' } = {}) {
   if (isOffline()) return null;
   const id = isImdbId(imdbId) ? String(imdbId).replace(/^tt/, '') : '';
   if (!id) return null;
@@ -513,11 +666,12 @@ export async function fetchEnglishSubtitle({ imdbId, season = 0, episode = 0, la
     return (Number(b.SubDownloadsCnt) || 0) - (Number(a.SubDownloadsCnt) || 0);
   });
 
-  /* A full copy is required when the length is known; a short one is only
-   * kept as a last resort so an episode never ends up with no text at all. */
-  let best = null;
-  let bestCoverage = 0;
-  const enough = durationSec > 0 ? durationSec * 0.9 : 0;
+  /* Every candidate is downloaded before one is chosen. The old code returned
+   * the first track that covered 90 % of the runtime, which is exactly the
+   * track timed to a longer edit: a recap at the head and DVD extras at the
+   * tail make it cover more, not less. Six is the whole shortlist the API
+   * returns for an episode. */
+  const candidates = [];
   for (const hit of ranked.slice(0, 6)) {
     try {
       const link = hit.SubDownloadLink || '';
@@ -533,20 +687,32 @@ export async function fetchEnglishSubtitle({ imdbId, season = 0, episode = 0, la
       }
       const text = vttFromSubtitle(buffer.toString('utf8'));
       if (text.length <= 40) continue;
-      const coverage = lastCueSec(text);
-      if (coverage > bestCoverage) {
-        bestCoverage = coverage;
-        best = text;
-      }
-      if (enough && coverage >= enough) return text;
+      const spans = candidateSpans(text);
+      if (spans.length < 10) continue;
+      candidates.push({
+        text,
+        spans,
+        end: spans.reduce((max, span) => Math.max(max, span.end), 0),
+        cues: spans.length,
+      });
     } catch {
       /* try the next candidate */
     }
   }
-  if (best && durationSec > 0) {
-    console.warn(`[subs] the best English subtitle covers ${(bestCoverage / 60).toFixed(0)} of ${(durationSec / 60).toFixed(0)} min`);
+  if (!candidates.length) return null;
+
+  const active = full ? await speechProfile(full).catch(() => null) : null;
+  const picked = pickSubtitle(candidates, durationSec, active);
+  if (!picked) {
+    if (durationSec > 0) {
+      console.warn(`[subs] no English subtitle fits a ${(durationSec / 60).toFixed(0)}-min video`);
+    }
+    return null;
   }
-  return best;
+  if (durationSec > 0 && picked.end < durationSec * 0.85) {
+    console.warn(`[subs] the best English subtitle covers ${(picked.end / 60).toFixed(0)} of ${(durationSec / 60).toFixed(0)} min`);
+  }
+  return stripAdCues(picked.text);
 }
 
 /* A failed lookup is retried only after a while: the player asks for the track
@@ -555,7 +721,7 @@ export async function fetchEnglishSubtitle({ imdbId, season = 0, episode = 0, la
 const attempts = new Map();
 const ATTEMPT_TTL = 10 * 60 * 1000;
 
-export async function ensureEnglishSubtitle(full, item = {}) {
+export async function ensureEnglishSubtitle(full, item = {}, { force = false } = {}) {
   if (!full || !item || isOffline()) return false;
   const stem = full.slice(0, full.length - path.extname(full).length);
   const target = `${stem}.en.vtt`;
@@ -574,7 +740,9 @@ export async function ensureEnglishSubtitle(full, item = {}) {
   /* An existing sidecar is only good while it covers the video and carries a
    * real dialogue track. The old check was "any file bigger than 40 bytes is
    * fine", which kept a first-half-only subtitle - and then a forced track -
-   * forever. */
+   * forever. It also looked only at the lower bound: a track timed to a longer
+   * edit runs past the end of this video (recap at the head, extras at the
+   * tail), and that is now a reason to replace it. */
   let have = null;
   try {
     have = fs.readFileSync(target, 'utf8');
@@ -582,17 +750,20 @@ export async function ensureEnglishSubtitle(full, item = {}) {
     have = null;
   }
   const stats = have && have.length > 40 ? cueStats(have) : null;
-  if (stats && (!enough || (stats.end >= enough && stats.cues >= enoughCues))) return true;
-  if (stats) {
-    const reason = stats.end < enough
-      ? `stops at ${(stats.end / 60).toFixed(0)} of ${(durationSec / 60).toFixed(0)} min`
-      : `holds only ${stats.cues} cue(s) for ${(durationSec / 60).toFixed(0)} min (forced track?)`;
+  const overrun = Boolean(stats && durationSec > 0 && stats.end > durationSec + 30);
+  if (!force && stats && !overrun && (!enough || (stats.end >= enough && stats.cues >= enoughCues))) return true;
+  if (stats && !force) {
+    const reason = overrun
+      ? `runs ${((stats.end - durationSec) / 60).toFixed(0)} min past the video (a longer cut)`
+      : stats.end < enough
+        ? `stops at ${(stats.end / 60).toFixed(0)} of ${(durationSec / 60).toFixed(0)} min`
+        : `holds only ${stats.cues} cue(s) for ${(durationSec / 60).toFixed(0)} min (forced track?)`;
     console.log(`[subs] ${path.basename(target)} ${reason} - fetching a full copy`);
   }
 
   const attemptKey = `${target}:${stats?.end || 0}:${stats?.cues || 0}`;
   const tried = attempts.get(attemptKey);
-  if (tried && Date.now() - tried < ATTEMPT_TTL) return Boolean(stats);
+  if (!force && tried && Date.now() - tried < ATTEMPT_TTL) return Boolean(stats);
 
   const imdbId = await resolveImdbId({
     ...item,
@@ -604,13 +775,17 @@ export async function ensureEnglishSubtitle(full, item = {}) {
     season: item.season,
     episode: item.episode,
     durationSec,
+    full,
   });
   if (!text) {
     attempts.set(attemptKey, Date.now());
     return false;
   }
   const next = cueStats(text);
-  if (stats && next.cues <= stats.cues && next.end <= stats.end) {
+  /* Keep the old track only when it already fits the video. A track from a
+   * longer edit is shorter than the old one after the recap and extras are
+   * gone, and the old "never replace with fewer cues" rule kept it forever. */
+  if (!force && !overrun && stats && next.cues <= stats.cues && next.end <= stats.end) {
     attempts.set(attemptKey, Date.now());
     return true;
   }

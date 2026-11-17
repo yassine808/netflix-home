@@ -80,14 +80,15 @@ const LANES = { probe: probeLane, art: artLane, media: mediaLane, subs: subsLane
 const laneFor = (name) => LANES[name] || mediaLane;
 
 /* Promise wrapper around execFile. `lane` is 'media' (default), 'probe' or
- * 'art'; `timeout: 0` means no timeout (used by the dub remux). */
-export function run(cmd, args, { timeout = 30000, maxBuffer = DEFAULT_MAX_BUFFER, lane = 'media' } = {}) {
+ * 'art'; `timeout: 0` means no timeout (used by the dub remux). `encoding:
+ * 'buffer'` returns raw bytes for callers that read PCM instead of text. */
+export function run(cmd, args, { timeout = 30000, maxBuffer = DEFAULT_MAX_BUFFER, lane = 'media', encoding = 'utf8' } = {}) {
   return laneFor(lane)(() => new Promise((resolve, reject) => {
     const child = execFile(cmd, args, {
       timeout,
       windowsHide: true,
       maxBuffer,
-      encoding: 'utf8',
+      encoding,
     }, (err, stdout, stderr) => {
       if (err) {
         if (stderr) err.stderr = stderr;

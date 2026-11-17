@@ -1459,6 +1459,7 @@ async function saveSubtitle(job) {
   }
   const stem = job.dest.slice(0, job.dest.length - path.extname(job.dest).length);
   let wroteEnglish = false;
+  let englishFromText = false;
   for (const track of job.subtitles) {
     try {
       let body;
@@ -1480,7 +1481,10 @@ async function saveSubtitle(job) {
       }
       if (!body || body.length < 20) continue;
       await fsp.writeFile(`${stem}.${track.lang}.vtt`, body, 'utf8');
-      if (track.lang === 'en') wroteEnglish = true;
+      if (track.lang === 'en') {
+        wroteEnglish = true;
+        englishFromText = Boolean(track.text);
+      }
     } catch {
       /* a missing subtitle should never fail the download */
     }
@@ -1493,7 +1497,38 @@ async function saveSubtitle(job) {
       episode: job.episode,
       isSeries: Number(job.season) > 0,
     }).catch(() => {});
+  } else if (englishFromText) {
+    /* The catalogue path fetches an English track before the video exists, so
+     * it can only rank by length. Now the file is here: let the cut check pick
+     * the track that is timed to this edit. */
+    await ensureEnglishSubtitle(job.dest, {
+      seriesTitle: job.seriesTitle || job.title,
+      title: job.title,
+      season: job.season,
+      episode: job.episode,
+      isSeries: Number(job.season) > 0,
+    }, { force: true }).catch(() => {});
   }
+}
+
+/* ffmpeg honours HTTP_PROXY, and this machine's proxy truncates long HLS
+ * segment connections: the muxer receives corrupt packets and dies partway
+ * through a download. The CDN answers directly, so keep the proxy for every
+ * other host and exempt this URL's domain for the child. */
+function hlsEnv(url) {
+  const env = { ...process.env };
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (/^\d+(\.\d+){3}$/.test(host)) return env;
+    const parts = host.split('.');
+    const domain = parts.length > 2 ? parts.slice(-2).join('.') : host;
+    const current = String(env.NO_PROXY || env.no_proxy || '');
+    env.NO_PROXY = [current, host, domain].filter(Boolean).join(',');
+    delete env.no_proxy;
+  } catch {
+    /* an unparsable URL still goes through the normal proxy path */
+  }
+  return env;
 }
 
 async function runHlsJob(job) {
@@ -1543,7 +1578,10 @@ async function runHlsJob(job) {
   let timer = null;
 
   try {
-    child = spawnNice(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    child = spawnNice(ffmpegPath, args, {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      env: hlsEnv(job.url),
+    });
     job.ffmpeg = child;
     child.stderr.on('data', (chunk) => {
       stderr = (stderr + chunk.toString()).slice(-4000);

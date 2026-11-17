@@ -1231,7 +1231,9 @@ app.post('/api/subtitles/:id/resync', async (req, res) => {
     ? await retimeEnglishSidecar(stem, tracks, { full: found.full }).catch(() => null)
     : null;
   if (!tracks.some((track) => track.lang === 'en')) {
-    await ensureEnglishSubtitle(found.full, found.item).catch(() => false);
+    /* Resync is the explicit "look again" action: keep the existing sidecar
+     * only if the new fetch cannot produce anything better. */
+    await ensureEnglishSubtitle(found.full, found.item, { force: true }).catch(() => false);
   }
 
   const after = syncSubtitleTracks(found.item, found.full);
