@@ -10,7 +10,7 @@ import { getDownloadMaxActive, getDownloadLimitMBps, getTorrentQuality, getDownl
 import { findReleases, rankReleases, magnetFor, releaseLabel } from './torrentio.js';
 import {
   fetchTorrentFiles, matchEpisodeFile, downloadTorrentFile,
-  probeMedia, pickTracks, remuxToMp4, extractSubtitles, toIso2,
+  probeMedia, pickTracks, remuxToMp4, extractSubtitles, toIso2, timelineIsBroken,
 } from './torrent.js';
 const USER_AGENT = 'netflix-home/1.0 (local library downloader)';
 
@@ -1765,6 +1765,15 @@ async function attemptRelease(job, release, dir, controller) {
     mkv: job.mkv !== false,
   });
   if (picked.error) return `${release.name}: ${picked.reason || picked.error}`;
+  /* A copy keeps the release's packet timeline, and Chromium drops a fifth of
+   * the frames on a timeline that repeats timestamps. Re-encoding rebuilds the
+   * timeline from the decoded frames, so such a release is never installed as a
+   * copy - it becomes a normal H.264 transcode instead. */
+  if (!picked.video?.transcode && await timelineIsBroken(downloaded.path, probe.video?.hasBFrames)) {
+    picked.video = { ...picked.video, transcode: true };
+    picked.direct = false;
+    picked.warnings = [...(picked.warnings || []), 'the release timeline repeats timestamps; re-encoding rebuilds it'];
+  }
   /* An acceptance has a reason too ("untagged audio, taken as English"), and
    * the log is where a later "why did it keep that file" question gets answered. */
   if (picked.warnings?.length) {

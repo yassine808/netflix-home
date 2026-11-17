@@ -175,6 +175,7 @@ async function init() {
   video.src = streamUrl();
   video.load();
   startSwapWatch();
+  startStutterWatch();
   bindEvents();
   initSeekFx();
   loadNextEpisode();
@@ -1252,6 +1253,86 @@ function reopenStream() {
   /* If the new source never reports metadata, do not leave autoplay disabled
    * for a later load. */
   setTimeout(() => { streamReopening = false; }, 20000);
+}
+
+/* A release muxed with a timeline that never learned about B-frame reordering
+ * plays back with frames arriving late, and Chromium silently drops them - 20
+ * to 30% of a film in the worst case, which reads as a permanent stutter. The
+ * browser counts what it decoded and what it could not present; when that ratio
+ * stays high the server checks the packet timeline and re-encodes only if it
+ * really is broken. A slow GPU, a 4K HDR file or a busy disk drop frames too,
+ * and those must never cost a re-encode, so this only ever asks. */
+const STUTTER_MIN_FRAMES = 48;
+const STUTTER_MIN_MS = 2000;
+const STUTTER_DROP_RATE = 0.12;
+let stutterTimer = null;
+let stutterSample = null;
+let stutterReported = false;
+
+function startStutterWatch() {
+  clearInterval(stutterTimer);
+  stutterSample = null;
+  stutterReported = false;
+  stutterTimer = setInterval(samplePlayback, 1000);
+}
+
+function playbackCounters() {
+  const quality = typeof video.getVideoPlaybackQuality === 'function'
+    ? video.getVideoPlaybackQuality()
+    : null;
+  const decoded = Number(video.webkitDecodedFrameCount ?? quality?.totalVideoFrames);
+  const dropped = Number(video.webkitDroppedFrameCount ?? quality?.droppedVideoFrames);
+  if (!Number.isFinite(decoded) || !Number.isFinite(dropped)) return null;
+  return { decoded, dropped };
+}
+
+function samplePlayback() {
+  if (stutterReported || document.hidden || streamReopening) return;
+  /* A seek, a rebuffer or a pause breaks the window: the counters look like a
+   * burst of drops when they are only the pipeline emptying. */
+  if (video.paused || video.seeking || video.readyState < 3) {
+    stutterSample = null;
+    return;
+  }
+  const now = playbackCounters();
+  if (!now) return;
+  if (!stutterSample) {
+    stutterSample = { ...now, at: performance.now() };
+    return;
+  }
+  const frames = now.decoded - stutterSample.decoded;
+  const lost = now.dropped - stutterSample.dropped;
+  const elapsed = performance.now() - stutterSample.at;
+  /* The counters reset when the source is replaced or the decoder restarts. */
+  if (frames < 0 || lost < 0) {
+    stutterSample = { ...now, at: performance.now() };
+    return;
+  }
+  if (elapsed < STUTTER_MIN_MS || frames < STUTTER_MIN_FRAMES) return;
+  stutterSample = { ...now, at: performance.now() };
+  if (lost / frames < STUTTER_DROP_RATE) return;
+  reportStutter();
+}
+
+/* One report per title per session: the toast is a one-off explanation, not a
+ * notification the viewer has to dismiss over and over. */
+function reportStutter() {
+  stutterReported = true;
+  const key = `timelinefix:${id}`;
+  try {
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, '1');
+  } catch {
+    /* private mode without storage: report once for this load anyway */
+  }
+  fetch(`/api/timelinefix/${encodeURIComponent(id)}`, { method: 'POST' })
+    .then((res) => {
+      if (!res.ok) return;
+      toastInPlayer('This file drops frames because its timeline is broken. Repairing it in the background.');
+    })
+    .catch(() => {
+      /* server busy; the next viewing tries again */
+    });
 }
 
 function toggleFullscreen() {

@@ -45,6 +45,7 @@ import { resolveImdbId } from './imdb.js';
 import { ensureEnglishSubtitle, fetchEnglishSubtitle, retimeEnglishSidecar, syncSubtitleTracks, subtitleBody } from './subs.js';
 import { initAudio, probeAudioTracks, ensureAudioVariant } from './audio.js';
 import { initColorFix, syncColorFix, colorFixStatus, prioritizeColorFix, needsColorFix } from './colorfix.js';
+import { initTimelineFix, requestTimelineFix, timelineFixStatus } from './timelinefix.js';
 
 /* In the single-file build there is no real file on disk, so the bundle passes
  * APP_ROOT (where the exe lives) and PUBLIC_DIR (extracted UI files). */
@@ -117,6 +118,7 @@ initArtwork(cacheDir);
 initFrames(cacheDir);
 initIntro(cacheDir);
 initColorFix({ cacheDir, root: libraryRoot });
+initTimelineFix({ cacheDir, root: libraryRoot });
 initHero(cacheDir);
 initAudio(cacheDir);
 initTrailers(cacheDir, {
@@ -573,6 +575,21 @@ app.post('/api/colorfix/:id', (req, res) => {
   if (!item) return res.status(404).json({ error: 'title not found' });
   if (!needsColorFix(item)) return res.status(409).json({ error: 'this file does not need a colour repair' });
   prioritizeColorFix(item.relPath, item.displayTitle || item.title || item.fileName);
+  res.json({ ok: true });
+});
+
+/* Broken-timeline repair queue: same shape as the colour queue, but a file is
+ * only queued when the player reports dropped frames and the packet timeline is
+ * confirmed broken. */
+app.get('/api/timelinefix', (req, res) => {
+  res.json(timelineFixStatus());
+});
+
+app.post('/api/timelinefix/:id', async (req, res) => {
+  const item = getItem(String(req.params.id || ''));
+  if (!item) return res.status(404).json({ error: 'title not found' });
+  const result = await requestTimelineFix(item.relPath, item.displayTitle || item.title || item.fileName);
+  if (!result.queued) return res.status(409).json({ error: result.reason || 'this file does not need a timeline repair' });
   res.json({ ok: true });
 });
 

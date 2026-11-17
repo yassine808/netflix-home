@@ -834,6 +834,9 @@ export async function probeMedia(file) {
     colorRange: String(videoStream.color_range || '').toLowerCase(),
     bitRate: Number(videoStream.bit_rate) || 0,
     fps: frameRateOf(videoStream),
+    /* Frames the encoder may reorder: a timeline without that reordering is the
+     * one Chromium cannot present without dropping frames. */
+    hasBFrames: Number(videoStream.has_b_frames) || 0,
   } : null;
 
   const audio = streams
@@ -875,6 +878,38 @@ export async function probeMedia(file) {
     audio,
     subtitles,
   };
+}
+
+/* Some releases are muxed with a timeline that never got the frame reordering
+ * B-frames need: packets repeat a PTS, or carry PTS == DTS in decode order.
+ * Chromium presents such a file in decode order and drops the frames that reach
+ * the compositor late - measured on a 1080p HEVC film, 20-30% of frames were
+ * dropped while every healthy file in the same library played with none. One
+ * ffprobe pass over three windows decides it. A file that cannot be read is
+ * never called broken. */
+export async function timelineIsBroken(file, hasBFrames = 0) {
+  const source = String(file || '');
+  if (!source) return false;
+  const raw = await run(ffprobePath, [
+    '-v', 'error',
+    '-select_streams', 'v:0',
+    /* Three windows, because a timeline can break anywhere in the file. */
+    '-read_intervals', '%+#30,50%+#30,90%+#30',
+    '-show_entries', 'packet=pts_time,dts_time',
+    '-of', 'csv=p=0',
+    source,
+  ], { lane: 'probe', timeout: 30000 }).catch(() => '');
+  const rows = String(raw).trim().split(/\r?\n/).filter(Boolean)
+    .map((line) => line.split(','))
+    .filter(([pts]) => pts);
+  if (rows.length < 8) return false;
+  const seen = new Set();
+  for (const [pts] of rows) {
+    if (seen.has(pts)) return true;
+    seen.add(pts);
+  }
+  /* Without B-frames nothing is reordered, so PTS == DTS is the healthy shape. */
+  return Number(hasBFrames) > 0 && rows.every(([pts, dts]) => !dts || pts === dts);
 }
 
 /** Map a language name or 2/3-letter tag to its ISO 639-1 code, or ''. */
