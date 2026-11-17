@@ -613,6 +613,15 @@ code { font-family: Consolas, "Courier New", monospace; }
 }
 .card-logo.loaded { opacity: 1; }
 .card-overlay.has-logo .card-title { display: none; }
+/* A card whose picture never arrives keeps its gradient and its own large title;
+ * the overlay title would print the same words a second time, a few pixels away,
+ * which reads as ghosting. The three card kinds share the rule: the overlay title
+ * is only shown once a picture is actually on screen. */
+.card:not(:has(.card-img.loaded)) .card-title,
+.top10-card:not(:has(.top10-art img.loaded)) .card-title,
+.online-card:not(:has(.online-card-art img.loaded)) .online-card-overlay strong {
+  display: none;
+}
 
 .card-meta {
   color: #c7c7c7;
