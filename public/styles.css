@@ -1386,11 +1386,16 @@ code { font-family: Consolas, "Courier New", monospace; }
 .castle-skel-lines { flex: 1; display: flex; flex-direction: column; gap: 9px; }
 .castle-skel-title { height: 13px; width: 42%; }
 .castle-skel-sub { height: 10px; width: 26%; }
-.castle-skel-btn { flex: 0 0 auto; width: 128px; height: 33px; border-radius: 4px; }
+.castle-skel-btn { flex: 0 0 auto; width: 128px; height: 37px; border-radius: 4px; }
+/* The chip + Delete + Play group is 275 px wide (46 + 8 + 85 + 8 + 128). The
+ * chip placeholder is pinned to the left edge of that group and the button to
+ * the right, so both land where the real buttons do and the row never jumps. */
+.castle-skel-action { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 275px; }
 .castle-skel-chip { flex: 0 0 auto; width: 46px; height: 37px; border-radius: 4px; }
 @media (max-width: 760px) {
   .castle-skel-thumb { flex-basis: 96px; width: 96px; }
   .castle-skel-btn { width: 96px; }
+  .castle-skel-action { width: 150px; }
 }
 .modal-hero-content h1 {
   font-size: clamp(30px, 4vw, 56px);

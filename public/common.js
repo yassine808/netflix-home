@@ -407,10 +407,31 @@ export function formatSize(bytes) {
   return `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
+/* SD / HD / FHD / 4K, the four tiers this app names. The width decides: a
+ * widescreen master is often 1916x798 or 3840x1600, and the height alone would
+ * class those as SD or HD. A series carries every episode, so the card shows the
+ * best copy it holds, not whichever file happened to be picked as its primary. */
+const TIER_RANK = { SD: 1, HD: 2, FHD: 3, '4K': 4 };
+
+function tierOf(width, height) {
+  const h = Number(height) || 0;
+  const w = Number(width) || 0;
+  if (h >= 2000 || w >= 3400) return '4K';
+  if (h >= 1000 || w >= 1800) return 'FHD';
+  if (h >= 700 || w >= 1200) return 'HD';
+  if (h || w) return 'SD';
+  return '';
+}
+
 export function qualityLabel(item) {
-  if (item.height >= 2000) return '4K';
-  if (item.height >= 1000) return 'HD';
-  return item.height ? 'SD' : '';
+  let best = '';
+  const consider = (entry) => {
+    const tier = tierOf(entry?.width, entry?.height);
+    if (tier && TIER_RANK[tier] > (TIER_RANK[best] || 0)) best = tier;
+  };
+  consider(item);
+  if (Array.isArray(item?.episodes)) item.episodes.forEach(consider);
+  return best;
 }
 
 export function thumbUrl(item, width = 480) {

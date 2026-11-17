@@ -3326,18 +3326,9 @@ function qualityName(resolution) {
 }
 
 /* The catalogue names four video qualities: SD, HD, FHD and 4K. A file's frame
- * size and a release's own "1080p" label both map onto them, so one tier covers
- * a probed file, a job that is still indexing and a name that carries its class. */
-function tierFromFrame(width, height) {
-  const h = Number(height) || 0;
-  const w = Number(width) || 0;
-  if (h >= 2000 || w >= 3400) return '4K';
-  if (h >= 1000 || w >= 1800) return 'FHD';
-  if (h >= 700 || w >= 1200) return 'HD';
-  if (h || w) return 'SD';
-  return '';
-}
-
+ * size (qualityLabel) and a release's own "1080p" label both map onto them, so
+ * one tier covers a probed file, a job that is still indexing and a name that
+ * carries its class. */
 const TIER_PATTERNS = [
   ['4K', /(?:^|[^a-z0-9])(?:2160p|4k|uhd)(?:$|[^a-z0-9])/],
   ['FHD', /(?:^|[^a-z0-9])(?:1080p|fhd)(?:$|[^a-z0-9])/],
@@ -3356,7 +3347,7 @@ function tierFromRelease(value) {
  * one (a finished download is indexed before its probe lands), and its name is
  * the last, so a failed probe never leaves the chip blank. */
 function localQualityTier(local, job) {
-  return tierFromFrame(local?.width, local?.height)
+  return qualityLabel(local)
     || tierFromRelease(job?.quality)
     || tierFromRelease(local?.fileName);
 }
@@ -3440,8 +3431,13 @@ function castleSkeletonRows(count) {
     lines.append(createEl('div', 'skeleton castle-skel-title'));
     lines.append(createEl('div', 'skeleton castle-skel-sub'));
     row.append(lines);
-    row.append(createEl('div', 'skeleton castle-skel-chip'));
-    row.append(createEl('div', 'skeleton castle-skel-btn'));
+    // One placeholder per button the row can end up with, in the same slot:
+    // the quality chip left of Delete, then Play. The group is as wide as the
+    // real chip + Delete + Play trio, so nothing shifts when the rows land.
+    const action = createEl('div', 'castle-skel-action');
+    action.append(createEl('div', 'skeleton castle-skel-chip'));
+    action.append(createEl('div', 'skeleton castle-skel-btn'));
+    row.append(action);
     return row;
   });
 }
