@@ -540,6 +540,12 @@ export function saveProgress(id, t, d) {
   writeJson(PROGRESS_KEY, all);
 }
 
+/* Settings → Watch history. The Continue Watching row is built from exactly
+ * this map, so emptying it clears the row and every Resume label with it. */
+export function clearProgress() {
+  writeJson(PROGRESS_KEY, {});
+}
+
 export function debounce(fn, ms = 150) {
   let timer;
   return (...args) => {

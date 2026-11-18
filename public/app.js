@@ -2,6 +2,7 @@ import {
   getLibrary, rescanLibrary, quitApp, formatDuration, formatSize, formatClock,
   syncCastleCatalog, getCastleSyncStatus,
   qualityLabel, thumbUrl, logoUrl, toggleMyList, isInMyList, getMyList, progressFor,
+  clearProgress,
   getRemoteList, isInRemoteList, toggleRemoteList,
   getSeries, getSeriesCatalog, debounce, createEl,
   browseCastle,
@@ -227,6 +228,7 @@ const els = {
   torrentQualityRow: $('torrentQualityRow'),
   torrentQualitySwitch: $('torrentQualitySwitch'),
   autoplaySoundBtn: $('autoplaySoundBtn'),
+  clearProgressBtn: $('clearProgressBtn'),
   autoplaySoundLabel: $('autoplaySoundLabel'),
   dlMaxActiveInput: $('dlMaxActiveInput'),
   dlMaxActiveSave: $('dlMaxActiveSave'),
@@ -2702,6 +2704,36 @@ async function toggleAutoplaySound() {
   } finally {
     els.autoplaySoundBtn.disabled = false;
   }
+}
+
+/* Settings → Watch history: one click arms, the second one forgets every saved
+ * position. Nothing on the server holds this, so the row is rebuilt from the
+ * (now empty) map instead of waiting for a rescan. */
+let clearProgressTimer = 0;
+
+function resetClearProgress() {
+  clearTimeout(clearProgressTimer);
+  clearProgressTimer = 0;
+  if (!els.clearProgressBtn) return;
+  els.clearProgressBtn.classList.remove('is-armed');
+  els.clearProgressBtn.textContent = 'Clear';
+}
+
+function clearWatchHistory() {
+  const btn = els.clearProgressBtn;
+  if (!btn.classList.contains('is-armed')) {
+    btn.classList.add('is-armed');
+    btn.textContent = 'Sure?';
+    clearTimeout(clearProgressTimer);
+    clearProgressTimer = setTimeout(resetClearProgress, 3000);
+    return;
+  }
+  clearTimeout(clearProgressTimer);
+  clearProgressTimer = 0;
+  clearProgress();
+  renderRows();
+  resetClearProgress();
+  toast('Watch history cleared');
 }
 
 function applyDownloadLimitUi() {
@@ -6090,6 +6122,7 @@ function bindStaticEvents() {
     if (btn) chooseTorrentQuality(btn.dataset.torrentQuality);
   });
   els.autoplaySoundBtn.addEventListener('click', toggleAutoplaySound);
+  els.clearProgressBtn.addEventListener('click', clearWatchHistory);
   els.dlMaxActiveSave.addEventListener('click', saveDownloadMaxActive);
   els.dlSpeedSave.addEventListener('click', saveDownloadSpeedLimit);
   els.dlStagingSave.addEventListener('click', saveDownloadStaging);

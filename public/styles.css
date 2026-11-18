@@ -1316,6 +1316,18 @@ code { font-family: Consolas, "Courier New", monospace; }
 }
 .settings-save:hover { background: rgba(255, 255, 255, 0.82); }
 .settings-save:disabled { opacity: 0.5; cursor: default; }
+/* Forgetting the watch history is destructive, so it stays quiet until armed. */
+.settings-clear {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  color: #cfcfcf;
+}
+.settings-clear:hover { background: rgba(255, 255, 255, 0.14); }
+.settings-clear.is-armed {
+  background: rgba(229, 9, 20, 0.22);
+  border-color: rgba(229, 9, 20, 0.7);
+  color: #ff7d84;
+}
 .settings-hint { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
 .settings-error { margin: 0; color: #ff8a8f; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .settings-restart {
