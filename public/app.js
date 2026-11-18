@@ -184,6 +184,8 @@ const els = {
   modalPlay: $('modalPlay'),
   modalPlayLabel: $('modalPlayLabel'),
   modalList: $('modalList'),
+  modalDelete: $('modalDelete'),
+  modalDeleteLabel: $('modalDeleteLabel'),
   seriesBlock: $('seriesBlock'),
   seriesFind: $('seriesFind'),
   seriesSeasons: $('seriesSeasons'),
@@ -5221,6 +5223,7 @@ function openLibraryModal(id) {
   state.seriesSeason = episode.season || (group.episodes?.[0]?.season) || 0;
   els.modal.hidden = false;
   els.modal.classList.toggle('is-movie', !isSeries);
+  resetModalDelete(isSeries);
   syncBodyLock();
   els.modal.scrollTop = 0;
   setImg(els.modalImg, thumbUrl(group, 960));
@@ -5559,6 +5562,53 @@ function updateModalListButton(item) {
   els.modalList.querySelector('.i-check').toggleAttribute('hidden', !inList);
   els.modalList.title = inList ? 'Remove from Favourite' : 'Add to Favourite';
   els.modalList.classList.toggle('in-list', inList);
+}
+
+/* A series sheet deletes episode by episode, but a film opens this sheet and
+ * had no way to remove its file at all. One file, one Delete, armed the same
+ * way as the catalogue sheet's: the second click is the one that deletes. */
+let modalDeleteTimer = 0;
+
+function disarmModalDelete() {
+  clearTimeout(modalDeleteTimer);
+  modalDeleteTimer = 0;
+  if (!els.modalDelete) return;
+  els.modalDelete.classList.remove('is-armed');
+  els.modalDeleteLabel.textContent = 'Delete';
+}
+
+function resetModalDelete(isSeries) {
+  disarmModalDelete();
+  if (!els.modalDelete) return;
+  els.modalDelete.hidden = Boolean(isSeries);
+  els.modalDelete.disabled = false;
+}
+
+async function deleteModalFilm() {
+  const item = modalItemId ? state.byId.get(modalItemId) : null;
+  if (!item) return;
+  const btn = els.modalDelete;
+  if (!btn.classList.contains('is-armed')) {
+    btn.classList.add('is-armed');
+    els.modalDeleteLabel.textContent = 'Sure?';
+    clearTimeout(modalDeleteTimer);
+    modalDeleteTimer = setTimeout(disarmModalDelete, 3000);
+    return;
+  }
+  clearTimeout(modalDeleteTimer);
+  modalDeleteTimer = 0;
+  btn.disabled = true;
+  els.modalDeleteLabel.textContent = 'Deleting…';
+  try {
+    await deleteLibraryItem(item.id);
+    await loadLibrary();
+    toast('Film deleted');
+    closeModal();
+  } catch (err) {
+    btn.disabled = false;
+    disarmModalDelete();
+    toast(`Could not delete: ${err.message}`);
+  }
 }
 
 function renderMore(item) {
@@ -6123,6 +6173,7 @@ function bindStaticEvents() {
     toast(added ? 'Added to Favourite' : 'Removed from Favourite');
     renderRows();
   });
+  els.modalDelete.addEventListener('click', deleteModalFilm);
 
   els.refreshBtn.addEventListener('click', syncCastle);
   els.menuSettings.addEventListener('click', openSettings);
